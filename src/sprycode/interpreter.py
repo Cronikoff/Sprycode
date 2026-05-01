@@ -1392,36 +1392,34 @@ class Interpreter:
         return None
 
     def _exec_import(self, node: ImportStatement, env: Environment) -> Any:
-        """Simple import: load a JSON/YAML file or expose built-in module names."""
-        module = node.module
-        # Try to load as a file (relative or absolute path)
+        """Simple import: expose Python stdlib module names into the SpryCode environment."""
         import importlib
-        # Try loading as a built-in Python stdlib math/json/re module
-        stdlib_map = {
-            "math": ["pi", "e", "floor", "ceil", "sqrt", "pow", "log", "sin", "cos", "tan"],
-            "json": [],
-            "re": [],
-        }
-        if module in stdlib_map:
-            try:
-                mod = importlib.import_module(module)
-                if node.names:
-                    # import { a, b } from "math"
-                    for name in node.names:
-                        alias = node.alias or name
-                        env.define(alias, getattr(mod, name, None), mutable=False)
-                elif node.alias:
-                    env.define(node.alias, mod, mutable=False)
-                else:
-                    # import all exported names
-                    for attr in (stdlib_map.get(module) or []):
-                        if hasattr(mod, attr):
-                            env.define(attr, getattr(mod, attr), mutable=False)
-            except ImportError:
-                pass
+        module = node.module
+        # Allowed stdlib modules (security whitelist)
+        allowed_stdlib = {"math", "json", "re", "random", "statistics", "string", "datetime"}
+        if module not in allowed_stdlib:
+            self.logger.warn(f"import: module '{module}' not available")
             return None
-        # Otherwise log a warning
-        self.logger.warn(f"import: module '{module}' not found")
+        try:
+            mod = importlib.import_module(module)
+            if node.names:
+                # import { a, b } from "math" — each name gets its own binding
+                for name in node.names:
+                    env.define(name, getattr(mod, name, None), mutable=False)
+            elif node.alias:
+                # import "math" as m
+                env.define(node.alias, mod, mutable=False)
+            else:
+                # import math — expose public, callable or constant names
+                public_names = getattr(mod, "__all__", None) or [
+                    n for n in dir(mod) if not n.startswith("_")
+                ]
+                for attr in public_names:
+                    val = getattr(mod, attr, None)
+                    if callable(val) or isinstance(val, (int, float, str)):
+                        env.define(attr, val, mutable=False)
+        except ImportError:
+            self.logger.warn(f"import: failed to load module '{module}'")
         return None
 
     def _exec_list_destructure(self, node: ListDestructure, env: Environment) -> Any:

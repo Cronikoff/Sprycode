@@ -9,7 +9,7 @@ task sumNumbers {
     var total = 0
 
     for n in numbers {
-        total = total + n
+        total += n
     }
 
     log info "Sum 1..10 = " + str(total)
@@ -39,7 +39,7 @@ task sumEvens {
         if n % 2 != 0 {
             continue
         }
-        evenSum = evenSum + n
+        evenSum += n
     }
 
     log info "Sum of evens = " + str(evenSum)
@@ -51,7 +51,7 @@ task countdown {
 
     while n > 0 {
         log info "T-minus " + str(n)
-        n = n - 1
+        n -= 1
     }
 
     log info "Liftoff!"
@@ -105,4 +105,15 @@ task listDemo {
     var mutable = ["a", "b"]
     mutable.push("c")
     log info "After push: " + mutable.join(", ")
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────
+task main {
+    sumNumbers()
+    findFirst()
+    sumEvens()
+    countdown()
+    processList()
+    stringDemo()
+    listDemo()
 }

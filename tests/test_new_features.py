@@ -515,3 +515,199 @@ class TestScheduleStatement:
         log_output = []
         run('schedule daily at "02:00"', log_output=log_output)
         assert any("schedule" in line.lower() or "daily" in line.lower() for line in log_output)
+
+
+# ---------------------------------------------------------------------------
+# Compound assignment operators
+# ---------------------------------------------------------------------------
+
+
+class TestCompoundAssignment:
+    def test_plus_eq(self):
+        interp = run("var x = 10\nx += 5")
+        assert interp.globals.get("x") == 15
+
+    def test_minus_eq(self):
+        interp = run("var x = 10\nx -= 3")
+        assert interp.globals.get("x") == 7
+
+    def test_star_eq(self):
+        interp = run("var x = 4\nx *= 3")
+        assert interp.globals.get("x") == 12
+
+    def test_slash_eq(self):
+        interp = run("var x = 10\nx /= 4")
+        assert interp.globals.get("x") == 2.5
+
+    def test_compound_chained(self):
+        interp = run("var x = 10\nx += 5\nx -= 2\nx *= 3")
+        assert interp.globals.get("x") == 39
+
+    def test_compound_string_concat(self):
+        interp = run('var s = "hello"\ns += " world"')
+        assert interp.globals.get("s") == "hello world"
+
+    def test_compound_in_loop(self):
+        log_output = []
+        run(
+            "var total = 0\nfor i in [1, 2, 3, 4, 5] {\n    total += i\n}\nlog info total",
+            log_output=log_output,
+        )
+        assert any("15" in line for line in log_output)
+
+
+# ---------------------------------------------------------------------------
+# Encode / Decode builtins in expression context
+# ---------------------------------------------------------------------------
+
+
+class TestEncodeDecodeExpressions:
+    def test_encode_json_call_form(self):
+        result = eval_expr('encode("json", {name: "Alice"})')
+        import json
+        assert json.loads(result) == {"name": "Alice"}
+
+    def test_encode_base64_call_form(self):
+        result = eval_expr('encode("base64", "hello")')
+        import base64
+        assert base64.b64decode(result).decode() == "hello"
+
+    def test_decode_base64_call_form(self):
+        result = eval_expr('decode("base64", "aGVsbG8=")')
+        assert result == "hello"
+
+    def test_encode_space_syntax(self):
+        result = eval_expr('encode "base64" "hello"')
+        import base64
+        assert base64.b64decode(result).decode() == "hello"
+
+    def test_encode_yaml(self):
+        result = eval_expr('encode("yaml", {a: "1"})')
+        assert "a:" in result
+        assert "1" in result
+
+
+# ---------------------------------------------------------------------------
+# YAML parsing
+# ---------------------------------------------------------------------------
+
+
+class TestYAMLParsing:
+    def test_parse_yaml_simple(self):
+        interp = run('let raw = "name: Alice"\nlet data = parse yaml raw')
+        data = interp.globals.get("data")
+        assert isinstance(data, dict)
+        assert data.get("name") == "Alice"
+
+    def test_parse_yaml_multiline(self):
+        code = 'let raw = "name: Bob\\nage: 30"\nlet data = parse yaml raw'
+        interp = run(code)
+        data = interp.globals.get("data")
+        assert isinstance(data, dict)
+        assert data.get("name") == "Bob"
+
+    def test_encode_decode_yaml_roundtrip(self):
+        code = 'let obj = {key: "value", num: 42}\nlet yaml_str = encode("yaml", obj)\nlet back = parse yaml yaml_str'
+        interp = run(code)
+        back = interp.globals.get("back")
+        assert isinstance(back, dict)
+        assert back.get("key") == "value"
+
+
+# ---------------------------------------------------------------------------
+# str() and bool() built-ins
+# ---------------------------------------------------------------------------
+
+
+class TestBuiltinStrBool:
+    def test_str_true(self):
+        assert eval_expr("str(true)") == "true"
+
+    def test_str_false(self):
+        assert eval_expr("str(false)") == "false"
+
+    def test_str_null(self):
+        assert eval_expr("str(null)") == "null"
+
+    def test_str_integer_float(self):
+        assert eval_expr("str(42.0)") == "42"
+
+    def test_str_real_float(self):
+        assert eval_expr("str(3.14)") == "3.14"
+
+    def test_bool_truthy(self):
+        assert eval_expr("bool(1)") is True
+        assert eval_expr("bool(42)") is True
+
+    def test_bool_falsy(self):
+        assert eval_expr("bool(0)") is False
+        assert eval_expr("bool(0.0)") is False
+
+
+# ---------------------------------------------------------------------------
+# Auto-run main task
+# ---------------------------------------------------------------------------
+
+
+class TestAutoRunMain:
+    def test_auto_run_main_no_top_level(self):
+        log_output = []
+        run('task main {\n    log info "ran"\n}', log_output=log_output)
+        assert any("ran" in line for line in log_output)
+
+    def test_auto_run_main_calls_helper(self):
+        code = 'task helper {\n    log info "helper"\n}\ntask main {\n    helper()\n}'
+        log_output = []
+        run(code, log_output=log_output)
+        assert any("helper" in line for line in log_output)
+
+    def test_no_auto_run_when_top_level_code(self):
+        """When there's top-level code, main is NOT auto-run."""
+        log_output = []
+        run('log info "top"\ntask main {\n    log info "main"\n}', log_output=log_output)
+        # Only "top" should appear, not "main"
+        messages = [line.split('] ')[-1] for line in log_output]
+        assert "top" in messages
+        assert "main" not in messages
+
+    def test_no_auto_run_without_main(self):
+        """If there's no main task, nothing is auto-run."""
+        log_output = []
+        run('task helper {\n    log info "helper"\n}', log_output=log_output)
+        assert not any("helper" in line for line in log_output)
+
+
+# ---------------------------------------------------------------------------
+# http identifier accessible
+# ---------------------------------------------------------------------------
+
+
+class TestHttpAccessible:
+    def test_http_is_accessible_as_identifier(self):
+        interp = run("let h = http")
+        h = interp.globals.get("h")
+        assert h is not None
+
+    def test_http_get_parses_as_call(self):
+        """http.get 'url' should parse as a CallExpression."""
+        from sprycode.lexer import Lexer
+        from sprycode.parser import Parser
+        from sprycode.ast_nodes import CallExpression, LetDeclaration
+        code = 'let r = http.get "https://example.com"'
+        tokens = Lexer(code).tokenize()
+        prog = Parser(tokens).parse()
+        let_decl = prog.body[0]
+        assert isinstance(let_decl, LetDeclaration)
+        assert isinstance(let_decl.value, CallExpression)
+
+    def test_http_post_with_body_parses(self):
+        from sprycode.lexer import Lexer
+        from sprycode.parser import Parser
+        from sprycode.ast_nodes import CallExpression, LetDeclaration
+        code = 'let r = http.post "https://example.com" with {key: "val"}'
+        tokens = Lexer(code).tokenize()
+        prog = Parser(tokens).parse()
+        let_decl = prog.body[0]
+        assert isinstance(let_decl, LetDeclaration)
+        assert isinstance(let_decl.value, CallExpression)
+        assert len(let_decl.value.args) == 2

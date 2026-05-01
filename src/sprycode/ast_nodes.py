@@ -77,6 +77,14 @@ class Assignment(Node):
 
 
 @dataclass
+class CompoundAssignment(Node):
+    """<name> += | -= | *= | /= <value>"""
+    name: str = ""
+    op: str = ""     # "+", "-", "*", "/"
+    value: Node | None = None
+
+
+@dataclass
 class FunctionDeclaration(Node):
     """fn <name>(<params>) [-> <return_type>] { <body> }"""
     name: str = ""

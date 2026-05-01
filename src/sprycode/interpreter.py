@@ -24,6 +24,7 @@ from .ast_nodes import (
     BreakStatement,
     CallExpression,
     CompensateStatement,
+    CompoundAssignment,
     CompressStatement,
     ConnectorDeclaration,
     ContinueStatement,
@@ -94,6 +95,8 @@ from .runtime.stdlib import (
     _builtin_now,
     _builtin_parse_csv,
     _builtin_parse_json,
+    _builtin_parse_yaml,
+    _builtin_encode_yaml,
     _builtin_today,
     _builtin_uuid,
 )
@@ -241,7 +244,7 @@ class Interpreter:
         env.define("today", lambda: _builtin_today())
         env.define("checksum", lambda path, alg="sha256": _builtin_checksum(path, alg))
         env.define("hash", lambda text, alg="sha256": _builtin_hash_text(text, alg))
-        env.define("encode", lambda fmt, val: self._encode(fmt, val))
+        env.define("encode", lambda fmt, val=None: self._encode(fmt, val))
         env.define("decode", lambda fmt, val: self._decode(fmt, val))
         env.define("parse", lambda fmt, val: self._parse(fmt, val))
 
@@ -251,9 +254,12 @@ class Interpreter:
         env.define("max", max)
         env.define("round", round)
         env.define("len", len)
-        env.define("str", str)
+        env.define("str", self._builtin_str)
         env.define("int", int)
         env.define("float", float)
+        env.define("bool", bool)
+        env.define("list", list)
+        env.define("type", lambda v: type(v).__name__)
 
         # Constants
         env.define("ok", SPRY_OK)
@@ -264,17 +270,38 @@ class Interpreter:
         # Money helper
         env.define("money", _MoneyHelper())
 
-        # HTTP helper (stub)
+        # HTTP helper
         env.define("http", _HttpHelper(self.permissions))
 
         return env
 
-    def _encode(self, fmt: str, val: Any) -> Any:
+    @staticmethod
+    def _builtin_str(value: Any) -> str:
+        """Convert any SpryCode value to a string."""
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, SpryResult):
+            if value.ok:
+                return str(value.value) if value.value is not None else ""
+            return value.error
+        if isinstance(value, SprySecret):
+            return str(value)
+        if isinstance(value, SpryMoney):
+            return str(value)
+        if isinstance(value, float) and value == int(value):
+            return str(int(value))
+        return str(value)
+
+    def _encode(self, fmt: str, val: Any = None) -> Any:
         if fmt in ("json",):
             return _builtin_encode_json(val)
         if fmt in ("base64",):
-            return _builtin_encode_base64(str(val))
-        return str(val)
+            return _builtin_encode_base64(str(val) if val is not None else "")
+        if fmt in ("yaml",):
+            return _builtin_encode_yaml(val)
+        return str(val) if val is not None else ""
 
     def _decode(self, fmt: str, val: str) -> Any:
         if fmt in ("base64",):
@@ -286,6 +313,8 @@ class Interpreter:
             return _builtin_parse_json(val)
         if fmt in ("csv",):
             return _builtin_parse_csv(val)
+        if fmt in ("yaml",):
+            return _builtin_parse_yaml(val)
         return val
 
     # ------------------------------------------------------------------
@@ -293,8 +322,24 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def run(self, program: Program) -> Any:
-        """Execute a full program."""
-        return self._exec_block_stmts(program.body, self.globals)
+        """Execute a full program. If the program defines a 'main' task but has
+        no other executable top-level statements, auto-run the 'main' task."""
+        # Check whether there are any executable statements (non-declaration, non-app)
+        executable = [
+            s for s in program.body
+            if not isinstance(s, (AppDeclaration, TaskDeclaration, FunctionDeclaration,
+                                  ConnectorDeclaration, AdapterDeclaration,
+                                  AllowStatement, DenyStatement,
+                                  PrivateDataDeclaration, SensitiveDataDeclaration,
+                                  UseStatement))
+        ]
+        result = self._exec_block_stmts(program.body, self.globals)
+        # Auto-run 'main' task if nothing executable was at the top level
+        if not executable and self.globals.has("main"):
+            main_val = self.globals.get("main")
+            if isinstance(main_val, SpryTask):
+                result = self._call_task(main_val)
+        return result
 
     def run_task(self, program: Program, task_name: str) -> Any:
         """Execute a named task from the program."""
@@ -354,6 +399,24 @@ class Interpreter:
         if isinstance(node, Assignment):
             value = self._eval(node.value, env) if node.value is not None else None
             env.set(node.name, value)
+            return None
+
+        if isinstance(node, CompoundAssignment):
+            current = env.get(node.name)
+            rhs = self._eval(node.value, env)
+            if node.op == "+":
+                new_val = current + rhs
+            elif node.op == "-":
+                new_val = current - rhs
+            elif node.op == "*":
+                new_val = current * rhs
+            elif node.op == "/":
+                if rhs == 0:
+                    raise SpryRuntimeError("Division by zero", node)
+                new_val = current / rhs
+            else:
+                raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
+            env.set(node.name, new_val)
             return None
 
         if isinstance(node, FunctionDeclaration):

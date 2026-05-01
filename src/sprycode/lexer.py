@@ -189,9 +189,13 @@ class TokenType(Enum):
     OR_OR = auto()
     BANG = auto()
     EQ = auto()
-    ARROW = auto()       # ->
-    FAT_ARROW = auto()   # =>
-    PIPE_ARROW = auto()  # |>
+    ARROW = auto()        # ->
+    FAT_ARROW = auto()    # =>
+    PIPE_ARROW = auto()   # |>
+    PLUS_EQ = auto()      # +=
+    MINUS_EQ = auto()     # -=
+    STAR_EQ = auto()      # *=
+    SLASH_EQ = auto()     # /=
 
     # Delimiters
     LPAREN = auto()
@@ -512,6 +516,31 @@ class Lexer:
                 self._advance()
                 self._advance()
                 yield Token(TokenType.OR_OR, "||", line, col)
+                continue
+
+            # Compound assignment operators
+            if ch == "+" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.PLUS_EQ, "+=", line, col)
+                continue
+
+            if ch == "-" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.MINUS_EQ, "-=", line, col)
+                continue
+
+            if ch == "*" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.STAR_EQ, "*=", line, col)
+                continue
+
+            if ch == "/" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.SLASH_EQ, "/=", line, col)
                 continue
 
             # Single-char operators and delimiters

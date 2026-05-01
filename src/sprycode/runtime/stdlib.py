@@ -177,6 +177,31 @@ def _builtin_parse_csv(text: str) -> list[dict]:
     return list(reader)
 
 
+def _builtin_parse_yaml(text: str) -> Any:
+    try:
+        import yaml  # type: ignore[import]
+        return yaml.safe_load(text)
+    except ImportError:
+        # Minimal fallback: parse simple "key: value" lines into a dict
+        result: dict[str, str] = {}
+        for line in text.splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                result[k.strip()] = v.strip()
+        return result
+
+
+def _builtin_encode_yaml(value: Any) -> str:
+    try:
+        import yaml  # type: ignore[import]
+        return yaml.dump(value, default_flow_style=False)
+    except ImportError:
+        # Minimal fallback for simple dicts/lists
+        if isinstance(value, dict):
+            return "\n".join(f"{k}: {v}" for k, v in value.items())
+        return str(value)
+
+
 def _builtin_money_sum(amounts: list) -> SpryMoney:
     if not amounts:
         return SpryMoney(Decimal("0"), "USD")

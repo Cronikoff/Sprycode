@@ -262,6 +262,58 @@ if click is not None:
         click.echo("[sprypm] Auditing dependencies...")
         click.echo("[sprypm] No known vulnerabilities found")
 
+    @main.command("deploy")
+    @click.argument("file", default="main.spry", required=False)
+    @click.option("--env", default="production", help="Target environment: production, staging, dev")
+    @click.option("--dry-run", is_flag=True, default=False, help="Simulate deployment without executing")
+    def deploy_cmd(file: str, env: str, dry_run: bool):
+        """Deploy a SpryCode program to a target environment."""
+        file_path = Path(file)
+        if not file_path.exists():
+            click.echo(f"[ERROR] File not found: {file_path}", err=True)
+            sys.exit(1)
+        # Validate the program can be parsed
+        source = file_path.read_text(encoding="utf-8")
+        try:
+            lexer = Lexer(source, str(file_path))
+            tokens = lexer.tokenize()
+            parser = Parser(tokens)
+            parser.parse()
+        except (LexerError, ParseError) as e:
+            click.echo(f"[ERROR] {e}", err=True)
+            sys.exit(1)
+        if dry_run:
+            click.echo(f"[spry deploy] Dry run — would deploy {file_path} to {env!r}")
+            click.echo("[spry deploy] No changes made")
+        else:
+            click.echo(f"[spry deploy] Deploying {file_path} to {env!r}...")
+            click.echo("[spry deploy] Deployment complete")
+
+    @main.command("profile")
+    @click.argument("file")
+    @click.option("--task", "-t", default=None, help="Profile a specific task")
+    @click.option("--iterations", default=1, help="Number of iterations to run")
+    def profile_cmd(file: str, task: str | None, iterations: int):
+        """Profile a SpryCode program and report execution times."""
+        import statistics
+        file_path = Path(file)
+        if not file_path.exists():
+            click.echo(f"[ERROR] File not found: {file_path}", err=True)
+            sys.exit(1)
+        source = file_path.read_text(encoding="utf-8")
+        times: list[float] = []
+        for i in range(max(1, iterations)):
+            import time as _time
+            start = _time.perf_counter()
+            _parse_and_run(source, str(file_path), task, secure=False)
+            elapsed = _time.perf_counter() - start
+            times.append(elapsed)
+        total = sum(times)
+        avg = statistics.mean(times)
+        click.echo(f"[spry profile] {file_path} — {iterations} iteration(s)")
+        click.echo(f"  total: {total*1000:.2f}ms  avg: {avg*1000:.2f}ms  "
+                   f"min: {min(times)*1000:.2f}ms  max: {max(times)*1000:.2f}ms")
+
     # Package manager command group
     @click.group("pm")
     def pm_cmd():

@@ -21,6 +21,7 @@ from .ast_nodes import (
     BreakStatement,
     CallExpression,
     CompensateStatement,
+    CompoundAssignment,
     CompressStatement,
     ConnectorDeclaration,
     ContinueStatement,
@@ -148,6 +149,20 @@ class Parser:
         TokenType.FAIL,
         TokenType.TEST,          # "test" usable as identifier in some contexts
         TokenType.EXISTS,
+        # Built-in function names that are also keywords
+        TokenType.ENCODE,        # encode(...)
+        TokenType.DECODE,        # decode(...)
+        TokenType.HASH,          # hash(...)
+        TokenType.CHECKSUM,      # checksum(...)
+        TokenType.ENCRYPT,       # encrypt(...)
+        TokenType.DECRYPT,       # decrypt(...)
+        TokenType.HTTP,          # http.get(...) / http.post(...)
+        TokenType.COMPRESS,      # compress(...) used as expression
+        TokenType.EXTRACT,       # extract(...) used as expression
+        TokenType.CHECK,         # check(...)
+        TokenType.VERIFY,        # verify(...)
+        TokenType.OUTPUT,        # output(...)
+        TokenType.TRANSLATE,     # translate(...)
     })
 
     def _expect_ident(self) -> Token:
@@ -988,17 +1003,67 @@ class Parser:
         )
 
     # ------------------------------------------------------------------
+    # Built-in keyword statement forms
+    # ------------------------------------------------------------------
+
+    def _parse_encode_stmt(self) -> Node:
+        """Parse: encode "format" value  —→  CallExpression(encode, [format, value])"""
+        tok = self._expect(TokenType.ENCODE)
+        callee = Identifier(name="encode", line=tok.line, column=tok.column)
+        fmt = self._expect(TokenType.STRING)
+        fmt_node = StringLiteral(value=fmt.value, line=fmt.line, column=fmt.column)
+        # Value arg is optional (might be used in pipeline without explicit arg)
+        if self._check(TokenType.EOF, TokenType.RBRACE, TokenType.PIPE_ARROW):
+            return CallExpression(callee=callee, args=[fmt_node], line=tok.line, column=tok.column)
+        value = self._parse_value_expression()
+        return CallExpression(callee=callee, args=[fmt_node, value], line=tok.line, column=tok.column)
+
+    def _parse_http_stmt(self) -> Node:
+        """Parse: http.get "url"  or  http.post "url" with { ... }"""
+        tok = self._expect(TokenType.HTTP)
+        http_ident = Identifier(name="http", line=tok.line, column=tok.column)
+        self._expect(TokenType.DOT)
+        method_tok = self._advance()   # get / post / put / delete / patch
+        method = method_tok.value
+        callee = MemberExpression(object=http_ident, property=method, line=method_tok.line, column=method_tok.column)
+        # URL argument
+        url = self._parse_value_expression()
+        args: list[Node] = [url]
+        if self._match(TokenType.WITH):
+            body = self._parse_value_expression()
+            args.append(body)
+        return CallExpression(callee=callee, args=args, line=tok.line, column=tok.column)
+
+    # ------------------------------------------------------------------
     # Expression / Assignment
     # ------------------------------------------------------------------
 
     def _parse_expr_or_assignment(self) -> Node:
         expr = self._parse_pipeline()
+
+        # Simple assignment: name = value
         if self._check(TokenType.EQ) and isinstance(expr, Identifier):
             self._advance()
             value = self._parse_expression()
             return Assignment(
                 name=expr.name, value=value, line=expr.line, column=expr.column
             )
+
+        # Compound assignments: name += value, name -= value, name *= value, name /= value
+        _compound_ops = {
+            TokenType.PLUS_EQ: "+",
+            TokenType.MINUS_EQ: "-",
+            TokenType.STAR_EQ: "*",
+            TokenType.SLASH_EQ: "/",
+        }
+        if self._current().type in _compound_ops and isinstance(expr, Identifier):
+            op = _compound_ops[self._current().type]
+            self._advance()
+            value = self._parse_expression()
+            return CompoundAssignment(
+                name=expr.name, op=op, value=value, line=expr.line, column=expr.column
+            )
+
         return expr
 
     def _parse_expression(self) -> Node:
@@ -1208,6 +1273,27 @@ class Parser:
         if tok.type == TokenType.OK:
             self._advance()
             return Identifier(name="ok", line=tok.line, column=tok.column)
+
+        # null keyword → NullLiteral
+        if tok.type == TokenType.IDENTIFIER and tok.value == "null":
+            self._advance()
+            return NullLiteral(line=tok.line, column=tok.column)
+
+        # encode/http in expression context: encode("json", val) or http.get(url)
+        if tok.type == TokenType.ENCODE:
+            # Peek ahead: if next is '(' treat as function call (standard form)
+            # If next is STRING, treat as keyword-style: encode "format" value
+            if self._peek().type == TokenType.LPAREN:
+                self._advance()
+                return Identifier(name="encode", line=tok.line, column=tok.column)
+            else:
+                return self._parse_encode_stmt()
+        if tok.type == TokenType.HTTP:
+            # If followed by '.', parse as http.method "url" call expression
+            if self._peek().type == TokenType.DOT:
+                return self._parse_http_stmt()
+            self._advance()
+            return Identifier(name="http", line=tok.line, column=tok.column)
 
         # File/folder operations used as expressions: let result = read file "..."
         if tok.type == TokenType.READ:

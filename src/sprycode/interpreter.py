@@ -28,6 +28,7 @@ from .ast_nodes import (
     BoolLiteral,
     BreakStatement,
     CallExpression,
+    ClassDeclaration,
     CompensateStatement,
     CompoundAssignment,
     CompressStatement,
@@ -37,6 +38,7 @@ from .ast_nodes import (
     CreateStatement,
     DeleteStatement,
     DenyStatement,
+    EnumDeclaration,
     ExpectStatement,
     ExtractStatement,
     ForStatement,
@@ -48,6 +50,7 @@ from .ast_nodes import (
     ImportStatement,
     InExpression,
     IndexExpression,
+    InterfaceDeclaration,
     LambdaExpression,
     LetDeclaration,
     ListDestructure,
@@ -63,6 +66,7 @@ from .ast_nodes import (
     NumberLiteral,
     ObjectDestructure,
     ObjectLiteral,
+    OptionalMemberExpression,
     ParseStatement,
     PipelineExpression,
     PrivateDataDeclaration,
@@ -79,10 +83,12 @@ from .ast_nodes import (
     StopStatement,
     StreamStatement,
     StringLiteral,
+    StructDeclaration,
     SyncStatement,
     TaskDeclaration,
     TernaryExpression,
     TestBlock,
+    ThrowStatement,
     TransactionStatement,
     TryCatchStatement,
     UnaryExpression,
@@ -139,6 +145,19 @@ class BreakSignal(Exception):
 
 class ContinueSignal(Exception):
     pass
+
+
+class SpryUserError(Exception):
+    """User-raised error from a `throw` statement."""
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        # Extract message for str() compatibility
+        if isinstance(value, dict):
+            msg = str(value.get("message", value))
+        else:
+            msg = str(value)
+        super().__init__(msg)
+        self.message = msg
 
 
 class SpryRuntimeError(Exception):
@@ -256,6 +275,76 @@ class SpryMultiLambda:
 
     def __repr__(self) -> str:
         return f"<lambda ({', '.join(self.params)})>"
+
+
+class SpryEnum:
+    """Runtime representation of an enum type."""
+
+    def __init__(self, name: str, variants: list[str]) -> None:
+        self.name = name
+        self.variants = variants
+        # Each variant is stored as a dict: {__enum__: name, __variant__: "Red"}
+        for v in variants:
+            setattr(self, v, {"__enum__": name, "__variant__": v})
+
+    def __repr__(self) -> str:
+        return f"<enum {self.name}>"
+
+
+class SpryClass:
+    """Runtime representation of a class definition."""
+
+    def __init__(
+        self,
+        name: str,
+        body: "Block",
+        closure: Environment,
+        superclass: "SpryClass | None" = None,
+    ) -> None:
+        self.name = name
+        self.body = body
+        self.closure = closure
+        self.superclass = superclass
+
+    def __repr__(self) -> str:
+        return f"<class {self.name}>"
+
+
+class SpryInstance:
+    """Runtime representation of a class instance."""
+
+    def __init__(self, cls: SpryClass, fields: dict[str, Any]) -> None:
+        self.cls = cls
+        self.fields = fields  # mutable instance fields
+
+    def get(self, name: str) -> Any:
+        if name in self.fields:
+            return self.fields[name]
+        raise KeyError(name)
+
+    def set(self, name: str, value: Any) -> None:
+        self.fields[name] = value
+
+    def __repr__(self) -> str:
+        return f"<{self.cls.name} {self.fields!r}>"
+
+
+class SpryStruct:
+    """Runtime representation of a struct type (constructor factory)."""
+
+    def __init__(self, name: str, fields: list[tuple[str, str | None]]) -> None:
+        self.name = name
+        self.field_names = [f for f, _ in fields]
+
+    def __repr__(self) -> str:
+        return f"<struct {self.name}>"
+
+    def create(self, args: list[Any]) -> dict[str, Any]:
+        obj: dict[str, Any] = {}
+        for i, fname in enumerate(self.field_names):
+            obj[fname] = args[i] if i < len(args) else None
+        obj["__struct__"] = self.name
+        return obj
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +651,14 @@ class Interpreter:
             try:
                 child = env.child()
                 return self._exec_block(node.body, child)
+            except SpryUserError as ue:
+                child = env.child()
+                # Expose user error: e.message is the message string, e.value is raw
+                err_obj = ue.value if isinstance(ue.value, dict) else {"message": ue.message, "__error__": True}
+                if isinstance(err_obj, dict) and "message" not in err_obj:
+                    err_obj["message"] = ue.message
+                child.define(node.error_name, err_obj, mutable=False)
+                return self._exec_block(node.handler, child)
             except (SpryRuntimeError, Exception) as e:
                 child = env.child()
                 result = SpryResult(ok=False, error=str(e))
@@ -704,6 +801,23 @@ class Interpreter:
         if isinstance(node, ImportStatement):
             return self._exec_import(node, env)
 
+        if isinstance(node, ThrowStatement):
+            value = self._eval(node.value, env)
+            raise SpryUserError(value)
+
+        if isinstance(node, EnumDeclaration):
+            return self._exec_enum(node, env)
+
+        if isinstance(node, StructDeclaration):
+            return self._exec_struct(node, env)
+
+        if isinstance(node, ClassDeclaration):
+            return self._exec_class(node, env)
+
+        if isinstance(node, InterfaceDeclaration):
+            # Interface is mostly a type declaration — no runtime behaviour
+            return None
+
         if isinstance(node, ListDestructure):
             return self._exec_list_destructure(node, env)
 
@@ -794,6 +908,12 @@ class Interpreter:
 
         if isinstance(node, MemberExpression):
             return self._eval_member(node, env)
+
+        if isinstance(node, OptionalMemberExpression):
+            obj = self._eval(node.object, env)
+            if obj is None:
+                return None
+            return self._eval_member_on(obj, node.property, node)
 
         if isinstance(node, IndexExpression):
             obj = self._eval(node.object, env)
@@ -971,6 +1091,11 @@ class Interpreter:
         if obj is None:
             raise SpryRuntimeError(f"Cannot access property {prop!r} on null", node)
 
+        return self._eval_member_on(obj, prop, node)
+
+    def _eval_member_on(self, obj: Any, prop: str, node: Node) -> Any:
+        """Look up `prop` on `obj`. Used by both MemberExpression and OptionalMemberExpression."""
+
         if isinstance(obj, SpryResult):
             if prop == "ok":
                 return obj.ok
@@ -980,6 +1105,28 @@ class Interpreter:
                 return obj.error
             if prop == "value":
                 return obj.value
+
+        if isinstance(obj, SpryEnum):
+            # Color.Red → the variant dict
+            if prop in obj.variants:
+                return getattr(obj, prop)
+            raise SpryRuntimeError(f"Enum {obj.name!r} has no variant {prop!r}", node)
+
+        if isinstance(obj, SpryInstance):
+            # Instance field or method lookup
+            if prop in obj.fields:
+                v = obj.fields[prop]
+                if isinstance(v, SpryFunction):
+                    # Bind self to method
+                    return BoundMethod(instance=obj, fn=v)
+                return v
+            raise SpryRuntimeError(f"Instance of {obj.cls.name!r} has no attribute {prop!r}", node)
+
+        if isinstance(obj, dict) and obj.get("__enum__"):
+            # Enum variant dict — just return the variant name
+            if prop == "__variant__":
+                return obj["__variant__"]
+            return obj.get(prop)
 
         if isinstance(obj, SpryFile):
             if prop == "path":

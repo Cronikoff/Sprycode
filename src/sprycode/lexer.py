@@ -158,6 +158,18 @@ class TokenType(Enum):
     IMPORT = auto()
     EXPORT = auto()
 
+    # Keywords — OOP / throw
+    THROW = auto()
+    ENUM = auto()
+    CLASS = auto()
+    STRUCT = auto()
+    INTERFACE = auto()
+    EXTENDS = auto()
+    IMPLEMENTS = auto()
+    ASYNC = auto()
+    AWAIT = auto()
+    SELF = auto()
+
     # Types
     TEXT = auto()
     NUMBER_TYPE = auto()
@@ -213,7 +225,9 @@ class TokenType(Enum):
     STAR_STAR = auto()    # ** (power)
     QUESTION = auto()     # ? (ternary)
     QUESTION_QUESTION = auto()  # ?? (null coalescing)
+    QUESTION_DOT = auto()  # ?. (optional chaining)
     ELLIPSIS = auto()     # ... (spread)
+    DOTDOT = auto()       # .. (range)
 
     # Delimiters
     LPAREN = auto()
@@ -341,6 +355,16 @@ KEYWORDS: dict[str, TokenType] = {
     "create": TokenType.CREATE,
     "true": TokenType.BOOL,
     "false": TokenType.BOOL,
+    "throw": TokenType.THROW,
+    "enum": TokenType.ENUM,
+    "class": TokenType.CLASS,
+    "struct": TokenType.STRUCT,
+    "interface": TokenType.INTERFACE,
+    "extends": TokenType.EXTENDS,
+    "implements": TokenType.IMPLEMENTS,
+    "async": TokenType.ASYNC,
+    "await": TokenType.AWAIT,
+    "self": TokenType.SELF,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,
     "Number": TokenType.NUMBER_TYPE,
@@ -480,6 +504,10 @@ class Lexer:
             if ch in ('"', "'"):
                 yield from self._scan_string(line, col)
                 continue
+            # Backtick template literal: `Hello, ${name}!` — treat as f-string with ${...} syntax
+            if ch == "`":
+                yield from self._scan_backtick(line, col)
+                continue
 
             # Number literals
             if ch.isdigit() or (ch == "." and self._peek().isdigit()):
@@ -583,6 +611,12 @@ class Lexer:
                 yield Token(TokenType.QUESTION_QUESTION, "??", line, col)
                 continue
 
+            if ch == "?" and self._peek() == ".":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.QUESTION_DOT, "?.", line, col)
+                continue
+
             if ch == "?":
                 self._advance()
                 yield Token(TokenType.QUESTION, "?", line, col)
@@ -593,6 +627,12 @@ class Lexer:
                 self._advance()
                 self._advance()
                 yield Token(TokenType.ELLIPSIS, "...", line, col)
+                continue
+
+            if ch == "." and self._peek() == ".":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.DOTDOT, "..", line, col)
                 continue
 
             # Single-char operators and delimiters
@@ -713,6 +753,34 @@ class Lexer:
         else:
             raise LexerError("Unterminated f-string", line, col)
         # Yield as FSTRING with raw content including {expr} markers
+        yield Token(TokenType.FSTRING, value, line, col)
+
+    def _scan_backtick(self, line: int, col: int) -> Iterator[Token]:
+        """Scan a backtick template literal: `Hello, ${name}!` → FSTRING token.
+
+        Converts ${...} interpolation to {...} (matching f-string format).
+        """
+        self._advance()  # consume opening `
+        value = ""
+        while self.pos < len(self.source):
+            ch = self._current()
+            if ch == "\\":
+                self._advance()
+                esc = self._advance()
+                escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\",
+                              "`": "`", "$": "$"}
+                value += escape_map.get(esc, esc)
+            elif ch == "`":
+                self._advance()
+                break
+            elif ch == "$" and self._peek() == "{":
+                # ${expr} → {expr}
+                self._advance()  # skip $
+                value += self._advance()  # include {
+            else:
+                value += self._advance()
+        else:
+            raise LexerError("Unterminated template literal", line, col)
         yield Token(TokenType.FSTRING, value, line, col)
 
     def _scan_number(self, line: int, col: int) -> Iterator[Token]:

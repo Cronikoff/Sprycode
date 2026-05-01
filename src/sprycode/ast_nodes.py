@@ -92,6 +92,8 @@ class FunctionDeclaration(Node):
     return_type: str | None = None
     body: Block | None = None
     short_form: bool = False   # fn double(x) => x * 2
+    defaults: dict[str, "Node"] = field(default_factory=dict)  # param -> default expr
+    rest_param: str | None = None  # name of the ...rest parameter
 
 
 @dataclass
@@ -595,6 +597,7 @@ class MatchArm(Node):
     """pattern => body_stmt"""
     pattern: Node | None = None    # expression to compare, or None for wildcard
     is_wildcard: bool = False      # _ arm
+    range_end: Node | None = None  # if set, this is a range arm: pattern..range_end
     body: Block | None = None
 
 
@@ -649,3 +652,51 @@ class MultiParamLambda(Node):
     """(acc, x) => expr  — multi-param lambda used in reduce etc."""
     params: list[str] = field(default_factory=list)
     body: Node | None = None
+
+
+# ---------------------------------------------------------------------------
+# Round 5: throw, enum, struct, class, optional chaining, default/rest params
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ThrowStatement(Node):
+    """throw <expr>  — raise a user error"""
+    value: Node | None = None
+
+
+@dataclass
+class OptionalMemberExpression(Node):
+    """obj?.prop  — returns null if obj is null/None"""
+    object: Node | None = None
+    property: str = ""
+
+
+@dataclass
+class EnumDeclaration(Node):
+    """enum Color { Red, Green, Blue }"""
+    name: str = ""
+    variants: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StructDeclaration(Node):
+    """struct Point { x: Number, y: Number }"""
+    name: str = ""
+    fields: list[tuple[str, str | None]] = field(default_factory=list)
+
+
+@dataclass
+class ClassDeclaration(Node):
+    """class Foo { var n = 0; fn method() { ... } }"""
+    name: str = ""
+    superclass: str | None = None
+    interfaces: list[str] = field(default_factory=list)
+    body: "Block | None" = None
+
+
+@dataclass
+class InterfaceDeclaration(Node):
+    """interface Printable { fn print() }"""
+    name: str = ""
+    body: "Block | None" = None

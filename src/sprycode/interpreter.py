@@ -13,6 +13,8 @@ import time
 from decimal import Decimal
 from typing import Any
 
+_SENTINEL = object()  # Used as a default "not provided" sentinel
+
 from .ast_nodes import (
     AdapterDeclaration,
     AllowStatement,
@@ -227,6 +229,33 @@ class SpryTask:
 
     def __repr__(self) -> str:
         return f"<task {self.name}>"
+
+
+class SpryLambda:
+    """An anonymous single-param lambda with a captured closure environment."""
+
+    def __init__(self, param: str, body: Any, closure: Environment) -> None:
+        self.param = param
+        self.body = body
+        self.closure = closure
+        self.operation: str | None = None  # used by pipeline stages
+
+    def __repr__(self) -> str:
+        return f"<lambda {self.param}>"
+
+
+class SpryMultiLambda:
+    """An anonymous multi-param lambda with a captured closure environment."""
+
+    def __init__(self, params: list[str], body: Any, closure: Environment) -> None:
+        self.params = params
+        self.body = body
+        self.closure = closure
+        self.operation: str | None = None  # used by pipeline stages
+        self.init: Any = None  # used by reduce_with_init
+
+    def __repr__(self) -> str:
+        return f"<lambda ({', '.join(self.params)})>"
 
 
 # ---------------------------------------------------------------------------
@@ -595,15 +624,17 @@ class Interpreter:
 
         if isinstance(node, LogStatement):
             msg = self._eval(node.message, env)
+            # Convert to SpryCode string representation (true/false/null instead of True/False/None)
+            msg_str = self._builtin_str(msg)
             level = node.level.lower()
             if level == "info":
-                self.logger.info(msg)
+                self.logger.info(msg_str)
             elif level in ("warn", "warning"):
-                self.logger.warn(msg)
+                self.logger.warn(msg_str)
             elif level == "error":
-                self.logger.error(msg)
+                self.logger.error(msg_str)
             else:
-                self.logger.info(msg)
+                self.logger.info(msg_str)
             return None
 
         if isinstance(node, MoveStatement):
@@ -773,10 +804,16 @@ class Interpreter:
                 raise SpryRuntimeError(f"Index error: {e}", node)
 
         if isinstance(node, LambdaExpression):
-            return node  # Lambda is evaluated lazily
+            # Capture closure environment for proper free-variable access
+            sl = SpryLambda(param=node.param, body=node.body, closure=env)
+            sl.operation = getattr(node, "operation", None)
+            return sl
 
         if isinstance(node, MultiParamLambda):
-            return node  # evaluated lazily
+            sml = SpryMultiLambda(params=node.params, body=node.body, closure=env)
+            sml.operation = getattr(node, "operation", None)
+            sml.init = getattr(node, "init", None)
+            return sml
 
         if isinstance(node, TernaryExpression):
             cond = self._eval(node.condition, env)
@@ -873,11 +910,14 @@ class Interpreter:
 
     def _eval_call(self, node: CallExpression, env: Environment) -> Any:
         callee = self._eval(node.callee, env)
+        # Evaluate args, wrapping SpryCode callables for use in Python closures
         args = [self._eval(a, env) for a in node.args]
+        # Wrap any lambda/function args so Python-level closures (e.g. list.map) can call them
+        py_args = [self._to_py_callable(a, env) for a in args]
 
         if callable(callee) and not isinstance(callee, (SpryFunction, SpryTask)):
             try:
-                return callee(*args)
+                return callee(*py_args)
             except Exception as e:
                 raise SpryRuntimeError(str(e), node)
 
@@ -887,11 +927,15 @@ class Interpreter:
         if isinstance(callee, SpryTask):
             return self._call_task(callee)
 
-        if isinstance(callee, MultiParamLambda):
+        if isinstance(callee, (SpryLambda, LambdaExpression)):
+            return self._apply_lambda(callee, args[0] if args else None, env)
+
+        if isinstance(callee, (SpryMultiLambda, MultiParamLambda)):
             return self._apply_multi_lambda(callee, args, env)
 
-        if isinstance(callee, LambdaExpression):
-            return self._apply_lambda(callee, args[0] if args else None, env)
+        # Zero-arg call on a non-callable property value (e.g. "hello".trim(), list.sort())
+        if not args:
+            return callee
 
         raise SpryRuntimeError(
             f"Cannot call {type(callee).__name__} (value: {callee!r})", node
@@ -1011,11 +1055,34 @@ class Interpreter:
             if prop == "indexOf":
                 return lambda item: obj.index(item) if item in obj else -1
             if prop == "find":
-                return lambda pred: next((x for x in obj if pred(x)), None)
+                return lambda pred: next((x for x in obj if self._truthy(pred(x))), None)
             if prop == "filter":
-                return lambda pred: [x for x in obj if self._truthy(pred(x) if callable(pred) else pred)]
+                return lambda pred: [x for x in obj if self._truthy(pred(x))]
             if prop == "map":
                 return lambda fn: [fn(x) for x in obj]
+            if prop in ("every", "all"):
+                return lambda pred: all(self._truthy(pred(x)) for x in obj)
+            if prop in ("some", "any"):
+                return lambda pred: any(self._truthy(pred(x)) for x in obj)
+            if prop == "reduce":
+                def _list_reduce(init_or_fn: Any, fn: Any = None) -> Any:
+                    # reduce(fn) or reduce(init, fn)
+                    if fn is None:
+                        _fn = init_or_fn
+                        if not obj:
+                            return None
+                        acc = obj[0]
+                        for _item in obj[1:]:
+                            acc = _fn(acc, _item)
+                        return acc
+                    _fn2 = fn
+                    acc = init_or_fn
+                    for _item in obj:
+                        acc = _fn2(acc, _item)
+                    return acc
+                return _list_reduce
+            if prop in ("flatMap", "flat_map"):
+                return lambda fn: [item for x in obj for item in (fn(x) if isinstance(fn(x), list) else [fn(x)])]
             if prop == "flat":
                 return [x for sublist in obj for x in (sublist if isinstance(sublist, list) else [sublist])]
             if prop == "sum":
@@ -1031,9 +1098,9 @@ class Interpreter:
         if isinstance(obj, str):
             if prop == "length":
                 return len(obj)
-            if prop == "upper":
+            if prop in ("upper", "toUpper", "toUpperCase"):
                 return obj.upper()
-            if prop == "lower":
+            if prop in ("lower", "toLower", "toLowerCase"):
                 return obj.lower()
             if prop == "trim":
                 return obj.strip()
@@ -1063,9 +1130,9 @@ class Interpreter:
                 return len(obj) > 0
             if prop == "indexOf":
                 return lambda sub: obj.find(sub)
-            if prop == "padStart":
+            if prop in ("padStart", "padLeft"):
                 return lambda width, ch=" ": obj.rjust(width, ch)
-            if prop == "padEnd":
+            if prop in ("padEnd", "padRight"):
                 return lambda width, ch=" ": obj.ljust(width, ch)
             if prop == "repeat":
                 return lambda n: obj * n
@@ -1076,6 +1143,27 @@ class Interpreter:
             if prop == "match":
                 import re as _re
                 return lambda pattern: _re.findall(pattern, obj) or None
+            if prop in ("toNumber", "toFloat", "toInt", "parseInt", "parseFloat"):
+                try:
+                    return int(obj) if "." not in obj else float(obj)
+                except ValueError:
+                    return None
+
+        if isinstance(obj, (int, float)):
+            if prop in ("toFixed", "toFixed"):
+                return lambda digits=2: f"{obj:.{digits}f}"
+            if prop in ("toStr", "toString"):
+                return str(int(obj)) if isinstance(obj, float) and obj == int(obj) else str(obj)
+            if prop in ("toInt", "floor"):
+                return int(obj)
+            if prop in ("toFloat",):
+                return float(obj)
+            if prop == "abs":
+                return abs(obj)
+            if prop == "isNaN":
+                return isinstance(obj, float) and (obj != obj)
+            if prop == "isFinite":
+                return not (isinstance(obj, float) and (obj != obj or obj == float("inf") or obj == float("-inf")))
 
         # Try attribute access
         try:
@@ -1088,7 +1176,8 @@ class Interpreter:
         value = self._eval(node.stages[0], env)
 
         for stage in node.stages[1:]:
-            if isinstance(stage, MultiParamLambda):
+            # Multi-param lambda stages (reduce, reduce_with_init)
+            if isinstance(stage, (MultiParamLambda, SpryMultiLambda)):
                 operation = getattr(stage, "operation", "reduce")
                 if operation == "reduce":
                     if not isinstance(value, list):
@@ -1100,7 +1189,8 @@ class Interpreter:
                         acc = self._apply_multi_lambda(stage, [acc, item], env)
                     value = acc
                 elif operation == "reduce_with_init":
-                    init_val = self._eval(stage.init, env)  # type: ignore[attr-defined]
+                    init_node = stage.init
+                    init_val = self._eval(init_node, env) if hasattr(init_node, "__class__") and not isinstance(init_node, (int, float, str, bool, type(None))) else init_node
                     if not isinstance(value, list):
                         raise SpryRuntimeError("'reduce' requires a list", stage)
                     acc = init_val
@@ -1109,7 +1199,8 @@ class Interpreter:
                     value = acc
                 continue
 
-            if isinstance(stage, LambdaExpression):
+            # Single-param lambda stages (filter, map, each)
+            if isinstance(stage, (LambdaExpression, SpryLambda)):
                 operation = getattr(stage, "operation", "map")
                 if operation == "filter":
                     if isinstance(value, list):
@@ -1128,21 +1219,26 @@ class Interpreter:
                         value = [self._apply_lambda(stage, item, env) for item in value]
                     else:
                         value = self._apply_lambda(stage, value, env)
+                continue
 
-            elif isinstance(stage, Identifier):
+            if isinstance(stage, Identifier):
                 # Named function/operation call
                 fn = env.get(stage.name)
                 if isinstance(fn, SpryFunction):
                     value = self._call_function(fn, [value], stage)
+                elif isinstance(fn, (SpryLambda, LambdaExpression)):
+                    value = self._apply_lambda(fn, value, env)
                 elif callable(fn):
                     value = fn(value)
                 else:
                     raise SpryRuntimeError(f"Cannot use {stage.name!r} as pipeline stage", stage)
+                continue
 
-            elif isinstance(stage, ParseStatement):
+            if isinstance(stage, ParseStatement):
                 value = self._parse(stage.format, str(value))
+                continue
 
-            elif isinstance(stage, WriteStatement):
+            if isinstance(stage, WriteStatement):
                 path = self._eval(stage.path, env)
                 # Write the accumulated value
                 if isinstance(value, list):
@@ -1151,39 +1247,66 @@ class Interpreter:
                     data = str(value)
                 result = self.fs.write_file(str(path), data)
                 value = result
+                continue
 
-            else:
-                # Try to apply as a call
-                result = self._eval(stage, env)
-                if callable(result):
-                    value = result(value)
-                elif isinstance(result, LambdaExpression):
-                    operation = getattr(result, "operation", "map")
-                    if operation == "filter":
-                        if isinstance(value, list):
-                            value = [item for item in value if self._truthy(self._apply_lambda(result, item, env))]
-                    elif operation == "each":
-                        if isinstance(value, list):
-                            for item in value:
-                                self._apply_lambda(result, item, env)
+            # General expression stage — evaluate and apply
+            result = self._eval(stage, env)
+            if isinstance(result, (SpryLambda, LambdaExpression)):
+                operation = getattr(result, "operation", "map")
+                if operation == "filter":
+                    if isinstance(value, list):
+                        value = [item for item in value if self._truthy(self._apply_lambda(result, item, env))]
+                elif operation == "each":
+                    if isinstance(value, list):
+                        for item in value:
+                            self._apply_lambda(result, item, env)
+                else:
+                    if isinstance(value, list):
+                        value = [self._apply_lambda(result, item, env) for item in value]
                     else:
-                        if isinstance(value, list):
-                            value = [self._apply_lambda(result, item, env) for item in value]
-                        else:
-                            value = self._apply_lambda(result, value, env)
+                        value = self._apply_lambda(result, value, env)
+            elif isinstance(result, (SpryMultiLambda, MultiParamLambda)):
+                value = self._apply_multi_lambda(result, [value], env)
+            elif isinstance(result, SpryFunction):
+                value = self._call_function(result, [value], stage)
+            elif callable(result):
+                value = result(value)
 
         return value
 
-    def _apply_lambda(self, lam: LambdaExpression, item: Any, env: Environment) -> Any:
+    def _apply_lambda(self, lam: "LambdaExpression | SpryLambda", item: Any, env: Environment) -> Any:
+        # Use closure environment if available (proper closures for SpryLambda)
+        if isinstance(lam, SpryLambda):
+            child = lam.closure.child()
+            child.define(lam.param, item, mutable=False)
+            return self._eval(lam.body, child)
+        # Fallback for raw LambdaExpression nodes (pipeline stages)
         child = env.child()
         child.define(lam.param, item, mutable=False)
         return self._eval(lam.body, child)
 
-    def _apply_multi_lambda(self, lam: MultiParamLambda, args: list[Any], env: Environment) -> Any:
-        child = env.child()
+    def _apply_multi_lambda(self, lam: "MultiParamLambda | SpryMultiLambda", args: list[Any], env: Environment) -> Any:
+        if isinstance(lam, SpryMultiLambda):
+            child = lam.closure.child()
+        else:
+            child = env.child()
         for i, param in enumerate(lam.params):
             child.define(param, args[i] if i < len(args) else None, mutable=False)
         return self._eval(lam.body, child)
+
+    def _to_py_callable(self, fn: Any, env: Environment) -> Any:
+        """Wrap a SpryCode callable as a Python callable for use in method closures."""
+        if isinstance(fn, SpryLambda):
+            return lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
+        if isinstance(fn, SpryMultiLambda):
+            return lambda *args: self._apply_multi_lambda(fn, list(args), env)
+        if isinstance(fn, LambdaExpression):
+            return lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
+        if isinstance(fn, MultiParamLambda):
+            return lambda *args: self._apply_multi_lambda(fn, list(args), env)
+        if isinstance(fn, SpryFunction):
+            return lambda *args: self._call_function(fn, list(args), fn)
+        return fn
 
     # ------------------------------------------------------------------
     # File operations

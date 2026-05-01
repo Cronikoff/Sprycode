@@ -1386,3 +1386,263 @@ class TestMultiParamLambda:
     def test_compare(self):
         interp = run('fn apply(f, a, b) { return f(a, b) }\nlet r = apply((x, y) => x > y, 10, 5)')
         assert interp.globals.get("r") is True
+
+
+# ---------------------------------------------------------------------------
+# helper for direct expression eval
+# (eval_expr already defined above)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SpryLambda closures
+# ---------------------------------------------------------------------------
+
+
+class TestLambdaClosures:
+    def test_single_param_with_parens(self):
+        interp = run("let f = (x) => x * x\nlet r = f(5)")
+        assert interp.globals.get("r") == 25
+
+    def test_compose_closures(self):
+        code = (
+            "fn compose(f, g) { return (x) => f(g(x)) }\n"
+            "let double = (x) => x * 2\n"
+            "let inc = (x) => x + 1\n"
+            "let doubleInc = compose(double, inc)\n"
+            "let r = doubleInc(5)"
+        )
+        interp = run(code)
+        assert interp.globals.get("r") == 12
+
+    def test_closure_in_loop(self):
+        code = (
+            "var fns = []\n"
+            "for i in [10, 20, 30] {\n"
+            "    let fi = (x) => x + i\n"
+            "    fns.push(fi)\n"
+            "}\n"
+            "let r = fns[0](5)"
+        )
+        interp = run(code)
+        assert interp.globals.get("r") == 15
+
+    def test_multi_param_with_parens(self):
+        interp = run("let add = (a, b) => a + b\nlet r = add(3, 4)")
+        assert interp.globals.get("r") == 7
+
+    def test_returned_lambda_captures_scope(self):
+        code = (
+            "fn makeAdder(n) { return (x) => x + n }\n"
+            "let add5 = makeAdder(5)\n"
+            "let r = add5(10)"
+        )
+        interp = run(code)
+        assert interp.globals.get("r") == 15
+
+
+# ---------------------------------------------------------------------------
+# Method chaining — zero-arg methods callable with ()
+# ---------------------------------------------------------------------------
+
+
+class TestMethodChaining:
+    def test_trim_as_call(self):
+        interp = run('let s = "  hello  ".trim()')
+        assert interp.globals.get("s") == "hello"
+
+    def test_upper_as_call(self):
+        interp = run('let s = "hello".upper()')
+        assert interp.globals.get("s") == "HELLO"
+
+    def test_lower_as_call(self):
+        interp = run('let s = "HELLO".lower()')
+        assert interp.globals.get("s") == "hello"
+
+    def test_trim_then_upper(self):
+        interp = run('let s = "  hello  ".trim().toUpper()')
+        assert interp.globals.get("s") == "HELLO"
+
+    def test_trim_then_lower(self):
+        interp = run('let s = "  HELLO  ".trim().toLower()')
+        assert interp.globals.get("s") == "hello"
+
+    def test_sort_as_call(self):
+        interp = run("let s = [3, 1, 4, 1, 5].sort()")
+        assert interp.globals.get("s") == [1, 1, 3, 4, 5]
+
+    def test_dict_keys_as_call(self):
+        interp = run("let d = {a: 1, b: 2, c: 3}\nlet k = d.keys()")
+        k = interp.globals.get("k")
+        assert sorted(k) == ["a", "b", "c"]
+
+    def test_dict_values_as_call(self):
+        interp = run("let d = {a: 1, b: 2}\nlet v = d.values()")
+        v = interp.globals.get("v")
+        assert sorted(v) == [1, 2]
+
+    def test_trim_then_split(self):
+        interp = run('let parts = "  a,b,c  ".trim().split(",")')
+        assert interp.globals.get("parts") == ["a", "b", "c"]
+
+
+# ---------------------------------------------------------------------------
+# Log rendering (true/false/null)
+# ---------------------------------------------------------------------------
+
+
+class TestLogRendering:
+    def test_log_true(self):
+        log_output = []
+        run("log info true", log_output=log_output)
+        assert any("true" in l for l in log_output)
+        assert not any("True" in l for l in log_output)
+
+    def test_log_false(self):
+        log_output = []
+        run("log info false", log_output=log_output)
+        assert any("false" in l for l in log_output)
+        assert not any("False" in l for l in log_output)
+
+    def test_log_null(self):
+        log_output = []
+        run("log info null", log_output=log_output)
+        assert any("null" in l for l in log_output)
+        assert not any("None" in l for l in log_output)
+
+    def test_log_bool_expr(self):
+        log_output = []
+        run("log info (1 == 1)", log_output=log_output)
+        assert any("true" in l for l in log_output)
+
+    def test_list_includes_renders_true(self):
+        log_output = []
+        run("log info [1, 2, 3].includes(2)", log_output=log_output)
+        assert any("true" in l for l in log_output)
+        assert not any("True" in l for l in log_output)
+
+
+# ---------------------------------------------------------------------------
+# New list HOF methods
+# ---------------------------------------------------------------------------
+
+
+class TestListHOFMethods:
+    def test_map_with_lambda(self):
+        interp = run("let d = [1, 2, 3].map(x => x * 2)")
+        assert interp.globals.get("d") == [2, 4, 6]
+
+    def test_filter_with_lambda(self):
+        interp = run("let d = [1, 2, 3, 4].filter(x => x % 2 == 0)")
+        assert interp.globals.get("d") == [2, 4]
+
+    def test_find_with_lambda(self):
+        interp = run("let x = [1, 2, 3, 4].find(x => x > 2)")
+        assert interp.globals.get("x") == 3
+
+    def test_find_not_found(self):
+        interp = run("let x = [1, 2, 3].find(x => x > 10)")
+        assert interp.globals.get("x") is None
+
+    def test_every_all_true(self):
+        interp = run("let b = [2, 4, 6].every(x => x % 2 == 0)")
+        assert interp.globals.get("b") is True
+
+    def test_every_some_false(self):
+        interp = run("let b = [2, 3, 6].every(x => x % 2 == 0)")
+        assert interp.globals.get("b") is False
+
+    def test_some_at_least_one(self):
+        interp = run("let b = [1, 3, 5, 4].some(x => x % 2 == 0)")
+        assert interp.globals.get("b") is True
+
+    def test_some_none_match(self):
+        interp = run("let b = [1, 3, 5].some(x => x % 2 == 0)")
+        assert interp.globals.get("b") is False
+
+    def test_reduce_no_init(self):
+        interp = run("let s = [1, 2, 3, 4].reduce((acc, x) => acc + x)")
+        assert interp.globals.get("s") == 10
+
+    def test_reduce_with_init(self):
+        interp = run("let s = [1, 2, 3, 4].reduce(0, (acc, x) => acc + x)")
+        assert interp.globals.get("s") == 10
+
+    def test_reduce_product(self):
+        interp = run("let p = [1, 2, 3, 4].reduce(1, (acc, x) => acc * x)")
+        assert interp.globals.get("p") == 24
+
+    def test_flat_map(self):
+        interp = run("let d = [[1, 2], [3, 4]].flatMap(x => x)")
+        assert interp.globals.get("d") == [1, 2, 3, 4]
+
+    def test_flat_map_transform(self):
+        interp = run("let d = [1, 2, 3].flatMap(x => [x, x * 2])")
+        assert interp.globals.get("d") == [1, 2, 2, 4, 3, 6]
+
+    def test_chained_map_filter(self):
+        interp = run(
+            "let r = [1, 2, 3, 4, 5, 6].filter(x => x % 2 == 0).map(x => x * 10)"
+        )
+        assert interp.globals.get("r") == [20, 40, 60]
+
+
+# ---------------------------------------------------------------------------
+# String method aliases and new methods
+# ---------------------------------------------------------------------------
+
+
+class TestStringMethodAliases:
+    def test_toUpper(self):
+        assert eval_expr('"hello".toUpper') == "HELLO"
+
+    def test_toUpper_call(self):
+        interp = run('let s = "hello".toUpper()')
+        assert interp.globals.get("s") == "HELLO"
+
+    def test_toLower(self):
+        assert eval_expr('"HELLO".toLower') == "hello"
+
+    def test_toLower_call(self):
+        interp = run('let s = "HELLO".toLower()')
+        assert interp.globals.get("s") == "hello"
+
+    def test_padLeft(self):
+        assert eval_expr('"5".padLeft(3, "0")') == "005"
+
+    def test_padLeft_default_space(self):
+        assert eval_expr('"5".padLeft(4)') == "   5"
+
+    def test_padRight(self):
+        assert eval_expr('"5".padRight(3, "0")') == "500"
+
+    def test_padRight_default_space(self):
+        assert eval_expr('"5".padRight(4)') == "5   "
+
+
+# ---------------------------------------------------------------------------
+# Number methods
+# ---------------------------------------------------------------------------
+
+
+class TestNumberMethods:
+    def test_toFixed(self):
+        assert eval_expr("(3.14159).toFixed(2)") == "3.14"
+
+    def test_toFixed_zero(self):
+        assert eval_expr("(3.14159).toFixed(0)") == "3"
+
+    def test_toFixed_default(self):
+        result = eval_expr("(3.14159).toFixed")
+        # property access returns lambda
+        assert callable(result)
+
+    def test_toStr(self):
+        assert eval_expr("(42.0).toStr()") == "42"
+
+    def test_toInt(self):
+        assert eval_expr("(3.9).toInt") == 3
+
+    def test_abs(self):
+        assert eval_expr("(-5).abs") == 5
+        assert eval_expr("(5).abs") == 5

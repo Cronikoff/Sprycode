@@ -1524,7 +1524,7 @@ class Parser:
 
         if tok.type == TokenType.LPAREN:
             self._advance()
-            # Check for multi-param lambda: (a, b) => expr
+            # Check for lambda: (x) => expr or (a, b, c) => expr
             # Peek ahead: if we see ident (comma ident)* ) => ...
             saved_pos = self.pos
             try:
@@ -1533,16 +1533,19 @@ class Parser:
                     params.append(self._advance().value)
                     while self._match(TokenType.COMMA):
                         params.append(self._expect_ident().value)
-                if len(params) >= 2 and self._check(TokenType.RPAREN):
+                if len(params) >= 1 and self._check(TokenType.RPAREN):
                     self._advance()  # )
                     if self._check(TokenType.FAT_ARROW):
                         self._advance()  # =>
                         body = self._parse_null_coalesce()
+                        if len(params) == 1:
+                            return LambdaExpression(param=params[0], body=body,
+                                                    line=tok.line, column=tok.column)
                         return MultiParamLambda(params=params, body=body,
                                                line=tok.line, column=tok.column)
             except Exception:
                 pass
-            # Not a multi-param lambda — restore and parse as grouped expression
+            # Not a lambda — restore and parse as grouped expression
             self.pos = saved_pos
             expr = self._parse_expression()
             self._expect(TokenType.RPAREN)

@@ -246,3 +246,43 @@ task main {
     log info "\n=== multi-param lambda ==="
     multiParamDemo()
 }
+
+// ── Round 4: closures, HOFs, method chains ───────────────────────────────
+task closureDemo {
+    // compose via closures
+    fn compose(f, g) { return (x) => f(g(x)) }
+    let double = (x) => x * 2
+    let inc    = (x) => x + 1
+    let di     = compose(double, inc)
+    log info f"compose(double, inc)(5) = {di(5)}"
+
+    // makeAdder factory
+    fn makeAdder(n) { return (x) => x + n }
+    let add10 = makeAdder(10)
+    log info f"add10(7) = {add10(7)}"
+}
+
+task hofDemo {
+    let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    let evens   = nums.filter(x => x % 2 == 0)
+    let squares = nums.map(x => x * x)
+    let total   = nums.reduce(0, (acc, x) => acc + x)
+    let all_pos = nums.every(x => x > 0)
+    let any_big = nums.some(x => x > 9)
+    log info f"evens:    {evens}"
+    log info f"squares:  {squares}"
+    log info f"sum:      {total}"
+    log info f"all > 0:  {all_pos}"
+    log info f"any > 9:  {any_big}"
+}
+
+task methodChainDemo {
+    let s = "  Hello, SpryCode!  ".trim().toLower()
+    log info s
+
+    // number formatting
+    let pi = 3.141592653589793
+    log info (pi).toFixed(4)
+    log info (255).toStr()
+    log info (-42).abs
+}

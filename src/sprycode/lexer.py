@@ -130,6 +130,20 @@ class TokenType(Enum):
     WHILE = auto()
     BREAK = auto()
     CONTINUE = auto()
+    REPEAT = auto()
+    UNTIL = auto()
+
+    # Keywords — match / pattern matching
+    MATCH = auto()
+
+    # Keywords — assert
+    ASSERT = auto()
+
+    # Keywords — reduce
+    REDUCE = auto()
+
+    # Wildcard placeholder for match
+    UNDERSCORE = auto()
 
     # Keywords — testing
     TEST = auto()
@@ -314,6 +328,12 @@ KEYWORDS: dict[str, TokenType] = {
     "while": TokenType.WHILE,
     "break": TokenType.BREAK,
     "continue": TokenType.CONTINUE,
+    "repeat": TokenType.REPEAT,
+    "until": TokenType.UNTIL,
+    "match": TokenType.MATCH,
+    "assert": TokenType.ASSERT,
+    "reduce": TokenType.REDUCE,
+    "_": TokenType.UNDERSCORE,
     "test": TokenType.TEST,
     "expect": TokenType.EXPECT,
     "exists": TokenType.EXISTS,

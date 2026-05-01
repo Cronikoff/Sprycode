@@ -395,8 +395,14 @@ class LambdaExpression(Node):
 
 @dataclass
 class ObjectLiteral(Node):
-    """{ key: value, ... }"""
+    """{ key: value, ...spread, ... }
+    entries is an ordered list of (key_or_None, value_or_spread_node)
+    For regular pairs: (key: str, value: Node)
+    For spread: (None, SpreadElement)
+    """
     pairs: dict[str, Node] = field(default_factory=dict)
+    # ordered entries — used when spread is present; supersedes pairs
+    entries: list = field(default_factory=list)  # list of (str | None, Node)
 
 
 @dataclass
@@ -577,3 +583,69 @@ class ExpectStatement(Node):
     negated: bool = False
     kind: str = "truthy"   # "truthy" | "exists" | "denied" | "rollback"
     block: "Block | None" = None
+
+
+# ---------------------------------------------------------------------------
+# New features: match, repeat..until, destructuring, assert, import, reduce
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MatchArm(Node):
+    """pattern => body_stmt"""
+    pattern: Node | None = None    # expression to compare, or None for wildcard
+    is_wildcard: bool = False      # _ arm
+    body: Block | None = None
+
+
+@dataclass
+class MatchStatement(Node):
+    """match <expr> { pattern => stmt ... }"""
+    subject: Node | None = None
+    arms: list[MatchArm] = field(default_factory=list)
+
+
+@dataclass
+class RepeatUntilStatement(Node):
+    """repeat { <body> } until <condition>"""
+    body: Block | None = None
+    condition: Node | None = None
+
+
+@dataclass
+class AssertStatement(Node):
+    """assert <condition> [, <message>]"""
+    condition: Node | None = None
+    message: Node | None = None
+
+
+@dataclass
+class ImportStatement(Node):
+    """import <name> [as <alias>]  |  import { a, b } from <name>"""
+    module: str = ""
+    alias: str | None = None
+    names: list[str] = field(default_factory=list)   # destructured names
+
+
+@dataclass
+class ListDestructure(Node):
+    """let [a, b, c] = expr  — list destructuring"""
+    names: list[str] = field(default_factory=list)
+    value: Node | None = None
+    mutable: bool = False
+
+
+@dataclass
+class ObjectDestructure(Node):
+    """let {a, b} = expr  — object destructuring"""
+    names: list[str] = field(default_factory=list)
+    aliases: dict[str, str] = field(default_factory=dict)  # {name: alias}
+    value: Node | None = None
+    mutable: bool = False
+
+
+@dataclass
+class MultiParamLambda(Node):
+    """(acc, x) => expr  — multi-param lambda used in reduce etc."""
+    params: list[str] = field(default_factory=list)
+    body: Node | None = None

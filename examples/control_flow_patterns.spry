@@ -1,0 +1,248 @@
+// SpryCode Example — Round 3: Control Flow & Data Patterns
+// Demonstrates: match, repeat..until, destructuring, object spread,
+//               for-in-dict, assert, import, reduce, str.match, env, format.
+
+app ControlFlowDemo version "1.0.0"
+
+import { pi, e, floor, ceil } from "math"
+
+// ── match statement ───────────────────────────────────────────────────────
+task matchDemo {
+    let scores = [95, 72, 88, 45, 60]
+
+    for score in scores {
+        match floor(score / 10) {
+            10 => log info f"  {score} → A+"
+            9  => log info f"  {score} → A"
+            8  => log info f"  {score} → B"
+            7  => log info f"  {score} → C"
+            6  => log info f"  {score} → D"
+            _  => log info f"  {score} → F"
+        }
+    }
+}
+
+// ── repeat..until ────────────────────────────────────────────────────────
+task repeatDemo {
+    // Collatz conjecture steps
+    var n = 27
+    var steps = 0
+    repeat {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = n * 3 + 1
+        }
+        steps += 1
+    } until n == 1
+
+    log info f"Collatz(27) reached 1 in {steps} steps"
+}
+
+// ── List destructuring ────────────────────────────────────────────────────
+task destructureDemo {
+    let [first, second, third] = [10, 20, 30]
+    log info f"first={first}, second={second}, third={third}"
+
+    // Swap via destructuring
+    var a = 1
+    var b = 2
+    let [x, y] = [b, a]
+    log info f"Swapped: x={x}, y={y}"
+
+    // Iterate pairs
+    let people = [["Alice", 30], ["Bob", 25], ["Carol", 35]]
+    for person in people {
+        let [name, age] = person
+        log info f"  {name} is {age} years old"
+    }
+}
+
+// ── Object destructuring ──────────────────────────────────────────────────
+task objDestructureDemo {
+    let config = {host: "localhost", port: 3000, debug: true}
+    let {host, port, debug} = config
+    log info f"Connecting to {host}:{port} (debug={debug})"
+
+    // With renaming
+    let {host: serverHost, port: serverPort} = config
+    log info f"Server: {serverHost}:{serverPort}"
+}
+
+// ── Object spread ─────────────────────────────────────────────────────────
+task objSpreadDemo {
+    let defaults = {timeout: 30, retries: 3, debug: false}
+    let overrides = {timeout: 60, tls: true}
+    let merged = {...defaults, ...overrides}
+    log info f"timeout={merged.timeout}, retries={merged.retries}, tls={merged.tls}"
+
+    // Build config layers
+    let base = {env: "prod", region: "us-east"}
+    let service = {...base, name: "api", port: 8080}
+    log info f"Service: {service.name} at {service.region}:{service.port}"
+}
+
+// ── for k in dict ────────────────────────────────────────────────────────
+task forInDictDemo {
+    let inventory = {apples: 5, bananas: 12, oranges: 3}
+    var total = 0
+    for item in inventory {
+        total += inventory[item]
+    }
+    log info f"Total items in inventory: {total}"
+
+    // Build filtered report
+    for item in inventory {
+        if inventory[item] < 10 {
+            log info f"Low stock: {item} ({inventory[item]} left)"
+        }
+    }
+}
+
+// ── assert ────────────────────────────────────────────────────────────────
+task assertDemo {
+    // Assertions validate invariants
+    let x = 42
+    assert x > 0, "x must be positive"
+    assert x < 100, "x must be less than 100"
+    assert type(x) == "int", "x must be an integer"
+    log info "All assertions passed!"
+
+    // Assertions inside functions
+    fn divide(a, b) {
+        assert b != 0, "Division by zero"
+        return a / b
+    }
+    log info f"10 / 2 = {divide(10, 2)}"
+}
+
+// ── import math ───────────────────────────────────────────────────────────
+task importDemo {
+    log info f"pi  = {pi}"
+    log info f"e   = {e}"
+    log info f"floor(3.7) = {floor(3.7)}"
+    log info f"ceil(3.2)  = {ceil(3.2)}"
+
+    // Circle calculations
+    let radius = 5
+    let area = pi * radius ** 2
+    let circumference = 2 * pi * radius
+    log info f"Circle r={radius}: area={round(area, 2)}, circumference={round(circumference, 2)}"
+}
+
+// ── reduce pipeline ───────────────────────────────────────────────────────
+task reduceDemo {
+    let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    let total   = nums |> reduce (acc, x) => acc + x
+    let product = [1, 2, 3, 4, 5] |> reduce (acc, x) => acc * x
+    let maxVal  = nums |> reduce (acc, x) => (acc > x ? acc : x)
+
+    log info f"Sum(1..10)     = {total}"
+    log info f"Product(1..5)  = {product}"
+    log info f"Max(1..10)     = {maxVal}"
+
+    // Find longest string
+    let words = ["apple", "fig", "strawberry", "pear", "blueberry"]
+    let longest = words |> reduce (acc, w) => (w.length > acc.length ? w : acc)
+    log info f"Longest word: {longest}"
+
+    // Reduce with initial value (count occurrences > threshold)
+    let threshold = 5
+    let count = nums |> reduce 0 (acc, x) => (x > threshold ? acc + 1 : acc)
+    log info f"Values > {threshold}: {count}"
+}
+
+// ── str.match regex ───────────────────────────────────────────────────────
+task regexDemo {
+    let text = "Order #12345 placed on 2024-01-15 for $99.99"
+
+    let numbers = text.match("[0-9]+")
+    log info f"All numbers: {numbers}"
+
+    let email = "contact us at hello@example.com or support@company.org"
+    let emails = email.match("[a-zA-Z0-9.]+@[a-zA-Z0-9.]+")
+    log info f"Emails found: {emails}"
+}
+
+// ── format() builtin ─────────────────────────────────────────────────────
+task formatDemo {
+    log info format("Hello, {}!", "SpryCode")
+    log info format("Pi ≈ {:.4f}", pi)
+    log info format("Values: {}, {}, {}", 1, 2, 3)
+    log info format("Padded: {:>10}", "right")
+    log info format("Padded: {:<10}", "left")
+}
+
+// ── env() builtin ────────────────────────────────────────────────────────
+task envDemo {
+    let host = env("APP_HOST") ?? "localhost"
+    let port = env("APP_PORT") ?? "8080"
+    let mode = env("NODE_ENV") ?? "development"
+    log info f"App running at {host}:{port} in {mode} mode"
+}
+
+// ── Multi-param lambda ───────────────────────────────────────────────────
+task multiParamDemo {
+    // Sort simulation via reduce
+    let pairs = zip([1, 2, 3], ["one", "two", "three"])
+    let descriptions = pairs |> map pair => f"{pair[0]} = {pair[1]}"
+    for desc in descriptions {
+        log info f"  {desc}"
+    }
+
+    // Use multi-param lambda as a higher-order function
+    fn foldLeft(lst, init, combiner) {
+        var acc = init
+        for item in lst {
+            acc = combiner(acc, item)
+        }
+        return acc
+    }
+
+    let words = ["The", "quick", "brown", "fox"]
+    let sentence = foldLeft(words, "", (acc, w) => acc + (acc.length > 0 ? " " : "") + w)
+    log info f"Sentence: {sentence}"
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────
+task main {
+    log info "=== match statement ==="
+    matchDemo()
+
+    log info "\n=== repeat..until ==="
+    repeatDemo()
+
+    log info "\n=== destructuring ==="
+    destructureDemo()
+
+    log info "\n=== object destructuring ==="
+    objDestructureDemo()
+
+    log info "\n=== object spread ==="
+    objSpreadDemo()
+
+    log info "\n=== for-in-dict ==="
+    forInDictDemo()
+
+    log info "\n=== assert ==="
+    assertDemo()
+
+    log info "\n=== import math ==="
+    importDemo()
+
+    log info "\n=== reduce pipeline ==="
+    reduceDemo()
+
+    log info "\n=== regex ==="
+    regexDemo()
+
+    log info "\n=== format() ==="
+    formatDemo()
+
+    log info "\n=== env() ==="
+    envDemo()
+
+    log info "\n=== multi-param lambda ==="
+    multiParamDemo()
+}

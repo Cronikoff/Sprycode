@@ -1072,3 +1072,317 @@ class TestEnhancedStringMethods:
 
     def test_includes(self):
         assert eval_expr('"hello".includes("ell")') is True
+
+
+# ---------------------------------------------------------------------------
+# match statement
+# ---------------------------------------------------------------------------
+
+
+class TestMatchStatement:
+    def test_match_first_arm(self):
+        log_output = []
+        run('match 1 {\n    1 => log info "one"\n    2 => log info "two"\n    _ => log info "other"\n}', log_output=log_output)
+        assert any("one" in l for l in log_output)
+
+    def test_match_second_arm(self):
+        log_output = []
+        run('match 2 {\n    1 => log info "one"\n    2 => log info "two"\n    _ => log info "other"\n}', log_output=log_output)
+        assert any("two" in l for l in log_output)
+
+    def test_match_wildcard(self):
+        log_output = []
+        run('match 99 {\n    1 => log info "one"\n    _ => log info "other"\n}', log_output=log_output)
+        assert any("other" in l for l in log_output)
+
+    def test_match_string(self):
+        log_output = []
+        run('match "hello" {\n    "world" => log info "world"\n    "hello" => log info "hello"\n    _ => log info "other"\n}', log_output=log_output)
+        assert any("hello" in l for l in log_output)
+
+    def test_match_no_match_no_crash(self):
+        log_output = []
+        run('match 5 {\n    1 => log info "one"\n    2 => log info "two"\n}', log_output=log_output)
+        assert log_output == []
+
+    def test_match_with_variable(self):
+        # match is a statement, verified via log side-effects
+        log_output = []
+        run('let x = 3\nmatch x {\n    3 => log info "three"\n    _ => log info "other"\n}', log_output=log_output)
+        assert any("three" in l for l in log_output)
+
+
+# ---------------------------------------------------------------------------
+# repeat..until
+# ---------------------------------------------------------------------------
+
+
+class TestRepeatUntil:
+    def test_basic_repeat(self):
+        interp = run('var i = 0\nrepeat {\n    i += 1\n} until i >= 5')
+        assert interp.globals.get("i") == 5
+
+    def test_repeat_executes_body_at_least_once(self):
+        interp = run('var x = 0\nrepeat {\n    x += 10\n} until x > 0')
+        assert interp.globals.get("x") == 10
+
+    def test_repeat_collects_values(self):
+        log_output = []
+        run('var i = 1\nrepeat {\n    log info i\n    i += 1\n} until i > 3', log_output=log_output)
+        assert len([l for l in log_output if any(n in l for n in ["1", "2", "3"])]) >= 3
+
+    def test_repeat_break(self):
+        interp = run('var i = 0\nrepeat {\n    i += 1\n    if i == 3 {\n        break\n    }\n} until i >= 100')
+        assert interp.globals.get("i") == 3
+
+
+# ---------------------------------------------------------------------------
+# List destructuring
+# ---------------------------------------------------------------------------
+
+
+class TestListDestructure:
+    def test_basic(self):
+        interp = run('let [a, b, c] = [10, 20, 30]')
+        assert interp.globals.get("a") == 10
+        assert interp.globals.get("b") == 20
+        assert interp.globals.get("c") == 30
+
+    def test_partial(self):
+        interp = run('let [x, y] = [1, 2, 3]')
+        assert interp.globals.get("x") == 1
+        assert interp.globals.get("y") == 2
+
+    def test_too_few_elements(self):
+        interp = run('let [a, b, c] = [1, 2]')
+        assert interp.globals.get("a") == 1
+        assert interp.globals.get("c") is None
+
+    def test_var_destructure_mutable(self):
+        interp = run('var [a, b] = [1, 2]\na = 99')
+        assert interp.globals.get("a") == 99
+
+    def test_destructure_in_loop(self):
+        log_output = []
+        run('let pairs = [[1, "a"], [2, "b"]]\nfor pair in pairs {\n    let [n, s] = pair\n    log info s\n}', log_output=log_output)
+        assert any("a" in l for l in log_output)
+        assert any("b" in l for l in log_output)
+
+
+# ---------------------------------------------------------------------------
+# Object destructuring
+# ---------------------------------------------------------------------------
+
+
+class TestObjectDestructure:
+    def test_basic(self):
+        interp = run('let {name, age} = {name: "Alice", age: 30}')
+        assert interp.globals.get("name") == "Alice"
+        assert interp.globals.get("age") == 30
+
+    def test_alias(self):
+        interp = run('let {name: n, age: a} = {name: "Bob", age: 25}')
+        assert interp.globals.get("n") == "Bob"
+        assert interp.globals.get("a") == 25
+
+    def test_missing_key(self):
+        interp = run('let {x, y} = {x: 1}')
+        assert interp.globals.get("x") == 1
+        assert interp.globals.get("y") is None
+
+    def test_partial(self):
+        interp = run('let {name} = {name: "Carol", age: 40, city: "NYC"}')
+        assert interp.globals.get("name") == "Carol"
+
+
+# ---------------------------------------------------------------------------
+# Object spread
+# ---------------------------------------------------------------------------
+
+
+class TestObjectSpread:
+    def test_basic_spread(self):
+        interp = run('let a = {x: 1, y: 2}\nlet b = {...a, z: 3}')
+        b = interp.globals.get("b")
+        assert b == {"x": 1, "y": 2, "z": 3}
+
+    def test_spread_override(self):
+        interp = run('let a = {x: 1, y: 2}\nlet b = {...a, x: 99}')
+        b = interp.globals.get("b")
+        assert b["x"] == 99
+
+    def test_spread_multiple(self):
+        interp = run('let a = {x: 1}\nlet b = {y: 2}\nlet c = {...a, ...b, z: 3}')
+        c = interp.globals.get("c")
+        assert c == {"x": 1, "y": 2, "z": 3}
+
+    def test_spread_empty(self):
+        interp = run('let a = {}\nlet b = {...a, x: 5}')
+        b = interp.globals.get("b")
+        assert b == {"x": 5}
+
+
+# ---------------------------------------------------------------------------
+# for k in dict
+# ---------------------------------------------------------------------------
+
+
+class TestForInDict:
+    def test_iterates_keys(self):
+        log_output = []
+        run('let d = {a: 1, b: 2, c: 3}\nfor k in d {\n    log info k\n}', log_output=log_output)
+        keys = [l.split("] ")[-1] for l in log_output]
+        assert sorted(keys) == ["a", "b", "c"]
+
+    def test_count_keys(self):
+        interp = run('let d = {x: 10, y: 20}\nvar n = 0\nfor k in d {\n    n += 1\n}')
+        assert interp.globals.get("n") == 2
+
+    def test_access_values(self):
+        log_output = []
+        run('let d = {score: 100}\nfor k in d {\n    log info d.score\n}', log_output=log_output)
+        assert any("100" in l for l in log_output)
+
+
+# ---------------------------------------------------------------------------
+# assert statement
+# ---------------------------------------------------------------------------
+
+
+class TestAssertStatement:
+    def test_passes(self):
+        log_output = []
+        run('assert 1 == 1\nlog info "ok"', log_output=log_output)
+        assert any("ok" in l for l in log_output)
+
+    def test_fails(self):
+        import pytest
+        with pytest.raises(Exception, match="Assertion failed"):
+            run('assert 1 == 2')
+
+    def test_fails_with_message(self):
+        import pytest
+        with pytest.raises(Exception, match="expected positive"):
+            run('assert -1 > 0, "expected positive"')
+
+    def test_assert_in_function(self):
+        import pytest
+        with pytest.raises(Exception):
+            run('fn validate(x) {\n    assert x > 0, "must be positive"\n}\nvalidate(-1)')
+
+
+# ---------------------------------------------------------------------------
+# import statement
+# ---------------------------------------------------------------------------
+
+
+class TestImportStatement:
+    def test_import_pi(self):
+        interp = run('import { pi } from "math"')
+        import math
+        assert abs(interp.globals.get("pi") - math.pi) < 1e-9
+
+    def test_import_e(self):
+        interp = run('import { e } from "math"')
+        import math
+        assert abs(interp.globals.get("e") - math.e) < 1e-9
+
+    def test_import_unknown_module_no_crash(self):
+        # Should log a warning but not raise
+        run('import "nonexistent_module"')
+
+
+# ---------------------------------------------------------------------------
+# reduce pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestReducePipeline:
+    def test_sum(self):
+        interp = run('let total = [1, 2, 3, 4, 5] |> reduce (acc, x) => acc + x')
+        assert interp.globals.get("total") == 15
+
+    def test_product(self):
+        interp = run('let product = [1, 2, 3, 4] |> reduce (acc, x) => acc * x')
+        assert interp.globals.get("product") == 24
+
+    def test_with_init(self):
+        interp = run('let total = [1, 2, 3] |> reduce 10 (acc, x) => acc + x')
+        assert interp.globals.get("total") == 16
+
+    def test_with_init_zero(self):
+        interp = run('let total = [5, 5, 5] |> reduce 0 (acc, x) => acc + x')
+        assert interp.globals.get("total") == 15
+
+    def test_string_join(self):
+        interp = run('let s = ["a", "b", "c"] |> reduce "" (acc, x) => acc + x')
+        assert interp.globals.get("s") == "abc"
+
+
+# ---------------------------------------------------------------------------
+# str.match regex
+# ---------------------------------------------------------------------------
+
+
+class TestStrMatch:
+    def test_find_digits(self):
+        result = eval_expr('"hello123".match("[0-9]+")')
+        assert result == ["123"]
+
+    def test_no_match_returns_none(self):
+        result = eval_expr('"hello".match("[0-9]+")')
+        assert result is None
+
+    def test_multiple_matches(self):
+        result = eval_expr('"a1b2c3".match("[0-9]")')
+        assert result == ["1", "2", "3"]
+
+    def test_match_letters(self):
+        result = eval_expr('"123abc456".match("[a-z]+")')
+        assert result == ["abc"]
+
+
+# ---------------------------------------------------------------------------
+# env() and format() builtins
+# ---------------------------------------------------------------------------
+
+
+class TestEnvAndFormat:
+    def test_env_missing_key_returns_none(self):
+        result = eval_expr('env("__SPRYCODE_NONEXISTENT_KEY_XYZ__")')
+        assert result is None
+
+    def test_env_with_default(self):
+        result = eval_expr('env("__SPRYCODE_NONEXISTENT_KEY_XYZ__") ?? "default"')
+        assert result == "default"
+
+    def test_format_basic(self):
+        result = eval_expr('format("Hello {}!", "World")')
+        assert result == "Hello World!"
+
+    def test_format_number(self):
+        result = eval_expr('format("{:.2f}", 3.14159)')
+        assert result == "3.14"
+
+    def test_format_multiple(self):
+        result = eval_expr('format("{} + {} = {}", 1, 2, 3)')
+        assert result == "1 + 2 = 3"
+
+
+# ---------------------------------------------------------------------------
+# Multi-param lambda
+# ---------------------------------------------------------------------------
+
+
+class TestMultiParamLambda:
+    def test_in_function_call(self):
+        interp = run('fn apply(f, a, b) { return f(a, b) }\nlet r = apply((x, y) => x + y, 3, 4)')
+        assert interp.globals.get("r") == 7
+
+    def test_multiply(self):
+        interp = run('fn apply(f, a, b) { return f(a, b) }\nlet r = apply((x, y) => x * y, 5, 6)')
+        assert interp.globals.get("r") == 30
+
+    def test_compare(self):
+        interp = run('fn apply(f, a, b) { return f(a, b) }\nlet r = apply((x, y) => x > y, 10, 5)')
+        assert interp.globals.get("r") is True

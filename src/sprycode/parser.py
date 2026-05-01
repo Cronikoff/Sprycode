@@ -13,6 +13,7 @@ from .ast_nodes import (
     AllowStatement,
     AppDeclaration,
     ArrayLiteral,
+    AssertStatement,
     Assignment,
     AtomicStatement,
     BinaryExpression,
@@ -37,17 +38,23 @@ from .ast_nodes import (
     FunctionDeclaration,
     Identifier,
     IfStatement,
+    ImportStatement,
     InExpression,
     IndexExpression,
     LambdaExpression,
     LetDeclaration,
+    ListDestructure,
     LogStatement,
+    MatchArm,
+    MatchStatement,
     MemberExpression,
     MoveStatement,
+    MultiParamLambda,
     Node,
     NullCoalesceExpression,
     NullLiteral,
     NumberLiteral,
+    ObjectDestructure,
     ObjectLiteral,
     ParseStatement,
     PipelineExpression,
@@ -55,6 +62,7 @@ from .ast_nodes import (
     Program,
     ReadStatement,
     RedactStatement,
+    RepeatUntilStatement,
     ReturnStatement,
     ScheduleStatement,
     SecretLiteral,
@@ -286,6 +294,14 @@ class Parser:
             return self._parse_test_block()
         if tok.type == TokenType.EXPECT:
             return self._parse_expect()
+        if tok.type == TokenType.MATCH:
+            return self._parse_match()
+        if tok.type == TokenType.REPEAT:
+            return self._parse_repeat_until()
+        if tok.type == TokenType.ASSERT:
+            return self._parse_assert()
+        if tok.type == TokenType.IMPORT:
+            return self._parse_import()
 
         # Expression statement or assignment
         return self._parse_expr_or_assignment()
@@ -312,8 +328,14 @@ class Parser:
             version = self._expect(TokenType.STRING).value
         return AppDeclaration(name=name_tok.value, version=version, line=tok.line, column=tok.column)
 
-    def _parse_let(self) -> LetDeclaration:
+    def _parse_let(self) -> Node:
         tok = self._expect(TokenType.LET)
+        # Check for list destructuring: let [a, b, c] = expr
+        if self._check(TokenType.LBRACKET):
+            return self._parse_list_destructure(tok, mutable=False)
+        # Check for object destructuring: let {a, b} = expr
+        if self._check(TokenType.LBRACE):
+            return self._parse_object_destructure(tok, mutable=False)
         name_tok = self._expect_ident()
         type_annotation = None
         if self._match(TokenType.COLON):
@@ -329,8 +351,14 @@ class Parser:
             column=tok.column,
         )
 
-    def _parse_var(self) -> VarDeclaration:
+    def _parse_var(self) -> Node:
         tok = self._expect(TokenType.VAR)
+        # Check for list destructuring: var [a, b, c] = expr
+        if self._check(TokenType.LBRACKET):
+            return self._parse_list_destructure(tok, mutable=True)
+        # Check for object destructuring: var {a, b} = expr
+        if self._check(TokenType.LBRACE):
+            return self._parse_object_destructure(tok, mutable=True)
         name_tok = self._expect_ident()
         type_annotation = None
         if self._match(TokenType.COLON):
@@ -843,6 +871,121 @@ class Parser:
             line=tok.line, column=tok.column,
         )
 
+    def _parse_repeat_until(self) -> RepeatUntilStatement:
+        tok = self._expect(TokenType.REPEAT)
+        body = self._parse_block()
+        self._expect(TokenType.UNTIL)
+        condition = self._parse_value_expression()
+        return RepeatUntilStatement(
+            body=body, condition=condition,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_match(self) -> MatchStatement:
+        tok = self._expect(TokenType.MATCH)
+        subject = self._parse_value_expression()
+        self._expect(TokenType.LBRACE)
+        arms: list[MatchArm] = []
+        while not self._check(TokenType.RBRACE) and not self._at_end():
+            arm_tok = self._current()
+            # wildcard: _
+            if self._check(TokenType.UNDERSCORE):
+                self._advance()
+                self._expect(TokenType.FAT_ARROW)
+                body = self._parse_match_arm_body()
+                arms.append(MatchArm(pattern=None, is_wildcard=True, body=body,
+                                     line=arm_tok.line, column=arm_tok.column))
+            else:
+                pattern = self._parse_expression()
+                self._expect(TokenType.FAT_ARROW)
+                body = self._parse_match_arm_body()
+                arms.append(MatchArm(pattern=pattern, is_wildcard=False, body=body,
+                                     line=arm_tok.line, column=arm_tok.column))
+        self._expect(TokenType.RBRACE)
+        return MatchStatement(subject=subject, arms=arms, line=tok.line, column=tok.column)
+
+    def _parse_match_arm_body(self) -> Block:
+        """Match arm body can be a block or a single statement terminated by newline/next-arm."""
+        tok = self._current()
+        if self._check(TokenType.LBRACE):
+            return self._parse_block()
+        # Single statement — wrap in a Block
+        stmt = self._parse_statement()
+        body: list[Node] = []
+        if stmt is not None:
+            body.append(stmt)
+        return Block(body=body, line=tok.line, column=tok.column)
+
+    def _parse_assert(self) -> AssertStatement:
+        tok = self._expect(TokenType.ASSERT)
+        condition = self._parse_null_coalesce()
+        message = None
+        if self._match(TokenType.COMMA):
+            message = self._parse_null_coalesce()
+        return AssertStatement(condition=condition, message=message,
+                               line=tok.line, column=tok.column)
+
+    def _parse_import(self) -> ImportStatement:
+        tok = self._expect(TokenType.IMPORT)
+        # import { a, b } from "module"
+        if self._check(TokenType.LBRACE):
+            self._advance()
+            names: list[str] = []
+            while not self._check(TokenType.RBRACE) and not self._at_end():
+                names.append(self._expect_ident().value)
+                if not self._match(TokenType.COMMA):
+                    break
+            self._expect(TokenType.RBRACE)
+            self._expect(TokenType.FROM)
+            module_tok = self._expect(TokenType.STRING)
+            return ImportStatement(module=module_tok.value, names=names,
+                                   line=tok.line, column=tok.column)
+        # import "module" [as alias]  or  import name [as alias]
+        if self._check(TokenType.STRING):
+            module = self._advance().value
+        else:
+            module = self._expect_ident().value
+        alias = None
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "as":
+            self._advance()
+            alias = self._expect_ident().value
+        return ImportStatement(module=module, alias=alias,
+                               line=tok.line, column=tok.column)
+
+    def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
+        """Parse let [a, b, c] = expr"""
+        self._expect(TokenType.LBRACKET)
+        names: list[str] = []
+        while not self._check(TokenType.RBRACKET) and not self._at_end():
+            names.append(self._expect_ident().value)
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.RBRACKET)
+        self._expect(TokenType.EQ)
+        value = self._parse_expression()
+        return ListDestructure(names=names, value=value, mutable=mutable,
+                               line=let_tok.line, column=let_tok.column)
+
+    def _parse_object_destructure(self, let_tok: Token, mutable: bool) -> ObjectDestructure:
+        """Parse let {a, b} = expr  or  let {a: alias, b} = expr"""
+        self._expect(TokenType.LBRACE)
+        names: list[str] = []
+        aliases: dict[str, str] = {}
+        while not self._check(TokenType.RBRACE) and not self._at_end():
+            name = self._expect_ident().value
+            names.append(name)
+            if self._match(TokenType.COLON):
+                # {original: alias}
+                alias = self._expect_ident().value
+                aliases[name] = alias
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.RBRACE)
+        self._expect(TokenType.EQ)
+        value = self._parse_expression()
+        return ObjectDestructure(names=names, aliases=aliases, value=value,
+                                 mutable=mutable, line=let_tok.line, column=let_tok.column)
+
     # ------------------------------------------------------------------
     # File creation / archive
     # ------------------------------------------------------------------
@@ -1111,6 +1254,25 @@ class Parser:
             lam = self._parse_lambda()
             lam.operation = "each"
             return lam
+        if tok.type == TokenType.REDUCE:
+            self._advance()
+            # reduce (acc, x) => expr  or  reduce init (acc, x) => expr
+            # Check if next token is '(' — then it's the lambda directly (no init)
+            # or if it's an expression — it's the initial value
+            if self._check(TokenType.LPAREN):
+                # (acc, x) => expr — use first element as seed, reduce rest
+                lam = self._parse_multi_param_lambda()
+                lam.operation = "reduce"
+                return lam
+            else:
+                # init (acc, x) => expr
+                # Parse init as a simple primary (literal/identifier) only,
+                # to avoid `init (...)` being mistaken for a function call.
+                init = self._parse_reduce_init()
+                lam = self._parse_multi_param_lambda()
+                lam.operation = "reduce_with_init"
+                lam.init = init  # type: ignore[attr-defined]
+                return lam
         if tok.type == TokenType.PARSE:
             return self._parse_parse_stmt()
         if tok.type == TokenType.WRITE:
@@ -1119,6 +1281,45 @@ class Parser:
             return self._parse_read()
 
         return self._parse_null_coalesce()
+
+    def _parse_reduce_init(self) -> Node:
+        """Parse a simple literal/identifier as reduce initial value.
+        Deliberately stops before postfix to avoid `0 (a, b)` being parsed
+        as a function call `0(a, b)`.
+        """
+        tok = self._current()
+        if tok.type == TokenType.NUMBER:
+            self._advance()
+            val = float(tok.value)
+            return NumberLiteral(value=val, line=tok.line, column=tok.column)
+        if tok.type == TokenType.STRING:
+            self._advance()
+            return StringLiteral(value=tok.value, line=tok.line, column=tok.column)
+        if tok.type == TokenType.BOOL:
+            self._advance()
+            return BoolLiteral(value=tok.value == "true", line=tok.line, column=tok.column)
+        if tok.type == TokenType.IDENTIFIER:
+            self._advance()
+            return Identifier(name=tok.value, line=tok.line, column=tok.column)
+        if tok.type == TokenType.LBRACKET:
+            return self._parse_array_literal()
+        if tok.type == TokenType.LBRACE:
+            return self._parse_object_literal()
+        # Fallback (e.g. null, negative number)
+        return self._parse_unary()
+
+    def _parse_multi_param_lambda(self) -> MultiParamLambda:
+        """Parse (acc, x) => expr"""
+        tok = self._expect(TokenType.LPAREN)
+        params: list[str] = []
+        if not self._check(TokenType.RPAREN):
+            params.append(self._expect_ident().value)
+            while self._match(TokenType.COMMA):
+                params.append(self._expect_ident().value)
+        self._expect(TokenType.RPAREN)
+        self._expect(TokenType.FAT_ARROW)
+        body = self._parse_null_coalesce()
+        return MultiParamLambda(params=params, body=body, line=tok.line, column=tok.column)
 
     def _parse_lambda(self) -> LambdaExpression:
         tok = self._current()
@@ -1323,6 +1524,26 @@ class Parser:
 
         if tok.type == TokenType.LPAREN:
             self._advance()
+            # Check for multi-param lambda: (a, b) => expr
+            # Peek ahead: if we see ident (comma ident)* ) => ...
+            saved_pos = self.pos
+            try:
+                params: list[str] = []
+                if self._check(TokenType.IDENTIFIER):
+                    params.append(self._advance().value)
+                    while self._match(TokenType.COMMA):
+                        params.append(self._expect_ident().value)
+                if len(params) >= 2 and self._check(TokenType.RPAREN):
+                    self._advance()  # )
+                    if self._check(TokenType.FAT_ARROW):
+                        self._advance()  # =>
+                        body = self._parse_null_coalesce()
+                        return MultiParamLambda(params=params, body=body,
+                                               line=tok.line, column=tok.column)
+            except Exception:
+                pass
+            # Not a multi-param lambda — restore and parse as grouped expression
+            self.pos = saved_pos
             expr = self._parse_expression()
             self._expect(TokenType.RPAREN)
             return expr
@@ -1405,16 +1626,29 @@ class Parser:
     def _parse_object_literal(self) -> ObjectLiteral:
         tok = self._expect(TokenType.LBRACE)
         pairs: dict[str, Node] = {}
+        entries: list = []
+        has_spread = False
         while not self._check(TokenType.RBRACE) and not self._at_end():
-            key_tok = self._current()
-            key = self._advance().value
-            self._expect(TokenType.COLON)
-            value = self._parse_expression()
-            pairs[key] = value
+            if self._check(TokenType.ELLIPSIS):
+                has_spread = True
+                spread_tok = self._advance()
+                expr = self._parse_expression()
+                spread = SpreadElement(expr=expr, line=spread_tok.line, column=spread_tok.column)
+                entries.append((None, spread))
+            else:
+                key_tok = self._current()
+                key = self._advance().value
+                self._expect(TokenType.COLON)
+                value = self._parse_expression()
+                pairs[key] = value
+                entries.append((key, value))
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACE)
-        return ObjectLiteral(pairs=pairs, line=tok.line, column=tok.column)
+        result = ObjectLiteral(pairs=pairs, line=tok.line, column=tok.column)
+        if has_spread:
+            result.entries = entries
+        return result
 
     def _parse_array_literal(self) -> ArrayLiteral:
         tok = self._expect(TokenType.LBRACKET)

@@ -321,3 +321,136 @@ parse("csv", text)  // Parse CSV text
 hash(text)          // SHA-256 hash of text
 checksum(path)      // SHA-256 checksum of file
 ```
+
+## Destructuring
+
+### List Destructuring
+
+```spry
+let [a, b, c] = [10, 20, 30]
+let [first, second] = someList
+
+// Mutable
+var [x, y] = [1, 2]
+x = 99
+```
+
+### Object Destructuring
+
+```spry
+let {name, age} = {name: "Alice", age: 30}
+
+// With renaming
+let {name: n, age: a} = person
+```
+
+### Object Spread
+
+```spry
+let defaults = {timeout: 30, retries: 3}
+let overrides = {timeout: 60}
+let config = {...defaults, ...overrides, debug: false}
+```
+
+## Match Statement
+
+```spry
+match value {
+    1     => log info "one"
+    2     => log info "two"
+    "yes" => log info "affirmative"
+    _     => log info "other"
+}
+
+// With block body
+match status {
+    "ok"  => {
+        log info "success"
+        doSuccess()
+    }
+    _     => log info "failed"
+}
+```
+
+## Repeat..Until Loop
+
+```spry
+var i = 0
+repeat {
+    i += 1
+    log info i
+} until i >= 5
+```
+
+## For-In-Dict (iterate over keys)
+
+```spry
+let config = {host: "localhost", port: 3000}
+for key in config {
+    log info f"{key} = {config[key]}"
+}
+```
+
+## Assert Statement
+
+```spry
+assert x > 0
+assert x < 100, "x must be between 0 and 100"
+```
+
+## Import
+
+```spry
+// Named imports from a module
+import { pi, e, sqrt } from "math"
+
+// Full module import
+import "math" as m
+
+// Simple name import
+import math
+```
+
+## Multi-Param Lambda
+
+```spry
+// Used in reduce pipeline
+let total = [1, 2, 3] |> reduce (acc, x) => acc + x
+
+// With explicit initial value
+let sum = [1, 2, 3] |> reduce 0 (acc, x) => acc + x
+
+// As a first-class value
+let add = (a, b) => a + b
+log info add(3, 4)
+```
+
+## Reduce Pipeline Stage
+
+```spry
+let nums = [1, 2, 3, 4, 5]
+
+// Reduce to single value (uses first element as seed)
+let total = nums |> reduce (acc, x) => acc + x
+
+// With explicit initial value
+let product = nums |> reduce 1 (acc, x) => acc * x
+```
+
+## New Built-in Functions
+
+```spry
+env("PORT")              // Read environment variable (returns null if not set)
+env("PORT") ?? "8080"    // With fallback
+
+format("Hello, {}!", name)       // Positional string formatting
+format("Pi = {:.4f}", pi)        // With format spec
+format("{} + {} = {}", 1, 2, 3)  // Multiple values
+```
+
+## String regex matching
+
+```spry
+let matches = text.match("[0-9]+")   // Returns list of matches or null
+let emails  = text.match("[a-z]+@[a-z.]+"
+```

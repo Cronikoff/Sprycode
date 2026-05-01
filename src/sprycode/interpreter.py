@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from decimal import Decimal
 from typing import Any
@@ -17,6 +18,7 @@ from .ast_nodes import (
     AllowStatement,
     AppDeclaration,
     ArrayLiteral,
+    AssertStatement,
     Assignment,
     AtomicStatement,
     BinaryExpression,
@@ -41,17 +43,23 @@ from .ast_nodes import (
     FunctionDeclaration,
     Identifier,
     IfStatement,
+    ImportStatement,
     InExpression,
     IndexExpression,
     LambdaExpression,
     LetDeclaration,
+    ListDestructure,
     LogStatement,
+    MatchArm,
+    MatchStatement,
     MemberExpression,
     MoveStatement,
+    MultiParamLambda,
     Node,
     NullCoalesceExpression,
     NullLiteral,
     NumberLiteral,
+    ObjectDestructure,
     ObjectLiteral,
     ParseStatement,
     PipelineExpression,
@@ -59,6 +67,7 @@ from .ast_nodes import (
     Program,
     ReadStatement,
     RedactStatement,
+    RepeatUntilStatement,
     ReturnStatement,
     ScheduleStatement,
     SecretLiteral,
@@ -292,6 +301,10 @@ class Interpreter:
         env.define("false", False)
         env.define("null", None)
 
+        # Environment and formatting
+        env.define("env", lambda key, default=None: os.environ.get(str(key), default))
+        env.define("format", lambda template, *args: self._builtin_format(template, *args))
+
         # Money helper
         env.define("money", _MoneyHelper())
 
@@ -341,6 +354,14 @@ class Interpreter:
             return str(int(value))
         return str(value)
 
+    @staticmethod
+    def _builtin_format(template: str, *args: Any) -> str:
+        """Simple positional string formatting: format("Hello {}", name)"""
+        try:
+            return template.format(*args)
+        except (IndexError, KeyError, ValueError):
+            return template
+
     def _encode(self, fmt: str, val: Any = None) -> Any:
         if fmt in ("json",):
             return _builtin_encode_json(val)
@@ -378,6 +399,7 @@ class Interpreter:
                                   ConnectorDeclaration, AdapterDeclaration,
                                   AllowStatement, DenyStatement,
                                   PrivateDataDeclaration, SensitiveDataDeclaration,
+                                  ImportStatement,
                                   UseStatement))
         ]
         result = self._exec_block_stmts(program.body, self.globals)
@@ -411,8 +433,9 @@ class Interpreter:
         result = None
         for stmt in stmts:
             if register_only:
-                # Only register declarations (tasks, functions, connectors)
-                if isinstance(stmt, (TaskDeclaration, FunctionDeclaration, ConnectorDeclaration)):
+                # Only register declarations (tasks, functions, connectors, imports)
+                if isinstance(stmt, (TaskDeclaration, FunctionDeclaration, ConnectorDeclaration,
+                                     ImportStatement)):
                     self._exec(stmt, env)
             else:
                 result = self._exec(stmt, env)
@@ -638,6 +661,24 @@ class Interpreter:
         if isinstance(node, FraudCheckStatement):
             return self._exec_fraud_check(node, env)
 
+        if isinstance(node, MatchStatement):
+            return self._exec_match(node, env)
+
+        if isinstance(node, RepeatUntilStatement):
+            return self._exec_repeat_until(node, env)
+
+        if isinstance(node, AssertStatement):
+            return self._exec_assert(node, env)
+
+        if isinstance(node, ImportStatement):
+            return self._exec_import(node, env)
+
+        if isinstance(node, ListDestructure):
+            return self._exec_list_destructure(node, env)
+
+        if isinstance(node, ObjectDestructure):
+            return self._exec_object_destructure(node, env)
+
         # Expression as statement
         return self._eval(node, env)
 
@@ -681,8 +722,21 @@ class Interpreter:
 
         if isinstance(node, ObjectLiteral):
             result: dict[str, Any] = {}
-            for k, v in node.pairs.items():
-                result[k] = self._eval(v, env)
+            # If entries list is populated (spread present), use it
+            if node.entries:
+                for key_or_none, val_node in node.entries:
+                    if key_or_none is None:
+                        # Spread element
+                        spread_val = self._eval(val_node.expr, env)  # type: ignore[union-attr]
+                        if isinstance(spread_val, dict):
+                            result.update(spread_val)
+                        else:
+                            raise SpryRuntimeError("Object spread requires an object", node)
+                    else:
+                        result[key_or_none] = self._eval(val_node, env)
+            else:
+                for k, v in node.pairs.items():
+                    result[k] = self._eval(v, env)
             return result
 
         if isinstance(node, ArrayLiteral):
@@ -720,6 +774,9 @@ class Interpreter:
 
         if isinstance(node, LambdaExpression):
             return node  # Lambda is evaluated lazily
+
+        if isinstance(node, MultiParamLambda):
+            return node  # evaluated lazily
 
         if isinstance(node, TernaryExpression):
             cond = self._eval(node.condition, env)
@@ -829,6 +886,12 @@ class Interpreter:
 
         if isinstance(callee, SpryTask):
             return self._call_task(callee)
+
+        if isinstance(callee, MultiParamLambda):
+            return self._apply_multi_lambda(callee, args, env)
+
+        if isinstance(callee, LambdaExpression):
+            return self._apply_lambda(callee, args[0] if args else None, env)
 
         raise SpryRuntimeError(
             f"Cannot call {type(callee).__name__} (value: {callee!r})", node
@@ -1010,6 +1073,9 @@ class Interpreter:
                 return list(obj)
             if prop == "lines":
                 return obj.splitlines()
+            if prop == "match":
+                import re as _re
+                return lambda pattern: _re.findall(pattern, obj) or None
 
         # Try attribute access
         try:
@@ -1018,10 +1084,31 @@ class Interpreter:
             raise SpryRuntimeError(f"Property {prop!r} not found on {type(obj).__name__}", node)
 
     def _eval_pipeline(self, node: PipelineExpression, env: Environment) -> Any:
-        """Evaluate a pipeline: val |> filter x => ... |> map x => ... |> write file ..."""
+        """Evaluate a pipeline: val |> filter x => ... |> map x => ... |> reduce (acc, x) => ..."""
         value = self._eval(node.stages[0], env)
 
         for stage in node.stages[1:]:
+            if isinstance(stage, MultiParamLambda):
+                operation = getattr(stage, "operation", "reduce")
+                if operation == "reduce":
+                    if not isinstance(value, list):
+                        raise SpryRuntimeError("'reduce' requires a list", stage)
+                    if len(value) == 0:
+                        continue
+                    acc = value[0]
+                    for item in value[1:]:
+                        acc = self._apply_multi_lambda(stage, [acc, item], env)
+                    value = acc
+                elif operation == "reduce_with_init":
+                    init_val = self._eval(stage.init, env)  # type: ignore[attr-defined]
+                    if not isinstance(value, list):
+                        raise SpryRuntimeError("'reduce' requires a list", stage)
+                    acc = init_val
+                    for item in value:
+                        acc = self._apply_multi_lambda(stage, [acc, item], env)
+                    value = acc
+                continue
+
             if isinstance(stage, LambdaExpression):
                 operation = getattr(stage, "operation", "map")
                 if operation == "filter":
@@ -1090,6 +1177,12 @@ class Interpreter:
     def _apply_lambda(self, lam: LambdaExpression, item: Any, env: Environment) -> Any:
         child = env.child()
         child.define(lam.param, item, mutable=False)
+        return self._eval(lam.body, child)
+
+    def _apply_multi_lambda(self, lam: MultiParamLambda, args: list[Any], env: Environment) -> Any:
+        child = env.child()
+        for i, param in enumerate(lam.params):
+            child.define(param, args[i] if i < len(args) else None, mutable=False)
         return self._eval(lam.body, child)
 
     # ------------------------------------------------------------------
@@ -1224,9 +1317,12 @@ class Interpreter:
 
     def _exec_for(self, node: ForStatement, env: Environment) -> Any:
         iterable = self._eval(node.iterable, env)
-        if not isinstance(iterable, (list, tuple, str)):
+        # Allow iterating over dict keys
+        if isinstance(iterable, dict):
+            iterable = list(iterable.keys())
+        if not isinstance(iterable, (list, tuple, str, range)):
             raise SpryRuntimeError(
-                f"'for' loop requires a list, got {type(iterable).__name__}", node
+                f"'for' loop requires a list or object, got {type(iterable).__name__}", node
             )
         for item in iterable:
             child = env.child()
@@ -1253,6 +1349,102 @@ class Interpreter:
             count += 1
             if count >= max_iterations:
                 raise SpryRuntimeError("While loop exceeded maximum iteration limit (100,000)", node)
+        return None
+
+    def _exec_repeat_until(self, node: RepeatUntilStatement, env: Environment) -> Any:
+        max_iterations = 100_000
+        count = 0
+        while True:
+            child = env.child()
+            try:
+                self._exec_block(node.body, child)
+            except BreakSignal:
+                break
+            except ContinueSignal:
+                pass
+            count += 1
+            if count >= max_iterations:
+                raise SpryRuntimeError("Repeat loop exceeded maximum iteration limit (100,000)", node)
+            if self._truthy(self._eval(node.condition, env)):
+                break
+        return None
+
+    def _exec_match(self, node: MatchStatement, env: Environment) -> Any:
+        subject_val = self._eval(node.subject, env)
+        for arm in node.arms:
+            if arm.is_wildcard:
+                child = env.child()
+                return self._exec_block(arm.body, child)
+            pattern_val = self._eval(arm.pattern, env)
+            if subject_val == pattern_val:
+                child = env.child()
+                return self._exec_block(arm.body, child)
+        return None
+
+    def _exec_assert(self, node: AssertStatement, env: Environment) -> Any:
+        cond = self._eval(node.condition, env)
+        if not self._truthy(cond):
+            if node.message is not None:
+                msg = self._builtin_str(self._eval(node.message, env))
+            else:
+                msg = "Assertion failed"
+            raise SpryRuntimeError(msg, node)
+        return None
+
+    def _exec_import(self, node: ImportStatement, env: Environment) -> Any:
+        """Simple import: load a JSON/YAML file or expose built-in module names."""
+        module = node.module
+        # Try to load as a file (relative or absolute path)
+        import importlib
+        # Try loading as a built-in Python stdlib math/json/re module
+        stdlib_map = {
+            "math": ["pi", "e", "floor", "ceil", "sqrt", "pow", "log", "sin", "cos", "tan"],
+            "json": [],
+            "re": [],
+        }
+        if module in stdlib_map:
+            try:
+                mod = importlib.import_module(module)
+                if node.names:
+                    # import { a, b } from "math"
+                    for name in node.names:
+                        alias = node.alias or name
+                        env.define(alias, getattr(mod, name, None), mutable=False)
+                elif node.alias:
+                    env.define(node.alias, mod, mutable=False)
+                else:
+                    # import all exported names
+                    for attr in (stdlib_map.get(module) or []):
+                        if hasattr(mod, attr):
+                            env.define(attr, getattr(mod, attr), mutable=False)
+            except ImportError:
+                pass
+            return None
+        # Otherwise log a warning
+        self.logger.warn(f"import: module '{module}' not found")
+        return None
+
+    def _exec_list_destructure(self, node: ListDestructure, env: Environment) -> Any:
+        val = self._eval(node.value, env)
+        if not isinstance(val, (list, tuple)):
+            raise SpryRuntimeError(
+                f"List destructuring requires a list, got {type(val).__name__}", node
+            )
+        for i, name in enumerate(node.names):
+            item = val[i] if i < len(val) else None
+            env.define(name, item, mutable=node.mutable)
+        return None
+
+    def _exec_object_destructure(self, node: ObjectDestructure, env: Environment) -> Any:
+        val = self._eval(node.value, env)
+        if not isinstance(val, dict):
+            raise SpryRuntimeError(
+                f"Object destructuring requires an object, got {type(val).__name__}", node
+            )
+        for name in node.names:
+            alias = node.aliases.get(name, name)
+            item = val.get(name)
+            env.define(alias, item, mutable=node.mutable)
         return None
 
     # ------------------------------------------------------------------

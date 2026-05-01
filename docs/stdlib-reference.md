@@ -1,0 +1,240 @@
+# SpryCode Standard Library Reference
+
+## Filesystem
+
+### Reading
+
+```spry
+let result = read file "./data.txt"
+// result.ok    -> Bool
+// result.value -> Text (file contents)
+// result.error -> Text (error message if failed)
+```
+
+### Writing
+
+```spry
+write file "./output.txt" with "hello world"
+write file "./data.json" with { key: "value" }
+```
+
+### Copying
+
+```spry
+copy file "./source.txt" to "./dest.txt"
+copy file "./source.txt" to "./dest.txt"
+    verify checksum sha256
+    preserve metadata
+```
+
+### Moving
+
+```spry
+move file "./input.txt" to "./archive/input.txt"
+move file "./report.pdf" to "./archive/report.pdf"
+    verify checksum sha256
+    preserve metadata
+    retry 3
+
+move folder "./data" to "./backup"
+    parallel 8
+    verify checksum sha256
+    retry 3
+```
+
+### Deleting
+
+```spry
+delete file "./temp.txt"
+delete folder "./temp-dir"
+```
+
+### Watching
+
+```spry
+watch folder "./incoming"
+```
+
+### Streaming
+
+```spry
+stream file "./large.csv"
+    |> parse csv
+    |> filter row => row.active == "true"
+    |> write file "./active.csv"
+
+stream folder "./media"
+    |> filter file => file.extension == "jpg"
+    |> each file => log info file.name
+```
+
+### Syncing
+
+```spry
+sync folder "./local" with "./backup"
+    mode mirror
+    compare checksum
+    encrypt true
+```
+
+---
+
+## Data Parsing
+
+```spry
+// JSON
+let data = parse json raw.value
+let encoded = encode json data
+
+// CSV
+let rows = parse csv raw.value
+
+// Checksum
+let hash = checksum "./file.pdf"              // sha256 by default
+let md5 = checksum "./file.pdf" "md5"
+
+// Hashing (text)
+let textHash = hash "my text"
+```
+
+---
+
+## Time
+
+```spry
+let timestamp = now()          // ISO 8601 datetime string
+let date = today()             // ISO 8601 date string
+```
+
+---
+
+## Math
+
+```spry
+abs(-5)         // 5
+min(3, 7)       // 3
+max(3, 7)       // 7
+round(3.7)      // 4
+```
+
+---
+
+## String Utilities
+
+```spry
+let s = "Hello, World"
+let n = len(s)          // 13
+let upper = s.upper     // "HELLO, WORLD"
+let lower = s.lower     // "hello, world"
+let trimmed = s.trim    // Trimmed whitespace
+```
+
+---
+
+## Collections
+
+```spry
+let items = [1, 2, 3, 4, 5]
+let count = len(items)      // 5
+let first = items[0]        // 1
+let last = items[4]         // 5
+```
+
+---
+
+## Identity
+
+```spry
+let id = uuid()    // "550e8400-e29b-41d4-a716-446655440000"
+```
+
+---
+
+## Network (with permission)
+
+```spry
+allow network.request "https://api.example.com"
+
+let response = http.get "https://api.example.com/users"
+// response.ok     -> Bool
+// response.value  -> { status: 200, body: "..." }
+
+let response = http.post "https://api.example.com/data" with {
+    key: "value"
+}
+```
+
+---
+
+## Logging
+
+```spry
+log info "Operation started"
+log warn "Retrying..."
+log error "Fatal: cannot continue"
+log error err       // SpryResult.error is formatted automatically
+```
+
+All secrets and `private data` fields are automatically redacted.
+
+---
+
+## Secrets
+
+```spry
+allow secret.read "MY_SECRET"
+let apiKey = secret "MY_SECRET"
+// Prints as: <secret:MY_SECRET> in logs
+```
+
+---
+
+## Money
+
+```spry
+let price: Money = 99.99
+let tax = price * 0.20
+let total = price + tax
+let sum = money.sum([price, tax])
+```
+
+---
+
+## Result Type
+
+```spry
+let result = read file "./data.txt"
+
+if result failed {
+    log error result.error
+    stop
+}
+
+let content = result.value    // Only available when ok
+```
+
+---
+
+## Encoding
+
+```spry
+let json = encode "json" myObject
+let b64 = encode "base64" "hello world"
+let decoded = decode "base64" b64Data
+```
+
+---
+
+## Redaction
+
+```spry
+let safe = redact payment fields ["cardNumber", "cvv", "ssn"]
+```
+
+---
+
+## Validation
+
+```spry
+validate data using MySchema
+```

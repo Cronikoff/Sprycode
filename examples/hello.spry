@@ -1,0 +1,7 @@
+// SpryCode Hello World example
+app Hello version "1.0.0"
+
+task main {
+    log info "Hello from SpryCode!"
+    log info "SpryCode: agile code for fast, secure, adaptive systems."
+}

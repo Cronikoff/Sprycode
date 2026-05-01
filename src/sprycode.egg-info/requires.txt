@@ -1,0 +1,8 @@
+click>=8.0
+
+[:python_version < "3.11"]
+tomllib
+
+[dev]
+pytest>=7.0
+pytest-cov>=4.0

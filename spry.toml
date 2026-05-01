@@ -1,0 +1,8 @@
+name = "sprycode"
+version = "0.1.0"
+license = "SpryCode-Free"
+edition = "free"
+
+[permissions]
+
+[dependencies]

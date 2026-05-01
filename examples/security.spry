@@ -1,0 +1,46 @@
+// SpryCode Security Example
+// Demonstrates the permission system, secrets, and privacy annotations
+
+app SecureApp version "1.0.0"
+
+// Declare required permissions
+allow filesystem.read "./data"
+allow filesystem.write "./output"
+allow secret.read "API_KEY"
+
+// Privacy annotations
+private data customerEmail: Email
+sensitive data paymentToken: Secret
+
+task fetchAndProcess {
+    // Read secret from environment
+    let apiKey = secret "API_KEY"
+
+    // Secret is automatically redacted in logs
+    log info apiKey    // Prints: <secret:API_KEY>
+
+    // Process data safely
+    let content = read file "./data/users.txt"
+
+    if content failed {
+        log error content.error
+        stop
+    }
+
+    write file "./output/result.txt" with content.value
+    log info "Processing complete"
+}
+
+// Function with secure parameter handling
+fn processUser(name: Text, token: Secret) -> Text {
+    return "Processed: " + name
+}
+
+task sandboxedOperations {
+    // Deny network access for this task scope
+    deny network.all
+
+    // All file operations stay local
+    let data = read file "./data/local.txt"
+    log info "Loaded local data safely"
+}

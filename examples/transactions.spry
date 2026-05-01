@@ -1,0 +1,59 @@
+// SpryCode Transactions Example
+// Demonstrates safe transaction patterns with compensation logic
+
+app Transactions version "1.0.0"
+
+allow filesystem.read "./incoming"
+allow filesystem.write "./processed"
+allow filesystem.write "./failed"
+
+task processPayments {
+    log info "Starting payment processing"
+
+    // Atomic operation — all or nothing
+    atomic {
+        let raw = read file "./incoming/payment.json"
+
+        if raw failed {
+            log error "Cannot read payment file"
+            stop
+        }
+
+        let payment = parse json raw.value
+
+        write file "./processed/payment.json" with raw.value
+    }
+
+    log info "Payment processed successfully"
+}
+
+task transferFunds {
+    log info "Starting fund transfer"
+
+    // Transaction with compensation
+    transaction db.bank {
+        log info "Debiting account A"
+        log info "Crediting account B"
+
+        compensate {
+            log warn "Transfer failed — compensation logic would run here"
+        }
+    }
+
+    log info "Transfer complete"
+}
+
+task fileTransaction {
+    allow filesystem.read "./contracts"
+    allow filesystem.write "./archive"
+
+    transaction filesystem {
+        copy file "./contracts/agreement.txt" to "./archive/agreement.txt"
+        write file "./archive/agreement.meta.json" with {
+            archivedAt: now(),
+            status: "archived"
+        }
+    }
+
+    log info "File transaction complete"
+}

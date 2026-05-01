@@ -1,0 +1,580 @@
+"""
+SpryCode Lexer
+
+Tokenizes SpryCode source code into a stream of tokens.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import Iterator
+
+
+class TokenType(Enum):
+    # Literals
+    STRING = auto()
+    NUMBER = auto()
+    BOOL = auto()
+
+    # Identifiers and keywords
+    IDENTIFIER = auto()
+
+    # Keywords — control flow
+    IF = auto()
+    ELSE = auto()
+    RETURN = auto()
+    STOP = auto()
+    TRY = auto()
+    CATCH = auto()
+    FAILED = auto()
+    NOT = auto()
+
+    # Keywords — declarations
+    LET = auto()
+    VAR = auto()
+    FN = auto()
+    TASK = auto()
+    APP = auto()
+    USE = auto()
+    ADAPTER = auto()
+    CONNECTOR = auto()
+
+    # Keywords — permissions / privacy
+    ALLOW = auto()
+    DENY = auto()
+    PRIVATE = auto()
+    SENSITIVE = auto()
+    DATA = auto()
+    SECRET = auto()
+    SANDBOXED = auto()
+
+    # Keywords — file / data operations
+    READ = auto()
+    WRITE = auto()
+    COPY = auto()
+    MOVE = auto()
+    DELETE = auto()
+    STREAM = auto()
+    SYNC = auto()
+    WATCH = auto()
+    COMPRESS = auto()
+    EXTRACT = auto()
+    PARSE = auto()
+    ENCODE = auto()
+    DECODE = auto()
+    HASH = auto()
+    ENCRYPT = auto()
+    DECRYPT = auto()
+    CHECKSUM = auto()
+
+    # Keywords — transaction / reliability
+    ATOMIC = auto()
+    TRANSACTION = auto()
+    COMPENSATE = auto()
+    ROLLBACK = auto()
+    COMMIT = auto()
+
+    # Keywords — movement modifiers
+    TO = auto()
+    FROM = auto()
+    WITH = auto()
+    IN = auto()
+    WHERE = auto()
+    AS = auto()
+    AT = auto()
+    PARALLEL = auto()
+    VERIFY = auto()
+    PRESERVE = auto()
+    RETRY = auto()
+    MODE = auto()
+    COMPARE = auto()
+    FILTER = auto()
+    MAP = auto()
+    EACH = auto()
+    VALIDATE = auto()
+    REDACT = auto()
+    FIELDS = auto()
+    TRANSLATE = auto()
+    OUTPUT = auto()
+    USING = auto()
+    LAST = auto()
+    OK = auto()
+    FAIL = auto()
+
+    # Keywords — logging
+    LOG = auto()
+    INFO = auto()
+    WARN = auto()
+    ERROR = auto()
+
+    # Keywords — network
+    HTTP = auto()
+    WEBSOCKET = auto()
+    TIMEOUT = auto()
+    SCHEDULE = auto()
+    DAILY = auto()
+    SLEEP = auto()
+
+    # Keywords — fraud / compliance
+    FRAUD = auto()
+    CHECK = auto()
+    REASON = auto()
+    CASE = auto()
+    SCOPE = auto()
+    MINIMAL = auto()
+
+    # Keywords — import / export
+    IMPORT = auto()
+    EXPORT = auto()
+
+    # Types
+    TEXT = auto()
+    NUMBER_TYPE = auto()
+    INT_TYPE = auto()
+    FLOAT_TYPE = auto()
+    BOOL_TYPE = auto()
+    DATE_TYPE = auto()
+    TIME_TYPE = auto()
+    DATETIME_TYPE = auto()
+    DURATION_TYPE = auto()
+    FILE_TYPE = auto()
+    FOLDER_TYPE = auto()
+    PATH_TYPE = auto()
+    JSON_TYPE = auto()
+    XML_TYPE = auto()
+    BINARY_TYPE = auto()
+    SECRET_TYPE = auto()
+    EMAIL_TYPE = auto()
+    URL_TYPE = auto()
+    UUID_TYPE = auto()
+    MONEY_TYPE = auto()
+    TRANSACTION_TYPE = auto()
+    RESULT_TYPE = auto()
+    OPTION_TYPE = auto()
+    LIST_TYPE = auto()
+    MAP_TYPE = auto()
+    STREAM_TYPE = auto()
+    EVENT_TYPE = auto()
+
+    # Operators
+    PLUS = auto()
+    MINUS = auto()
+    STAR = auto()
+    SLASH = auto()
+    PERCENT = auto()
+    EQ_EQ = auto()
+    BANG_EQ = auto()
+    LT = auto()
+    GT = auto()
+    LT_EQ = auto()
+    GT_EQ = auto()
+    AND_AND = auto()
+    OR_OR = auto()
+    BANG = auto()
+    EQ = auto()
+    ARROW = auto()       # ->
+    FAT_ARROW = auto()   # =>
+    PIPE_ARROW = auto()  # |>
+
+    # Delimiters
+    LPAREN = auto()
+    RPAREN = auto()
+    LBRACE = auto()
+    RBRACE = auto()
+    LBRACKET = auto()
+    RBRACKET = auto()
+    COMMA = auto()
+    DOT = auto()
+    COLON = auto()
+    SEMICOLON = auto()
+
+    # Special
+    NEWLINE = auto()
+    EOF = auto()
+    COMMENT = auto()
+
+
+# Map keyword strings to their token types
+KEYWORDS: dict[str, TokenType] = {
+    "if": TokenType.IF,
+    "else": TokenType.ELSE,
+    "return": TokenType.RETURN,
+    "stop": TokenType.STOP,
+    "try": TokenType.TRY,
+    "catch": TokenType.CATCH,
+    "failed": TokenType.FAILED,
+    "not": TokenType.NOT,
+    "let": TokenType.LET,
+    "var": TokenType.VAR,
+    "fn": TokenType.FN,
+    "task": TokenType.TASK,
+    "app": TokenType.APP,
+    "use": TokenType.USE,
+    "adapter": TokenType.ADAPTER,
+    "connector": TokenType.CONNECTOR,
+    "allow": TokenType.ALLOW,
+    "deny": TokenType.DENY,
+    "private": TokenType.PRIVATE,
+    "sensitive": TokenType.SENSITIVE,
+    "data": TokenType.DATA,
+    "secret": TokenType.SECRET,
+    "sandboxed": TokenType.SANDBOXED,
+    "read": TokenType.READ,
+    "write": TokenType.WRITE,
+    "copy": TokenType.COPY,
+    "move": TokenType.MOVE,
+    "delete": TokenType.DELETE,
+    "stream": TokenType.STREAM,
+    "sync": TokenType.SYNC,
+    "watch": TokenType.WATCH,
+    "compress": TokenType.COMPRESS,
+    "extract": TokenType.EXTRACT,
+    "parse": TokenType.PARSE,
+    "encode": TokenType.ENCODE,
+    "decode": TokenType.DECODE,
+    "hash": TokenType.HASH,
+    "encrypt": TokenType.ENCRYPT,
+    "decrypt": TokenType.DECRYPT,
+    "checksum": TokenType.CHECKSUM,
+    "atomic": TokenType.ATOMIC,
+    "transaction": TokenType.TRANSACTION,
+    "compensate": TokenType.COMPENSATE,
+    "rollback": TokenType.ROLLBACK,
+    "commit": TokenType.COMMIT,
+    "to": TokenType.TO,
+    "from": TokenType.FROM,
+    "with": TokenType.WITH,
+    "in": TokenType.IN,
+    "where": TokenType.WHERE,
+    "as": TokenType.AS,
+    "at": TokenType.AT,
+    "parallel": TokenType.PARALLEL,
+    "verify": TokenType.VERIFY,
+    "preserve": TokenType.PRESERVE,
+    "retry": TokenType.RETRY,
+    "mode": TokenType.MODE,
+    "compare": TokenType.COMPARE,
+    "filter": TokenType.FILTER,
+    "map": TokenType.MAP,
+    "each": TokenType.EACH,
+    "validate": TokenType.VALIDATE,
+    "redact": TokenType.REDACT,
+    "fields": TokenType.FIELDS,
+    "translate": TokenType.TRANSLATE,
+    "output": TokenType.OUTPUT,
+    "using": TokenType.USING,
+    "last": TokenType.LAST,
+    "ok": TokenType.OK,
+    "fail": TokenType.FAIL,
+    "log": TokenType.LOG,
+    "info": TokenType.INFO,
+    "warn": TokenType.WARN,
+    "error": TokenType.ERROR,
+    "http": TokenType.HTTP,
+    "websocket": TokenType.WEBSOCKET,
+    "timeout": TokenType.TIMEOUT,
+    "schedule": TokenType.SCHEDULE,
+    "daily": TokenType.DAILY,
+    "sleep": TokenType.SLEEP,
+    "fraud": TokenType.FRAUD,
+    "check": TokenType.CHECK,
+    "reason": TokenType.REASON,
+    "case": TokenType.CASE,
+    "scope": TokenType.SCOPE,
+    "minimal": TokenType.MINIMAL,
+    "import": TokenType.IMPORT,
+    "export": TokenType.EXPORT,
+    "true": TokenType.BOOL,
+    "false": TokenType.BOOL,
+    # Types (both capitalized form for annotations and lowercase for operations)
+    "Text": TokenType.TEXT,
+    "Number": TokenType.NUMBER_TYPE,
+    "Int": TokenType.INT_TYPE,
+    "Float": TokenType.FLOAT_TYPE,
+    "Bool": TokenType.BOOL_TYPE,
+    "Date": TokenType.DATE_TYPE,
+    "Time": TokenType.TIME_TYPE,
+    "DateTime": TokenType.DATETIME_TYPE,
+    "Duration": TokenType.DURATION_TYPE,
+    "File": TokenType.FILE_TYPE,
+    "file": TokenType.FILE_TYPE,
+    "Folder": TokenType.FOLDER_TYPE,
+    "folder": TokenType.FOLDER_TYPE,
+    "Path": TokenType.PATH_TYPE,
+    "Json": TokenType.JSON_TYPE,
+    "Xml": TokenType.XML_TYPE,
+    "Binary": TokenType.BINARY_TYPE,
+    "Secret": TokenType.SECRET_TYPE,
+    "Email": TokenType.EMAIL_TYPE,
+    "Url": TokenType.URL_TYPE,
+    "Uuid": TokenType.UUID_TYPE,
+    "Money": TokenType.MONEY_TYPE,
+    "Transaction": TokenType.TRANSACTION_TYPE,
+    "Result": TokenType.RESULT_TYPE,
+    "Option": TokenType.OPTION_TYPE,
+    "List": TokenType.LIST_TYPE,
+    "Map": TokenType.MAP_TYPE,
+    "Stream": TokenType.STREAM_TYPE,
+    "Event": TokenType.EVENT_TYPE,
+}
+
+
+@dataclass(frozen=True)
+class Token:
+    type: TokenType
+    value: str
+    line: int
+    column: int
+
+    def __repr__(self) -> str:
+        return f"Token({self.type.name}, {self.value!r}, line={self.line}, col={self.column})"
+
+
+class LexerError(Exception):
+    def __init__(self, message: str, line: int, column: int) -> None:
+        super().__init__(f"Lexer error at line {line}, column {column}: {message}")
+        self.line = line
+        self.column = column
+
+
+class Lexer:
+    """Tokenizes SpryCode source code."""
+
+    def __init__(self, source: str, filename: str = "<string>") -> None:
+        self.source = source
+        self.filename = filename
+        self.pos = 0
+        self.line = 1
+        self.column = 1
+        self._tokens: list[Token] = []
+
+    def _current(self) -> str:
+        if self.pos >= len(self.source):
+            return ""
+        return self.source[self.pos]
+
+    def _peek(self, offset: int = 1) -> str:
+        p = self.pos + offset
+        if p >= len(self.source):
+            return ""
+        return self.source[p]
+
+    def _advance(self) -> str:
+        ch = self.source[self.pos]
+        self.pos += 1
+        if ch == "\n":
+            self.line += 1
+            self.column = 1
+        else:
+            self.column += 1
+        return ch
+
+    def _make_token(self, ttype: TokenType, value: str, line: int, column: int) -> Token:
+        return Token(ttype, value, line, column)
+
+    def tokenize(self) -> list[Token]:
+        """Tokenize all source and return list of tokens."""
+        tokens = []
+        for tok in self._scan():
+            if tok.type != TokenType.COMMENT:
+                tokens.append(tok)
+        return tokens
+
+    def _scan(self) -> Iterator[Token]:
+        while self.pos < len(self.source):
+            line, col = self.line, self.column
+            ch = self._current()
+
+            # Skip whitespace (but not newlines — they can act as statement separators)
+            if ch in (" ", "\t", "\r"):
+                self._advance()
+                continue
+
+            # Newline
+            if ch == "\n":
+                self._advance()
+                yield Token(TokenType.NEWLINE, "\\n", line, col)
+                continue
+
+            # Single-line comment
+            if ch == "/" and self._peek() == "/":
+                comment = ""
+                while self.pos < len(self.source) and self._current() != "\n":
+                    comment += self._advance()
+                yield Token(TokenType.COMMENT, comment, line, col)
+                continue
+
+            # Multi-line comment
+            if ch == "/" and self._peek() == "*":
+                self._advance()  # /
+                self._advance()  # *
+                comment = "/*"
+                while self.pos < len(self.source):
+                    if self._current() == "*" and self._peek() == "/":
+                        comment += self._advance()
+                        comment += self._advance()
+                        break
+                    comment += self._advance()
+                yield Token(TokenType.COMMENT, comment, line, col)
+                continue
+
+            # String literals (double or single quoted)
+            if ch in ('"', "'"):
+                yield from self._scan_string(line, col)
+                continue
+
+            # Number literals
+            if ch.isdigit() or (ch == "." and self._peek().isdigit()):
+                yield from self._scan_number(line, col)
+                continue
+
+            # Identifiers and keywords
+            if ch.isalpha() or ch == "_":
+                yield from self._scan_identifier(line, col)
+                continue
+
+            # Multi-char operators
+            if ch == "-" and self._peek() == ">":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.ARROW, "->", line, col)
+                continue
+
+            if ch == "=" and self._peek() == ">":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.FAT_ARROW, "=>", line, col)
+                continue
+
+            if ch == "|" and self._peek() == ">":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.PIPE_ARROW, "|>", line, col)
+                continue
+
+            if ch == "=" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.EQ_EQ, "==", line, col)
+                continue
+
+            if ch == "!" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.BANG_EQ, "!=", line, col)
+                continue
+
+            if ch == "<" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.LT_EQ, "<=", line, col)
+                continue
+
+            if ch == ">" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.GT_EQ, ">=", line, col)
+                continue
+
+            if ch == "&" and self._peek() == "&":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.AND_AND, "&&", line, col)
+                continue
+
+            if ch == "|" and self._peek() == "|":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.OR_OR, "||", line, col)
+                continue
+
+            # Single-char operators and delimiters
+            single = {
+                "+": TokenType.PLUS,
+                "-": TokenType.MINUS,
+                "*": TokenType.STAR,
+                "/": TokenType.SLASH,
+                "%": TokenType.PERCENT,
+                "<": TokenType.LT,
+                ">": TokenType.GT,
+                "!": TokenType.BANG,
+                "=": TokenType.EQ,
+                "(": TokenType.LPAREN,
+                ")": TokenType.RPAREN,
+                "{": TokenType.LBRACE,
+                "}": TokenType.RBRACE,
+                "[": TokenType.LBRACKET,
+                "]": TokenType.RBRACKET,
+                ",": TokenType.COMMA,
+                ".": TokenType.DOT,
+                ":": TokenType.COLON,
+                ";": TokenType.SEMICOLON,
+            }
+            if ch in single:
+                self._advance()
+                yield Token(single[ch], ch, line, col)
+                continue
+
+            raise LexerError(f"Unexpected character: {ch!r}", line, col)
+
+        yield Token(TokenType.EOF, "", self.line, self.column)
+
+    def _scan_string(self, line: int, col: int) -> Iterator[Token]:
+        quote = self._advance()
+        value = ""
+        while self.pos < len(self.source):
+            ch = self._current()
+            if ch == "\\":
+                self._advance()
+                esc = self._advance()
+                escape_map = {
+                    "n": "\n",
+                    "t": "\t",
+                    "r": "\r",
+                    "\\": "\\",
+                    '"': '"',
+                    "'": "'",
+                    "0": "\0",
+                }
+                value += escape_map.get(esc, esc)
+            elif ch == quote:
+                self._advance()
+                break
+            elif ch == "\n":
+                raise LexerError("Unterminated string literal", line, col)
+            else:
+                value += self._advance()
+        else:
+            raise LexerError("Unterminated string literal", line, col)
+        yield Token(TokenType.STRING, value, line, col)
+
+    def _scan_number(self, line: int, col: int) -> Iterator[Token]:
+        value = ""
+        has_dot = False
+        while self.pos < len(self.source):
+            ch = self._current()
+            if ch.isdigit():
+                value += self._advance()
+            elif ch == "." and not has_dot and self._peek().isdigit():
+                has_dot = True
+                value += self._advance()
+            elif ch == "_":
+                # Allow underscores in numbers for readability: 1_000_000
+                self._advance()
+            else:
+                break
+        yield Token(TokenType.NUMBER, value, line, col)
+
+    def _scan_identifier(self, line: int, col: int) -> Iterator[Token]:
+        value = ""
+        while self.pos < len(self.source):
+            ch = self._current()
+            if ch.isalnum() or ch in ("_",):
+                value += self._advance()
+            else:
+                break
+        # Check if it's a keyword
+        ttype = KEYWORDS.get(value, TokenType.IDENTIFIER)
+        yield Token(ttype, value, line, col)

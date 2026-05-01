@@ -1,0 +1,59 @@
+// SpryCode File Operations Example
+// Demonstrates safe file reading, writing, copying, and moving
+
+app FileOps version "1.0.0"
+
+// Declare required permissions
+allow filesystem.read "./data"
+allow filesystem.write "./output"
+allow filesystem.write "./archive"
+
+task processFiles {
+    log info "Starting file processing"
+
+    // Read a file
+    let content = read file "./data/input.txt"
+
+    if content failed {
+        log error "Failed to read input file"
+        stop
+    }
+
+    // Write processed content
+    write file "./output/processed.txt" with content.value
+
+    log info "File processing complete"
+}
+
+task archiveReports {
+    allow filesystem.read "./reports"
+    allow filesystem.write "./archive"
+
+    log info "Archiving reports"
+
+    // Move with checksum verification
+    move file "./reports/monthly.pdf" to "./archive/monthly.pdf"
+        verify checksum sha256
+        preserve metadata
+
+    log info "Archive complete"
+}
+
+task backupData {
+    allow filesystem.read "./data"
+    allow filesystem.write "./backup"
+
+    log info "Starting backup"
+
+    // Move entire folder with parallelism and retry
+    move folder "./data" to "./backup/data"
+        parallel 4
+        verify checksum sha256
+        retry 3
+
+    log info "Backup complete"
+}
+
+fn buildReport(name: Text) -> Text {
+    return "Report: " + name + " generated at " + now()
+}

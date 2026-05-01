@@ -1007,7 +1007,7 @@ class TestDictMethods:
 # ---------------------------------------------------------------------------
 
 
-class TestListMethods:
+class TestEnhancedListMethods:
     def test_sort(self):
         interp = run("let nums = [3, 1, 2]\nlet s = nums.sort")
         assert interp.globals.get("s") == [1, 2, 3]
@@ -1039,7 +1039,7 @@ class TestListMethods:
 # ---------------------------------------------------------------------------
 
 
-class TestStringMethods:
+class TestEnhancedStringMethods:
     def test_trimStart(self):
         assert eval_expr('"  hello  ".trimStart') == "hello  "
 

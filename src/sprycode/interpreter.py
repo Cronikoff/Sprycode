@@ -7,6 +7,7 @@ Tree-walking interpreter for SpryCode AST nodes.
 from __future__ import annotations
 
 import json
+import math
 import time
 from decimal import Decimal
 from typing import Any
@@ -258,10 +259,10 @@ class Interpreter:
         env.define("min", min)
         env.define("max", max)
         env.define("round", round)
-        env.define("floor", lambda x: int(x) if x >= 0 else int(x) - (1 if x != int(x) else 0))
-        env.define("ceil", lambda x: int(x) + (1 if x != int(x) else 0))
-        env.define("sqrt", lambda x: x ** 0.5)
-        env.define("pow", lambda base, exp: base ** exp)
+        env.define("floor", math.floor)
+        env.define("ceil", math.ceil)
+        env.define("sqrt", math.sqrt)
+        env.define("pow", pow)
         env.define("len", len)
         env.define("str", self._builtin_str)
         env.define("int", int)
@@ -906,15 +907,15 @@ class Interpreter:
             if prop == "has":
                 return lambda key: key in obj
             if prop == "set":
-                def _dict_set(key: str, value: Any) -> None:  # noqa: E731
+                def _dict_set(key: str, value: Any) -> None:
                     obj[key] = value
                 return _dict_set
             if prop == "delete":
-                def _dict_del(key: str) -> None:  # noqa: E731
+                def _dict_del(key: str) -> None:
                     obj.pop(key, None)
                 return _dict_del
             if prop == "merge":
-                def _dict_merge(other: dict) -> dict:  # noqa: E731
+                def _dict_merge(other: dict) -> dict:
                     return {**obj, **other}
                 return _dict_merge
             raise SpryRuntimeError(f"Key {prop!r} not found in object", node)

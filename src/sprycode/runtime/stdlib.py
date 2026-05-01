@@ -316,6 +316,36 @@ class FilesystemOps:
         except Exception as e:
             return SpryResult(ok=False, error=str(e))
 
+    def compress_folder(self, source: str, destination: str) -> SpryResult:
+        self._perms.check("filesystem.read", source)
+        self._perms.check("filesystem.write", destination)
+        try:
+            dst = Path(destination)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            # Determine format from destination extension
+            fmt = "zip"
+            stem = dst.stem
+            if destination.endswith(".tar.gz") or destination.endswith(".tgz"):
+                fmt = "gztar"
+                stem = dst.name.split(".")[0]
+            elif destination.endswith(".tar.bz2"):
+                fmt = "bztar"
+                stem = dst.name.split(".")[0]
+            shutil.make_archive(str(dst.parent / stem), fmt, source)
+            return SpryResult(ok=True, value=destination)
+        except Exception as e:
+            return SpryResult(ok=False, error=str(e))
+
+    def extract_archive(self, source: str, destination: str) -> SpryResult:
+        self._perms.check("filesystem.read", source)
+        self._perms.check("filesystem.write", destination)
+        try:
+            Path(destination).mkdir(parents=True, exist_ok=True)
+            shutil.unpack_archive(source, destination)
+            return SpryResult(ok=True, value=destination)
+        except Exception as e:
+            return SpryResult(ok=False, error=str(e))
+
     def list_folder(self, path: str) -> list[SpryFile]:
         self._perms.check("filesystem.read", path)
         result = []

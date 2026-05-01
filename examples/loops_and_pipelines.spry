@@ -1,0 +1,108 @@
+// SpryCode Example — Loops and Advanced Pipelines
+// Demonstrates: for loops, while loops, break/continue, filter/map/each
+
+app LoopDemo version "1.0.0"
+
+// ── Basic for loop ────────────────────────────────────────────────────────
+task sumNumbers {
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    var total = 0
+
+    for n in numbers {
+        total = total + n
+    }
+
+    log info "Sum 1..10 = " + str(total)
+}
+
+// ── For loop with break ───────────────────────────────────────────────────
+task findFirst {
+    let items = ["apple", "banana", "cherry", "date"]
+    var found = ""
+
+    for item in items {
+        if item.startsWith("c") {
+            found = item
+            break
+        }
+    }
+
+    log info "First item starting with c: " + found
+}
+
+// ── For loop with continue ────────────────────────────────────────────────
+task sumEvens {
+    let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    var evenSum = 0
+
+    for n in nums {
+        if n % 2 != 0 {
+            continue
+        }
+        evenSum = evenSum + n
+    }
+
+    log info "Sum of evens = " + str(evenSum)
+}
+
+// ── While loop ────────────────────────────────────────────────────────────
+task countdown {
+    var n = 5
+
+    while n > 0 {
+        log info "T-minus " + str(n)
+        n = n - 1
+    }
+
+    log info "Liftoff!"
+}
+
+// ── Pipeline: filter → map → each ────────────────────────────────────────
+task processList {
+    let scores = [55, 72, 48, 90, 63, 80, 41, 95]
+
+    // Keep only passing scores (>=60), multiply by a bonus factor, log each
+    let bonused = scores
+        |> filter s => s >= 60
+        |> map s => s * 2
+        |> filter s => s <= 200
+
+    for score in bonused {
+        log info "Bonused score: " + str(score)
+    }
+}
+
+// ── String methods ────────────────────────────────────────────────────────
+task stringDemo {
+    let greeting = "  Hello, SpryCode!  "
+
+    log info greeting.trim
+    log info greeting.trim.upper
+    log info greeting.trim.lower
+
+    let parts = "a,b,c,d".split(",")
+    log info "Parts count: " + str(parts.length)
+    log info "Joined: " + parts.join(" - ")
+
+    let msg = "Hello World"
+    if msg.contains("World") {
+        log info "Found 'World' in message"
+    }
+
+    let replaced = msg.replace("World", "SpryCode")
+    log info replaced
+}
+
+// ── List methods ──────────────────────────────────────────────────────────
+task listDemo {
+    let items = ["first", "second", "third"]
+
+    log info "First: " + items.first
+    log info "Last: " + items.last
+    log info "Length: " + str(items.length)
+    log info "Has 'second': " + str(items.includes("second"))
+
+    var mutable = ["a", "b"]
+    mutable.push("c")
+    log info "After push: " + mutable.join(", ")
+}

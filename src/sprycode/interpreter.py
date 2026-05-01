@@ -21,12 +21,19 @@ from .ast_nodes import (
     BinaryExpression,
     Block,
     BoolLiteral,
+    BreakStatement,
     CallExpression,
     CompensateStatement,
+    CompressStatement,
     ConnectorDeclaration,
+    ContinueStatement,
     CopyStatement,
+    CreateStatement,
     DeleteStatement,
     DenyStatement,
+    ExpectStatement,
+    ExtractStatement,
+    ForStatement,
     FraudCheckStatement,
     FunctionDeclaration,
     Identifier,
@@ -48,13 +55,16 @@ from .ast_nodes import (
     ReadStatement,
     RedactStatement,
     ReturnStatement,
+    ScheduleStatement,
     SecretLiteral,
     SensitiveDataDeclaration,
+    SleepStatement,
     StopStatement,
     StreamStatement,
     StringLiteral,
     SyncStatement,
     TaskDeclaration,
+    TestBlock,
     TransactionStatement,
     TryCatchStatement,
     UnaryExpression,
@@ -62,6 +72,7 @@ from .ast_nodes import (
     ValidateStatement,
     VarDeclaration,
     WatchStatement,
+    WhileStatement,
     WriteStatement,
 )
 from .permissions import PermissionSet
@@ -99,6 +110,14 @@ class ReturnSignal(Exception):
 
 
 class StopSignal(Exception):
+    pass
+
+
+class BreakSignal(Exception):
+    pass
+
+
+class ContinueSignal(Exception):
     pass
 
 
@@ -396,6 +415,43 @@ class Interpreter:
         if isinstance(node, CompensateStatement):
             # Compensate blocks are handled by the transaction executor
             return None
+
+        if isinstance(node, ForStatement):
+            return self._exec_for(node, env)
+
+        if isinstance(node, WhileStatement):
+            return self._exec_while(node, env)
+
+        if isinstance(node, BreakStatement):
+            raise BreakSignal()
+
+        if isinstance(node, ContinueStatement):
+            raise ContinueSignal()
+
+        if isinstance(node, CreateStatement):
+            return self._exec_create(node, env)
+
+        if isinstance(node, CompressStatement):
+            return self._exec_compress(node, env)
+
+        if isinstance(node, ExtractStatement):
+            return self._exec_extract(node, env)
+
+        if isinstance(node, SleepStatement):
+            duration = self._eval(node.duration, env)
+            seconds = float(duration) / 1000.0 if node.unit == "ms" else float(duration)
+            time.sleep(seconds)
+            return None
+
+        if isinstance(node, ScheduleStatement):
+            self.logger.info(f"[schedule] {node.frequency} at {node.at_time!r} (not running — runtime scheduler needed)")
+            return None
+
+        if isinstance(node, TestBlock):
+            return self._exec_test_block(node, env)
+
+        if isinstance(node, ExpectStatement):
+            return self._exec_expect(node, env)
 
         if isinstance(node, ReturnStatement):
             value = self._eval(node.value, env) if node.value is not None else None
@@ -698,6 +754,20 @@ class Interpreter:
                 return obj[0] if obj else None
             if prop == "last":
                 return obj[-1] if obj else None
+            if prop == "isEmpty":
+                return len(obj) == 0
+            if prop == "push":
+                return lambda item: obj.append(item)
+            if prop == "pop":
+                return lambda: obj.pop() if obj else None
+            if prop == "includes":
+                return lambda item: item in obj
+            if prop == "join":
+                return lambda sep="": sep.join(str(i) for i in obj)
+            if prop == "slice":
+                return lambda start, end=None: obj[start:end]
+            if prop == "reverse":
+                return list(reversed(obj))
 
         if isinstance(obj, str):
             if prop == "length":
@@ -708,6 +778,20 @@ class Interpreter:
                 return obj.lower()
             if prop == "trim":
                 return obj.strip()
+            if prop == "split":
+                return lambda sep=" ": obj.split(sep)
+            if prop == "contains":
+                return lambda sub: sub in obj
+            if prop == "startsWith":
+                return lambda prefix: obj.startswith(prefix)
+            if prop == "endsWith":
+                return lambda suffix: obj.endswith(suffix)
+            if prop == "replace":
+                return lambda old, new: obj.replace(old, new)
+            if prop == "slice":
+                return lambda start, end=None: obj[start:end]
+            if prop == "isEmpty":
+                return len(obj) == 0
 
         # Try attribute access
         try:
@@ -721,11 +805,24 @@ class Interpreter:
 
         for stage in node.stages[1:]:
             if isinstance(stage, LambdaExpression):
-                # Apply lambda to each item (implicit map)
-                if isinstance(value, list):
-                    value = [self._apply_lambda(stage, item, env) for item in value]
-                else:
-                    value = self._apply_lambda(stage, value, env)
+                operation = getattr(stage, "operation", "map")
+                if operation == "filter":
+                    if isinstance(value, list):
+                        value = [item for item in value if self._truthy(self._apply_lambda(stage, item, env))]
+                    else:
+                        value = value if self._truthy(self._apply_lambda(stage, value, env)) else None
+                elif operation == "each":
+                    if isinstance(value, list):
+                        for item in value:
+                            self._apply_lambda(stage, item, env)
+                    else:
+                        self._apply_lambda(stage, value, env)
+                    # "each" is side-effect only — value passes through unchanged
+                else:  # "map"
+                    if isinstance(value, list):
+                        value = [self._apply_lambda(stage, item, env) for item in value]
+                    else:
+                        value = self._apply_lambda(stage, value, env)
 
             elif isinstance(stage, Identifier):
                 # Named function/operation call
@@ -756,7 +853,19 @@ class Interpreter:
                 if callable(result):
                     value = result(value)
                 elif isinstance(result, LambdaExpression):
-                    value = self._apply_lambda(result, value, env)
+                    operation = getattr(result, "operation", "map")
+                    if operation == "filter":
+                        if isinstance(value, list):
+                            value = [item for item in value if self._truthy(self._apply_lambda(result, item, env))]
+                    elif operation == "each":
+                        if isinstance(value, list):
+                            for item in value:
+                                self._apply_lambda(result, item, env)
+                    else:
+                        if isinstance(value, list):
+                            value = [self._apply_lambda(result, item, env) for item in value]
+                        else:
+                            value = self._apply_lambda(result, value, env)
 
         return value
 
@@ -836,10 +945,22 @@ class Interpreter:
         # Apply pipeline stages
         for stage in node.pipeline:
             if isinstance(stage, LambdaExpression):
-                if isinstance(value, list):
-                    value = [self._apply_lambda(stage, item, env) for item in value]
-                else:
-                    value = self._apply_lambda(stage, value, env)
+                operation = getattr(stage, "operation", "map")
+                if operation == "filter":
+                    if isinstance(value, list):
+                        value = [item for item in value if self._truthy(self._apply_lambda(stage, item, env))]
+                    else:
+                        value = value if self._truthy(self._apply_lambda(stage, value, env)) else None
+                elif operation == "each":
+                    if isinstance(value, list):
+                        for item in value:
+                            self._apply_lambda(stage, item, env)
+                    # value unchanged
+                else:  # map
+                    if isinstance(value, list):
+                        value = [self._apply_lambda(stage, item, env) for item in value]
+                    else:
+                        value = self._apply_lambda(stage, value, env)
             elif isinstance(stage, ParseStatement):
                 value = self._parse(stage.format, str(value))
             elif isinstance(stage, WriteStatement):
@@ -853,10 +974,19 @@ class Interpreter:
             else:
                 stage_val = self._eval(stage, env)
                 if isinstance(stage_val, LambdaExpression):
-                    if isinstance(value, list):
-                        value = [self._apply_lambda(stage_val, item, env) for item in value]
+                    operation = getattr(stage_val, "operation", "map")
+                    if operation == "filter":
+                        if isinstance(value, list):
+                            value = [item for item in value if self._truthy(self._apply_lambda(stage_val, item, env))]
+                    elif operation == "each":
+                        if isinstance(value, list):
+                            for item in value:
+                                self._apply_lambda(stage_val, item, env)
                     else:
-                        value = self._apply_lambda(stage_val, value, env)
+                        if isinstance(value, list):
+                            value = [self._apply_lambda(stage_val, item, env) for item in value]
+                        else:
+                            value = self._apply_lambda(stage_val, value, env)
 
         return value
 
@@ -869,6 +999,129 @@ class Interpreter:
             return self.fs.copy_folder(source, destination)
         self.logger.warn(f"Cloud sync not yet supported: {destination}")
         return SpryResult(ok=False, error="Cloud sync requires a connector")
+
+    # ------------------------------------------------------------------
+    # Loops
+    # ------------------------------------------------------------------
+
+    def _exec_for(self, node: ForStatement, env: Environment) -> Any:
+        iterable = self._eval(node.iterable, env)
+        if not isinstance(iterable, (list, tuple, str)):
+            raise SpryRuntimeError(
+                f"'for' loop requires a list, got {type(iterable).__name__}", node
+            )
+        for item in iterable:
+            child = env.child()
+            child.define(node.var, item, mutable=False)
+            try:
+                self._exec_block(node.body, child)
+            except BreakSignal:
+                break
+            except ContinueSignal:
+                continue
+        return None
+
+    def _exec_while(self, node: WhileStatement, env: Environment) -> Any:
+        max_iterations = 100_000  # safety limit
+        count = 0
+        while self._truthy(self._eval(node.condition, env)):
+            child = env.child()
+            try:
+                self._exec_block(node.body, child)
+            except BreakSignal:
+                break
+            except ContinueSignal:
+                pass
+            count += 1
+            if count >= max_iterations:
+                raise SpryRuntimeError("While loop exceeded maximum iteration limit (100,000)", node)
+        return None
+
+    # ------------------------------------------------------------------
+    # File creation / archive
+    # ------------------------------------------------------------------
+
+    def _exec_create(self, node: CreateStatement, env: Environment) -> Any:
+        path = str(self._eval(node.path, env))
+        content = self._eval(node.content, env) if node.content is not None else ""
+        if node.target_type == "folder":
+            from pathlib import Path
+            self.permissions.check("filesystem.write", path)
+            try:
+                Path(path).mkdir(parents=True, exist_ok=True)
+                return SpryResult(ok=True, value=path)
+            except Exception as e:
+                return SpryResult(ok=False, error=str(e))
+        return self.fs.create_file(path, str(content) if content is not None else "")
+
+    def _exec_compress(self, node: CompressStatement, env: Environment) -> Any:
+        source = str(self._eval(node.source, env))
+        destination = str(self._eval(node.destination, env))
+        return self.fs.compress_folder(source, destination)
+
+    def _exec_extract(self, node: ExtractStatement, env: Environment) -> Any:
+        source = str(self._eval(node.source, env))
+        destination = str(self._eval(node.destination, env))
+        return self.fs.extract_archive(source, destination)
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    def _exec_test_block(self, node: TestBlock, env: Environment) -> Any:
+        """Execute a test block, collecting assertion results."""
+        child = env.child()
+        try:
+            self._exec_block(node.body, child)
+            self.logger.info(f"[TEST] PASS: {node.name!r}")
+            return SpryResult(ok=True, value={"test": node.name, "passed": True})
+        except AssertionError as e:
+            self.logger.error(f"[TEST] FAIL: {node.name!r} — {e}")
+            raise
+
+    def _exec_expect(self, node: ExpectStatement, env: Environment) -> Any:
+        """Execute an expect assertion."""
+        from pathlib import Path
+
+        if node.kind == "exists":
+            path = str(self._eval(node.condition, env))
+            exists = Path(path).exists()
+            if node.negated:
+                exists = not exists
+            if not exists:
+                what = "not to exist" if not node.negated else "to exist"
+                raise AssertionError(f"Expected {path!r} {what}")
+            return SpryResult(ok=True)
+
+        if node.kind == "denied":
+            # Execute the block, expect a PermissionError
+            from .permissions import PermissionError as SpryPermError
+            try:
+                child = env.child()
+                self._exec_block(node.block, child)
+                raise AssertionError("Expected operation to be denied, but it succeeded")
+            except (SpryPermError, PermissionError):
+                return SpryResult(ok=True)
+
+        if node.kind == "rollback":
+            # Execute the block, expect an exception (rollback signal)
+            try:
+                child = env.child()
+                self._exec_block(node.block, child)
+                raise AssertionError("Expected rollback, but block succeeded")
+            except AssertionError:
+                raise
+            except Exception:
+                return SpryResult(ok=True)
+
+        # kind == "truthy"
+        value = self._eval(node.condition, env)
+        result = self._truthy(value)
+        if node.negated:
+            result = not result
+        if not result:
+            raise AssertionError(f"Expectation failed: {value!r}")
+        return SpryResult(ok=True)
 
     # ------------------------------------------------------------------
     # Transactions

@@ -125,6 +125,21 @@ class TokenType(Enum):
     SCOPE = auto()
     MINIMAL = auto()
 
+    # Keywords — loops
+    FOR = auto()
+    WHILE = auto()
+    BREAK = auto()
+    CONTINUE = auto()
+
+    # Keywords — testing
+    TEST = auto()
+    EXPECT = auto()
+    EXISTS = auto()
+    DENIED = auto()
+
+    # Keywords — file creation / archive
+    CREATE = auto()
+
     # Keywords — import / export
     IMPORT = auto()
     EXPORT = auto()
@@ -286,6 +301,15 @@ KEYWORDS: dict[str, TokenType] = {
     "minimal": TokenType.MINIMAL,
     "import": TokenType.IMPORT,
     "export": TokenType.EXPORT,
+    "for": TokenType.FOR,
+    "while": TokenType.WHILE,
+    "break": TokenType.BREAK,
+    "continue": TokenType.CONTINUE,
+    "test": TokenType.TEST,
+    "expect": TokenType.EXPECT,
+    "exists": TokenType.EXISTS,
+    "denied": TokenType.DENIED,
+    "create": TokenType.CREATE,
     "true": TokenType.BOOL,
     "false": TokenType.BOOL,
     # Types (both capitalized form for annotations and lowercase for operations)

@@ -382,6 +382,7 @@ class LambdaExpression(Node):
     """<param> => <body>"""
     param: str = ""
     body: Node | None = None
+    operation: str = "map"  # "map" | "filter" | "each"
 
 
 @dataclass
@@ -432,3 +433,103 @@ class NullLiteral(Node):
 class SecretLiteral(Node):
     """secret "ENV_VAR_NAME" """
     key: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Loops
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ForStatement(Node):
+    """for <var> in <iterable> { <body> }"""
+    var: str = ""
+    iterable: Node | None = None
+    body: Block | None = None
+
+
+@dataclass
+class WhileStatement(Node):
+    """while <condition> { <body> }"""
+    condition: Node | None = None
+    body: Block | None = None
+
+
+@dataclass
+class BreakStatement(Node):
+    """break"""
+    pass
+
+
+@dataclass
+class ContinueStatement(Node):
+    """continue"""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# File creation / compression
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CreateStatement(Node):
+    """create file <path> [with <content>]"""
+    target_type: str = "file"
+    path: Node | None = None
+    content: Node | None = None
+
+
+@dataclass
+class CompressStatement(Node):
+    """compress folder <path> to <archive>"""
+    source: Node | None = None
+    destination: Node | None = None
+
+
+@dataclass
+class ExtractStatement(Node):
+    """extract <archive> to <folder>"""
+    source: Node | None = None
+    destination: Node | None = None
+
+
+# ---------------------------------------------------------------------------
+# Time / scheduling
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SleepStatement(Node):
+    """sleep <duration>[s|ms]"""
+    duration: Node | None = None
+    unit: str = "s"   # "s" | "ms"
+
+
+@dataclass
+class ScheduleStatement(Node):
+    """schedule daily at "HH:MM" { <body> }"""
+    frequency: str = "daily"
+    at_time: str = ""
+    body: Block | None = None
+
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TestBlock(Node):
+    """test "name" { <body> }"""
+    name: str = ""
+    body: Block | None = None
+
+
+@dataclass
+class ExpectStatement(Node):
+    """expect [not] <condition>  |  expect exists <path>  |  expect denied { }  |  expect rollback { }"""
+    condition: Node | None = None
+    negated: bool = False
+    kind: str = "truthy"   # "truthy" | "exists" | "denied" | "rollback"
+    block: "Block | None" = None

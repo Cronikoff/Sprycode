@@ -18,12 +18,19 @@ from .ast_nodes import (
     BinaryExpression,
     Block,
     BoolLiteral,
+    BreakStatement,
     CallExpression,
     CompensateStatement,
+    CompressStatement,
     ConnectorDeclaration,
+    ContinueStatement,
     CopyStatement,
+    CreateStatement,
     DeleteStatement,
     DenyStatement,
+    ExpectStatement,
+    ExtractStatement,
+    ForStatement,
     FraudCheckStatement,
     FunctionDeclaration,
     Identifier,
@@ -45,13 +52,16 @@ from .ast_nodes import (
     ReadStatement,
     RedactStatement,
     ReturnStatement,
+    ScheduleStatement,
     SecretLiteral,
     SensitiveDataDeclaration,
+    SleepStatement,
     StopStatement,
     StreamStatement,
     StringLiteral,
     SyncStatement,
     TaskDeclaration,
+    TestBlock,
     TransactionStatement,
     TryCatchStatement,
     UnaryExpression,
@@ -59,6 +69,7 @@ from .ast_nodes import (
     ValidateStatement,
     VarDeclaration,
     WatchStatement,
+    WhileStatement,
     WriteStatement,
 )
 from .lexer import Token, TokenType
@@ -135,6 +146,8 @@ class Parser:
         TokenType.RESULT_TYPE,   # "Result"
         TokenType.OK,            # "ok"
         TokenType.FAIL,
+        TokenType.TEST,          # "test" usable as identifier in some contexts
+        TokenType.EXISTS,
     })
 
     def _expect_ident(self) -> Token:
@@ -229,6 +242,30 @@ class Parser:
             return self._parse_parse_stmt()
         if tok.type == TokenType.COMPENSATE:
             return self._parse_compensate()
+        if tok.type == TokenType.FOR:
+            return self._parse_for()
+        if tok.type == TokenType.WHILE:
+            return self._parse_while()
+        if tok.type == TokenType.BREAK:
+            self._advance()
+            return BreakStatement(line=tok.line, column=tok.column)
+        if tok.type == TokenType.CONTINUE:
+            self._advance()
+            return ContinueStatement(line=tok.line, column=tok.column)
+        if tok.type == TokenType.CREATE:
+            return self._parse_create()
+        if tok.type == TokenType.COMPRESS:
+            return self._parse_compress()
+        if tok.type == TokenType.EXTRACT:
+            return self._parse_extract()
+        if tok.type == TokenType.SLEEP:
+            return self._parse_sleep()
+        if tok.type == TokenType.SCHEDULE:
+            return self._parse_schedule()
+        if tok.type == TokenType.TEST:
+            return self._parse_test_block()
+        if tok.type == TokenType.EXPECT:
+            return self._parse_expect()
 
         # Expression statement or assignment
         return self._parse_expr_or_assignment()
@@ -763,6 +800,150 @@ class Parser:
         return ConnectorDeclaration(name=name_tok.value, body=body, line=tok.line, column=tok.column)
 
     # ------------------------------------------------------------------
+    # Loops
+    # ------------------------------------------------------------------
+
+    def _parse_for(self) -> ForStatement:
+        tok = self._expect(TokenType.FOR)
+        var_tok = self._expect_ident()
+        self._expect(TokenType.IN)
+        iterable = self._parse_value_expression()
+        body = self._parse_block()
+        return ForStatement(
+            var=var_tok.value, iterable=iterable, body=body,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_while(self) -> WhileStatement:
+        tok = self._expect(TokenType.WHILE)
+        condition = self._parse_value_expression()
+        body = self._parse_block()
+        return WhileStatement(
+            condition=condition, body=body,
+            line=tok.line, column=tok.column,
+        )
+
+    # ------------------------------------------------------------------
+    # File creation / archive
+    # ------------------------------------------------------------------
+
+    def _parse_create(self) -> CreateStatement:
+        tok = self._expect(TokenType.CREATE)
+        target_type = "file"
+        if self._check(TokenType.FILE_TYPE):
+            self._advance()
+        elif self._check(TokenType.FOLDER_TYPE):
+            self._advance()
+            target_type = "folder"
+        path = self._parse_value_expression()
+        content = None
+        if self._match(TokenType.WITH):
+            content = self._parse_value_expression()
+        return CreateStatement(
+            target_type=target_type, path=path, content=content,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_compress(self) -> CompressStatement:
+        tok = self._expect(TokenType.COMPRESS)
+        if self._check(TokenType.FOLDER_TYPE):
+            self._advance()
+        source = self._parse_value_expression()
+        self._expect(TokenType.TO)
+        destination = self._parse_value_expression()
+        return CompressStatement(
+            source=source, destination=destination,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_extract(self) -> ExtractStatement:
+        tok = self._expect(TokenType.EXTRACT)
+        source = self._parse_value_expression()
+        self._expect(TokenType.TO)
+        if self._check(TokenType.FOLDER_TYPE):
+            self._advance()
+        destination = self._parse_value_expression()
+        return ExtractStatement(
+            source=source, destination=destination,
+            line=tok.line, column=tok.column,
+        )
+
+    # ------------------------------------------------------------------
+    # Sleep / schedule
+    # ------------------------------------------------------------------
+
+    def _parse_sleep(self) -> SleepStatement:
+        tok = self._expect(TokenType.SLEEP)
+        duration = self._parse_value_expression()
+        unit = "s"
+        # Optional unit suffix token directly after the number: "5s", "500ms"
+        if self._check(TokenType.IDENTIFIER) and self._current().value in ("s", "ms"):
+            unit = self._advance().value
+        return SleepStatement(duration=duration, unit=unit, line=tok.line, column=tok.column)
+
+    def _parse_schedule(self) -> ScheduleStatement:
+        tok = self._expect(TokenType.SCHEDULE)
+        # frequency token — e.g. "daily", or an identifier
+        freq_tok = self._current()
+        frequency = self._advance().value   # consume "daily" / identifier
+        at_time = ""
+        if self._check(TokenType.AT):
+            self._advance()
+            at_time = self._expect(TokenType.STRING).value
+        body: Block | None = None
+        if self._check(TokenType.LBRACE):
+            body = self._parse_block()
+        return ScheduleStatement(
+            frequency=frequency, at_time=at_time, body=body,
+            line=tok.line, column=tok.column,
+        )
+
+    # ------------------------------------------------------------------
+    # Test blocks
+    # ------------------------------------------------------------------
+
+    def _parse_test_block(self) -> TestBlock:
+        tok = self._expect(TokenType.TEST)
+        name = self._expect(TokenType.STRING).value
+        body = self._parse_block()
+        return TestBlock(name=name, body=body, line=tok.line, column=tok.column)
+
+    def _parse_expect(self) -> ExpectStatement:
+        tok = self._expect(TokenType.EXPECT)
+
+        # expect rollback { ... }
+        if self._check(TokenType.ROLLBACK):
+            self._advance()
+            block = self._parse_block()
+            return ExpectStatement(kind="rollback", block=block, line=tok.line, column=tok.column)
+
+        # expect denied { ... }
+        if self._check(TokenType.DENIED):
+            self._advance()
+            block = self._parse_block()
+            return ExpectStatement(kind="denied", block=block, line=tok.line, column=tok.column)
+
+        # expect [not] exists <path>
+        negated = False
+        if self._check(TokenType.NOT):
+            self._advance()
+            negated = True
+        if self._check(TokenType.EXISTS):
+            self._advance()
+            path_expr = self._parse_value_expression()
+            return ExpectStatement(
+                kind="exists", condition=path_expr, negated=negated,
+                line=tok.line, column=tok.column,
+            )
+
+        # expect <expression>
+        condition = self._parse_value_expression()
+        return ExpectStatement(
+            kind="truthy", condition=condition, negated=negated,
+            line=tok.line, column=tok.column,
+        )
+
+    # ------------------------------------------------------------------
     # Fraud check
     # ------------------------------------------------------------------
 
@@ -847,13 +1028,19 @@ class Parser:
 
         if tok.type == TokenType.FILTER:
             self._advance()
-            return self._parse_lambda()
+            lam = self._parse_lambda()
+            lam.operation = "filter"
+            return lam
         if tok.type == TokenType.MAP:
             self._advance()
-            return self._parse_lambda()
+            lam = self._parse_lambda()
+            lam.operation = "map"
+            return lam
         if tok.type == TokenType.EACH:
             self._advance()
-            return self._parse_lambda()
+            lam = self._parse_lambda()
+            lam.operation = "each"
+            return lam
         if tok.type == TokenType.PARSE:
             return self._parse_parse_stmt()
         if tok.type == TokenType.WRITE:
@@ -867,7 +1054,9 @@ class Parser:
         tok = self._current()
         param = self._expect_ident().value
         self._expect(TokenType.FAT_ARROW)
-        body = self._parse_expression()
+        # Lambda body must NOT consume pipeline operators (|>) at this level.
+        # Use _parse_or() instead of _parse_expression() to stop before |>.
+        body = self._parse_or()
         return LambdaExpression(param=param, body=body, line=tok.line, column=tok.column)
 
     def _parse_or(self) -> Node:

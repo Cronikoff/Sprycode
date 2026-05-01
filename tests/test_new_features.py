@@ -711,3 +711,364 @@ class TestHttpAccessible:
         assert isinstance(let_decl, LetDeclaration)
         assert isinstance(let_decl.value, CallExpression)
         assert len(let_decl.value.args) == 2
+
+
+# ---------------------------------------------------------------------------
+# f-strings
+# ---------------------------------------------------------------------------
+
+
+class TestFStrings:
+    def test_basic_fstring(self):
+        result = eval_expr('f"Hello {42}!"')
+        assert result == "Hello 42!"
+
+    def test_fstring_variable(self):
+        interp = run('let name = "Alice"\nlet msg = f"Hello {name}!"')
+        assert interp.globals.get("msg") == "Hello Alice!"
+
+    def test_fstring_expression(self):
+        interp = run('let x = 5\nlet s = f"x squared = {x * x}"')
+        assert interp.globals.get("s") == "x squared = 25"
+
+    def test_fstring_multiple_vars(self):
+        interp = run('let a = "foo"\nlet b = "bar"\nlet s = f"{a} and {b}"')
+        assert interp.globals.get("s") == "foo and bar"
+
+    def test_fstring_no_interp(self):
+        result = eval_expr('f"no interpolation"')
+        assert result == "no interpolation"
+
+
+# ---------------------------------------------------------------------------
+# Triple-quoted strings
+# ---------------------------------------------------------------------------
+
+
+class TestTripleQuotedStrings:
+    def test_triple_quoted_multiline(self):
+        result = eval_expr('"""hello\nworld"""')
+        assert result == "hello\nworld"
+
+    def test_triple_quoted_single_line(self):
+        result = eval_expr('"""just a string"""')
+        assert result == "just a string"
+
+    def test_triple_quoted_with_escapes(self):
+        result = eval_expr('"""line1\\nline2"""')
+        assert result == "line1\nline2"
+
+    def test_triple_quoted_empty(self):
+        result = eval_expr('""""""')
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Ternary expression
+# ---------------------------------------------------------------------------
+
+
+class TestTernaryExpression:
+    def test_ternary_true(self):
+        assert eval_expr("5 > 3 ? 1 : 0") == 1
+
+    def test_ternary_false(self):
+        assert eval_expr("1 > 3 ? 1 : 0") == 0
+
+    def test_ternary_with_strings(self):
+        assert eval_expr('"x" == "x" ? "yes" : "no"') == "yes"
+
+    def test_ternary_nested(self):
+        # Nested ternary using parentheses to disambiguate
+        result = eval_expr("1 > 0 ? (2 > 1 ? 42 : 2) : 0")
+        assert result == 42
+
+    def test_ternary_in_expression(self):
+        interp = run('let x = 10\nlet s = x >= 10 ? "big" : "small"')
+        assert interp.globals.get("s") == "big"
+
+
+# ---------------------------------------------------------------------------
+# Null-coalescing operator ??
+# ---------------------------------------------------------------------------
+
+
+class TestNullCoalesce:
+    def test_null_returns_fallback(self):
+        assert eval_expr("null ?? 42") == 42
+
+    def test_non_null_returns_value(self):
+        assert eval_expr('"hello" ?? "fallback"') == "hello"
+
+    def test_zero_is_not_null(self):
+        assert eval_expr("0 ?? 99") == 0
+
+    def test_empty_string_is_not_null(self):
+        assert eval_expr('"" ?? "fallback"') == ""
+
+    def test_chained_null_coalesce(self):
+        assert eval_expr("null ?? null ?? 3") == 3
+
+
+# ---------------------------------------------------------------------------
+# in operator
+# ---------------------------------------------------------------------------
+
+
+class TestInOperator:
+    def test_in_list_true(self):
+        assert eval_expr('"b" in ["a", "b", "c"]') is True
+
+    def test_in_list_false(self):
+        assert eval_expr('"z" in ["a", "b", "c"]') is False
+
+    def test_in_dict_true(self):
+        assert eval_expr('"key" in {key: 1, other: 2}') is True
+
+    def test_in_dict_false(self):
+        assert eval_expr('"missing" in {key: 1}') is False
+
+    def test_in_string(self):
+        assert eval_expr('"ell" in "hello"') is True
+
+    def test_not_in_list(self):
+        log_output = []
+        run(
+            'let tags = ["a", "b"]\nif not "x" in tags {\n    log info "ok"\n}',
+            log_output=log_output,
+        )
+        assert any("ok" in line for line in log_output)
+
+    def test_in_expression_in_loop(self):
+        log_output = []
+        run(
+            'let nums = [1, 2, 3, 4, 5]\nlet evens = [2, 4, 6]\nvar count = 0\nfor n in nums {\n    if n in evens {\n        count += 1\n    }\n}\nlog info count',
+            log_output=log_output,
+        )
+        assert any("2" in line for line in log_output)
+
+
+# ---------------------------------------------------------------------------
+# Power operator **
+# ---------------------------------------------------------------------------
+
+
+class TestPowerOperator:
+    def test_power_basic(self):
+        assert eval_expr("2 ** 10") == 1024
+
+    def test_power_zero(self):
+        assert eval_expr("5 ** 0") == 1
+
+    def test_power_one(self):
+        assert eval_expr("7 ** 1") == 7
+
+    def test_power_right_assoc(self):
+        # 2 ** 3 ** 2 = 2 ** 9 = 512 (right-associative)
+        assert eval_expr("2 ** 3 ** 2") == 512
+
+    def test_sqrt_via_power(self):
+        assert eval_expr("9 ** 0.5") == 3.0
+
+
+# ---------------------------------------------------------------------------
+# range() and sequence builtins
+# ---------------------------------------------------------------------------
+
+
+class TestSequenceBuiltins:
+    def test_range_two_args(self):
+        result = eval_expr("range(1, 5)")
+        assert result == [1, 2, 3, 4]
+
+    def test_range_one_arg(self):
+        result = eval_expr("range(5)")
+        assert result == [0, 1, 2, 3, 4]
+
+    def test_range_step(self):
+        result = eval_expr("range(0, 10, 2)")
+        assert result == [0, 2, 4, 6, 8]
+
+    def test_sorted_list(self):
+        result = eval_expr("sorted([3, 1, 4, 1, 5, 9, 2, 6])")
+        assert result[0] == 1
+
+    def test_sum_list(self):
+        assert eval_expr("sum([1, 2, 3, 4, 5])") == 15
+
+    def test_any_true(self):
+        assert eval_expr("any([false, true, false])") is True
+
+    def test_any_false(self):
+        assert eval_expr("any([false, false, false])") is False
+
+    def test_all_true(self):
+        assert eval_expr("all([true, true, true])") is True
+
+    def test_all_false(self):
+        assert eval_expr("all([true, false, true])") is False
+
+    def test_zip(self):
+        result = eval_expr("zip([1, 2, 3], [4, 5, 6])")
+        assert result == [[1, 4], [2, 5], [3, 6]]
+
+    def test_enumerate(self):
+        result = eval_expr('enumerate(["a", "b", "c"])')
+        assert result == [[0, "a"], [1, "b"], [2, "c"]]
+
+    def test_unique(self):
+        result = eval_expr("unique([1, 2, 2, 3, 1, 3])")
+        assert result == [1, 2, 3]
+
+    def test_flatten(self):
+        result = eval_expr("flatten([[1, 2], [3, 4], [5]])")
+        assert result == [1, 2, 3, 4, 5]
+
+    def test_sqrt(self):
+        assert eval_expr("sqrt(16)") == 4.0
+
+    def test_pow_builtin(self):
+        assert eval_expr("pow(2, 8)") == 256
+
+
+# ---------------------------------------------------------------------------
+# Array spread operator
+# ---------------------------------------------------------------------------
+
+
+class TestSpreadOperator:
+    def test_spread_at_end(self):
+        interp = run("let a = [3, 4, 5]\nlet b = [1, 2, ...a]")
+        assert interp.globals.get("b") == [1, 2, 3, 4, 5]
+
+    def test_spread_at_start(self):
+        interp = run("let a = [1, 2]\nlet b = [...a, 3, 4]")
+        assert interp.globals.get("b") == [1, 2, 3, 4]
+
+    def test_spread_in_middle(self):
+        interp = run("let a = [2, 3]\nlet b = [1, ...a, 4]")
+        assert interp.globals.get("b") == [1, 2, 3, 4]
+
+    def test_spread_empty(self):
+        interp = run("let a = []\nlet b = [1, ...a, 2]")
+        assert interp.globals.get("b") == [1, 2]
+
+    def test_spread_concat_two(self):
+        interp = run("let a = [1, 2]\nlet b = [3, 4]\nlet c = [...a, ...b]")
+        assert interp.globals.get("c") == [1, 2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# Dict methods
+# ---------------------------------------------------------------------------
+
+
+class TestDictMethods:
+    def test_dict_keys(self):
+        interp = run("let d = {a: 1, b: 2, c: 3}\nlet k = d.keys")
+        k = interp.globals.get("k")
+        assert sorted(k) == ["a", "b", "c"]
+
+    def test_dict_values(self):
+        interp = run("let d = {a: 1, b: 2}\nlet v = d.values")
+        v = interp.globals.get("v")
+        assert sorted(v) == [1, 2]
+
+    def test_dict_entries(self):
+        interp = run("let d = {x: 10}\nlet e = d.entries")
+        e = interp.globals.get("e")
+        assert e == [["x", 10]]
+
+    def test_dict_length(self):
+        assert eval_expr("{a: 1, b: 2, c: 3}.length") == 3
+
+    def test_dict_has(self):
+        assert eval_expr('{key: 1}.has("key")') is True
+        assert eval_expr('{key: 1}.has("missing")') is False
+
+    def test_dict_merge(self):
+        interp = run("let a = {x: 1}\nlet b = {y: 2}\nlet c = a.merge(b)")
+        c = interp.globals.get("c")
+        assert c == {"x": 1, "y": 2}
+
+    def test_dict_set(self):
+        interp = run("var d = {a: 1}\nd.set(\"b\", 2)")
+        d = interp.globals.get("d")
+        assert d.get("b") == 2
+
+    def test_dict_delete(self):
+        interp = run('var d = {a: 1, b: 2}\nd.delete("a")')
+        d = interp.globals.get("d")
+        assert "a" not in d
+
+
+# ---------------------------------------------------------------------------
+# Enhanced list methods
+# ---------------------------------------------------------------------------
+
+
+class TestListMethods:
+    def test_sort(self):
+        interp = run("let nums = [3, 1, 2]\nlet s = nums.sort")
+        assert interp.globals.get("s") == [1, 2, 3]
+
+    def test_indexOf(self):
+        assert eval_expr('["a", "b", "c"].indexOf("b")') == 1
+        assert eval_expr('["a", "b", "c"].indexOf("z")') == -1
+
+    def test_sum(self):
+        assert eval_expr("[1, 2, 3, 4].sum") == 10
+
+    def test_min(self):
+        assert eval_expr("[5, 1, 3, 2].min") == 1
+
+    def test_max(self):
+        assert eval_expr("[5, 1, 3, 2].max") == 5
+
+    def test_unique(self):
+        result = eval_expr("[1, 2, 2, 3, 1].unique")
+        assert result == [1, 2, 3]
+
+    def test_flat(self):
+        result = eval_expr("[[1, 2], [3, 4]].flat")
+        assert result == [1, 2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# Enhanced string methods
+# ---------------------------------------------------------------------------
+
+
+class TestStringMethods:
+    def test_trimStart(self):
+        assert eval_expr('"  hello  ".trimStart') == "hello  "
+
+    def test_trimEnd(self):
+        assert eval_expr('"  hello  ".trimEnd') == "  hello"
+
+    def test_indexOf(self):
+        assert eval_expr('"hello world".indexOf("world")') == 6
+
+    def test_padStart(self):
+        assert eval_expr('"42".padStart(5)') == "   42"
+
+    def test_padEnd(self):
+        assert eval_expr('"42".padEnd(5)') == "42   "
+
+    def test_repeat(self):
+        assert eval_expr('"ab".repeat(3)') == "ababab"
+
+    def test_chars(self):
+        result = eval_expr('"abc".chars')
+        assert result == ["a", "b", "c"]
+
+    def test_lines(self):
+        result = eval_expr('"a\\nb\\nc".lines')
+        assert result == ["a", "b", "c"]
+
+    def test_isNotEmpty(self):
+        assert eval_expr('"hello".isNotEmpty') is True
+        assert eval_expr('"".isNotEmpty') is False
+
+    def test_includes(self):
+        assert eval_expr('"hello".includes("ell")') is True

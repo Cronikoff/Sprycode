@@ -401,8 +401,44 @@ class ObjectLiteral(Node):
 
 @dataclass
 class ArrayLiteral(Node):
-    """[item, ...]"""
+    """[item, ...]  — items may include SpreadElement nodes"""
     items: list[Node] = field(default_factory=list)
+
+
+@dataclass
+class SpreadElement(Node):
+    """...expr  — used inside array/object literals"""
+    expr: Node | None = None
+
+
+@dataclass
+class TernaryExpression(Node):
+    """condition ? then_expr : else_expr"""
+    condition: Node | None = None
+    then_expr: Node | None = None
+    else_expr: Node | None = None
+
+
+@dataclass
+class NullCoalesceExpression(Node):
+    """left ?? right  — returns left if not null/None, else right"""
+    left: Node | None = None
+    right: Node | None = None
+
+
+@dataclass
+class InExpression(Node):
+    """item in collection  — membership test"""
+    item: Node | None = None
+    collection: Node | None = None
+
+
+@dataclass
+class FStringExpression(Node):
+    """f\"Hello {name}!\"  — interpolated string
+    raw_template: the template string with {expr} markers as-is.
+    """
+    raw_template: str = ""
 
 
 # ---------------------------------------------------------------------------

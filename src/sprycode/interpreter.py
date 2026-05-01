@@ -36,9 +36,11 @@ from .ast_nodes import (
     ExtractStatement,
     ForStatement,
     FraudCheckStatement,
+    FStringExpression,
     FunctionDeclaration,
     Identifier,
     IfStatement,
+    InExpression,
     IndexExpression,
     LambdaExpression,
     LetDeclaration,
@@ -46,6 +48,7 @@ from .ast_nodes import (
     MemberExpression,
     MoveStatement,
     Node,
+    NullCoalesceExpression,
     NullLiteral,
     NumberLiteral,
     ObjectLiteral,
@@ -60,11 +63,13 @@ from .ast_nodes import (
     SecretLiteral,
     SensitiveDataDeclaration,
     SleepStatement,
+    SpreadElement,
     StopStatement,
     StreamStatement,
     StringLiteral,
     SyncStatement,
     TaskDeclaration,
+    TernaryExpression,
     TestBlock,
     TransactionStatement,
     TryCatchStatement,
@@ -253,6 +258,10 @@ class Interpreter:
         env.define("min", min)
         env.define("max", max)
         env.define("round", round)
+        env.define("floor", lambda x: int(x) if x >= 0 else int(x) - (1 if x != int(x) else 0))
+        env.define("ceil", lambda x: int(x) + (1 if x != int(x) else 0))
+        env.define("sqrt", lambda x: x ** 0.5)
+        env.define("pow", lambda base, exp: base ** exp)
         env.define("len", len)
         env.define("str", self._builtin_str)
         env.define("int", int)
@@ -260,6 +269,21 @@ class Interpreter:
         env.define("bool", bool)
         env.define("list", list)
         env.define("type", lambda v: type(v).__name__)
+
+        # Sequence builtins
+        env.define("range", lambda *args: list(range(*[int(a) for a in args])))
+        env.define("sorted", lambda lst, **kw: sorted(lst))
+        env.define("reversed", lambda lst: list(reversed(lst)))
+        env.define("sum", sum)
+        env.define("any", any)
+        env.define("all", all)
+        env.define("zip", lambda *iterables: [list(t) for t in zip(*iterables)])
+        env.define("enumerate", lambda lst, start=0: [[i, v] for i, v in enumerate(lst, start)])
+        env.define("flatten", lambda lst: [x for sub in lst for x in (sub if isinstance(sub, list) else [sub])])
+        env.define("unique", lambda lst: list(dict.fromkeys(lst)))
+        env.define("keys", lambda d: list(d.keys()) if isinstance(d, dict) else [])
+        env.define("values", lambda d: list(d.values()) if isinstance(d, dict) else [])
+        env.define("entries", lambda d: [[k, v] for k, v in d.items()] if isinstance(d, dict) else [])
 
         # Constants
         env.define("ok", SPRY_OK)
@@ -274,6 +298,28 @@ class Interpreter:
         env.define("http", _HttpHelper(self.permissions))
 
         return env
+
+    def _eval_fstring(self, template: str, env: "Environment") -> str:
+        """Evaluate an f-string template by substituting {expr} with evaluated values."""
+        import re
+        result = ""
+        last = 0
+        for m in re.finditer(r"\{([^}]+)\}", template):
+            result += template[last:m.start()]
+            expr_src = m.group(1)
+            try:
+                from .lexer import Lexer as _Lexer
+                from .parser import Parser as _Parser
+                tokens = _Lexer(expr_src).tokenize()
+                prog = _Parser(tokens).parse()
+                # prog.body[0] is the expression statement
+                val = self._eval(prog.body[0], env)
+                result += self._builtin_str(val)
+            except Exception as e:
+                result += f"{{{expr_src}}}"
+            last = m.end()
+        result += template[last:]
+        return result
 
     @staticmethod
     def _builtin_str(value: Any) -> str:
@@ -639,7 +685,17 @@ class Interpreter:
             return result
 
         if isinstance(node, ArrayLiteral):
-            return [self._eval(item, env) for item in node.items]
+            result_list: list[Any] = []
+            for item in node.items:
+                if isinstance(item, SpreadElement):
+                    spread_val = self._eval(item.expr, env)
+                    if isinstance(spread_val, (list, tuple)):
+                        result_list.extend(spread_val)
+                    else:
+                        raise SpryRuntimeError("Spread operator requires a list", item)
+                else:
+                    result_list.append(self._eval(item, env))
+            return result_list
 
         if isinstance(node, BinaryExpression):
             return self._eval_binary(node, env)
@@ -663,6 +719,32 @@ class Interpreter:
 
         if isinstance(node, LambdaExpression):
             return node  # Lambda is evaluated lazily
+
+        if isinstance(node, TernaryExpression):
+            cond = self._eval(node.condition, env)
+            if self._truthy(cond):
+                return self._eval(node.then_expr, env)
+            return self._eval(node.else_expr, env)
+
+        if isinstance(node, NullCoalesceExpression):
+            left_val = self._eval(node.left, env)
+            if left_val is not None:
+                return left_val
+            return self._eval(node.right, env)
+
+        if isinstance(node, InExpression):
+            item_val = self._eval(node.item, env)
+            coll_val = self._eval(node.collection, env)
+            if isinstance(coll_val, (list, tuple)):
+                return item_val in coll_val
+            if isinstance(coll_val, dict):
+                return item_val in coll_val
+            if isinstance(coll_val, str):
+                return str(item_val) in coll_val
+            raise SpryRuntimeError(f"'in' requires a list, object, or string, got {type(coll_val).__name__}", node)
+
+        if isinstance(node, FStringExpression):
+            return self._eval_fstring(node.raw_template, env)
 
         if isinstance(node, PipelineExpression):
             return self._eval_pipeline(node, env)
@@ -703,6 +785,8 @@ class Interpreter:
             return left / right
         if op == "%":
             return left % right
+        if op == "**":
+            return left ** right
         if op == "==":
             return left == right
         if op == "!=":
@@ -808,6 +892,31 @@ class Interpreter:
         if isinstance(obj, dict):
             if prop in obj:
                 return obj[prop]
+            # Built-in dict properties/methods
+            if prop == "keys":
+                return list(obj.keys())
+            if prop == "values":
+                return list(obj.values())
+            if prop == "entries":
+                return [[k, v] for k, v in obj.items()]
+            if prop == "length":
+                return len(obj)
+            if prop == "isEmpty":
+                return len(obj) == 0
+            if prop == "has":
+                return lambda key: key in obj
+            if prop == "set":
+                def _dict_set(key: str, value: Any) -> None:  # noqa: E731
+                    obj[key] = value
+                return _dict_set
+            if prop == "delete":
+                def _dict_del(key: str) -> None:  # noqa: E731
+                    obj.pop(key, None)
+                return _dict_del
+            if prop == "merge":
+                def _dict_merge(other: dict) -> dict:  # noqa: E731
+                    return {**obj, **other}
+                return _dict_merge
             raise SpryRuntimeError(f"Key {prop!r} not found in object", node)
 
         if isinstance(obj, list):
@@ -831,6 +940,29 @@ class Interpreter:
                 return lambda start, end=None: obj[start:end]
             if prop == "reverse":
                 return list(reversed(obj))
+            if prop == "sort":
+                return sorted(obj)
+            if prop == "sorted":
+                return sorted(obj)
+            if prop == "indexOf":
+                return lambda item: obj.index(item) if item in obj else -1
+            if prop == "find":
+                return lambda pred: next((x for x in obj if pred(x)), None)
+            if prop == "filter":
+                return lambda pred: [x for x in obj if self._truthy(pred(x) if callable(pred) else pred)]
+            if prop == "map":
+                return lambda fn: [fn(x) for x in obj]
+            if prop == "flat":
+                return [x for sublist in obj for x in (sublist if isinstance(sublist, list) else [sublist])]
+            if prop == "sum":
+                return sum(obj)
+            if prop == "min":
+                return min(obj) if obj else None
+            if prop == "max":
+                return max(obj) if obj else None
+            if prop == "unique":
+                seen: set = set()
+                return [x for x in obj if not (x in seen or seen.add(x))]  # type: ignore[func-returns-value]
 
         if isinstance(obj, str):
             if prop == "length":
@@ -841,9 +973,15 @@ class Interpreter:
                 return obj.lower()
             if prop == "trim":
                 return obj.strip()
+            if prop == "trimStart":
+                return obj.lstrip()
+            if prop == "trimEnd":
+                return obj.rstrip()
             if prop == "split":
                 return lambda sep=" ": obj.split(sep)
             if prop == "contains":
+                return lambda sub: sub in obj
+            if prop == "includes":
                 return lambda sub: sub in obj
             if prop == "startsWith":
                 return lambda prefix: obj.startswith(prefix)
@@ -851,10 +989,26 @@ class Interpreter:
                 return lambda suffix: obj.endswith(suffix)
             if prop == "replace":
                 return lambda old, new: obj.replace(old, new)
+            if prop == "replaceAll":
+                return lambda old, new: obj.replace(old, new)
             if prop == "slice":
                 return lambda start, end=None: obj[start:end]
             if prop == "isEmpty":
                 return len(obj) == 0
+            if prop == "isNotEmpty":
+                return len(obj) > 0
+            if prop == "indexOf":
+                return lambda sub: obj.find(sub)
+            if prop == "padStart":
+                return lambda width, ch=" ": obj.rjust(width, ch)
+            if prop == "padEnd":
+                return lambda width, ch=" ": obj.ljust(width, ch)
+            if prop == "repeat":
+                return lambda n: obj * n
+            if prop == "chars":
+                return list(obj)
+            if prop == "lines":
+                return obj.splitlines()
 
         # Try attribute access
         try:

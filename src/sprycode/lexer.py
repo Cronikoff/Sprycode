@@ -196,6 +196,10 @@ class TokenType(Enum):
     MINUS_EQ = auto()     # -=
     STAR_EQ = auto()      # *=
     SLASH_EQ = auto()     # /=
+    STAR_STAR = auto()    # ** (power)
+    QUESTION = auto()     # ? (ternary)
+    QUESTION_QUESTION = auto()  # ?? (null coalescing)
+    ELLIPSIS = auto()     # ... (spread)
 
     # Delimiters
     LPAREN = auto()
@@ -213,6 +217,7 @@ class TokenType(Enum):
     NEWLINE = auto()
     EOF = auto()
     COMMENT = auto()
+    FSTRING = auto()    # f"..." interpolated string
 
 
 # Map keyword strings to their token types
@@ -448,7 +453,10 @@ class Lexer:
                 yield Token(TokenType.COMMENT, comment, line, col)
                 continue
 
-            # String literals (double or single quoted)
+            # String literals (double or single quoted, and f-strings)
+            if ch == "f" and self._peek() in ('"', "'"):
+                yield from self._scan_fstring(line, col)
+                continue
             if ch in ('"', "'"):
                 yield from self._scan_string(line, col)
                 continue
@@ -531,6 +539,12 @@ class Lexer:
                 yield Token(TokenType.MINUS_EQ, "-=", line, col)
                 continue
 
+            if ch == "*" and self._peek() == "*":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.STAR_STAR, "**", line, col)
+                continue
+
             if ch == "*" and self._peek() == "=":
                 self._advance()
                 self._advance()
@@ -541,6 +555,24 @@ class Lexer:
                 self._advance()
                 self._advance()
                 yield Token(TokenType.SLASH_EQ, "/=", line, col)
+                continue
+
+            if ch == "?" and self._peek() == "?":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.QUESTION_QUESTION, "??", line, col)
+                continue
+
+            if ch == "?":
+                self._advance()
+                yield Token(TokenType.QUESTION, "?", line, col)
+                continue
+
+            if ch == "." and self._peek() == "." and self.pos + 2 < len(self.source) and self.source[self.pos + 2] == ".":
+                self._advance()
+                self._advance()
+                self._advance()
+                yield Token(TokenType.ELLIPSIS, "...", line, col)
                 continue
 
             # Single-char operators and delimiters
@@ -576,6 +608,17 @@ class Lexer:
 
     def _scan_string(self, line: int, col: int) -> Iterator[Token]:
         quote = self._advance()
+        # Check for triple-quoted string
+        if self.pos < len(self.source) and self._current() == quote:
+            self._advance()  # consume second quote
+            if self.pos < len(self.source) and self._current() == quote:
+                self._advance()  # consume third quote — triple-quoted string
+                yield from self._scan_triple_string(quote, line, col)
+                return
+            else:
+                # Empty string ""
+                yield Token(TokenType.STRING, "", line, col)
+                return
         value = ""
         while self.pos < len(self.source):
             ch = self._current()
@@ -602,6 +645,55 @@ class Lexer:
         else:
             raise LexerError("Unterminated string literal", line, col)
         yield Token(TokenType.STRING, value, line, col)
+
+    def _scan_triple_string(self, quote: str, line: int, col: int) -> Iterator[Token]:
+        """Scan a triple-quoted string that may span multiple lines."""
+        value = ""
+        while self.pos < len(self.source):
+            ch = self._current()
+            if ch == quote and self.pos + 2 < len(self.source) and self.source[self.pos + 1] == quote and self.source[self.pos + 2] == quote:
+                self._advance()
+                self._advance()
+                self._advance()
+                yield Token(TokenType.STRING, value, line, col)
+                return
+            if ch == "\\":
+                self._advance()
+                esc = self._advance()
+                escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\",
+                              '"': '"', "'": "'", "0": "\0"}
+                value += escape_map.get(esc, esc)
+            else:
+                if ch == "\n":
+                    self.line += 1
+                    self.column = 1
+                value += self._advance()
+        raise LexerError("Unterminated triple-quoted string", line, col)
+
+    def _scan_fstring(self, line: int, col: int) -> Iterator[Token]:
+        """Scan an f-string: f"Hello {name}!" → FSTRING token with raw value."""
+        self._advance()  # consume 'f'
+        quote = self._advance()  # consume opening quote
+        value = ""
+        while self.pos < len(self.source):
+            ch = self._current()
+            if ch == "\\":
+                self._advance()
+                esc = self._advance()
+                escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\",
+                              '"': '"', "'": "'", "0": "\0"}
+                value += escape_map.get(esc, esc)
+            elif ch == quote:
+                self._advance()
+                break
+            elif ch == "\n":
+                raise LexerError("Unterminated f-string", line, col)
+            else:
+                value += self._advance()
+        else:
+            raise LexerError("Unterminated f-string", line, col)
+        # Yield as FSTRING with raw content including {expr} markers
+        yield Token(TokenType.FSTRING, value, line, col)
 
     def _scan_number(self, line: int, col: int) -> Iterator[Token]:
         value = ""

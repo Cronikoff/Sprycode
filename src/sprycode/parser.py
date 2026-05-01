@@ -33,9 +33,11 @@ from .ast_nodes import (
     ExtractStatement,
     ForStatement,
     FraudCheckStatement,
+    FStringExpression,
     FunctionDeclaration,
     Identifier,
     IfStatement,
+    InExpression,
     IndexExpression,
     LambdaExpression,
     LetDeclaration,
@@ -43,6 +45,7 @@ from .ast_nodes import (
     MemberExpression,
     MoveStatement,
     Node,
+    NullCoalesceExpression,
     NullLiteral,
     NumberLiteral,
     ObjectLiteral,
@@ -57,11 +60,13 @@ from .ast_nodes import (
     SecretLiteral,
     SensitiveDataDeclaration,
     SleepStatement,
+    SpreadElement,
     StopStatement,
     StreamStatement,
     StringLiteral,
     SyncStatement,
     TaskDeclaration,
+    TernaryExpression,
     TestBlock,
     TransactionStatement,
     TryCatchStatement,
@@ -1075,10 +1080,10 @@ class Parser:
         Used for parsing arguments to file operations (paths, data values),
         so that ``|>`` at the statement level is handled by the outer pipeline parser.
         """
-        return self._parse_or()
+        return self._parse_null_coalesce()
 
     def _parse_pipeline(self) -> Node:
-        left = self._parse_or()
+        left = self._parse_null_coalesce()
         if self._check(TokenType.PIPE_ARROW):
             stages = [left]
             while self._check(TokenType.PIPE_ARROW):
@@ -1113,16 +1118,38 @@ class Parser:
         if tok.type == TokenType.READ:
             return self._parse_read()
 
-        return self._parse_or()
+        return self._parse_null_coalesce()
 
     def _parse_lambda(self) -> LambdaExpression:
         tok = self._current()
         param = self._expect_ident().value
         self._expect(TokenType.FAT_ARROW)
         # Lambda body must NOT consume pipeline operators (|>) at this level.
-        # Use _parse_or() instead of _parse_expression() to stop before |>.
-        body = self._parse_or()
+        body = self._parse_null_coalesce()
         return LambdaExpression(param=param, body=body, line=tok.line, column=tok.column)
+
+    def _parse_null_coalesce(self) -> Node:
+        """left ?? right"""
+        left = self._parse_ternary()
+        while self._check(TokenType.QUESTION_QUESTION):
+            op_tok = self._advance()
+            right = self._parse_ternary()
+            left = NullCoalesceExpression(left=left, right=right, line=op_tok.line, column=op_tok.column)
+        return left
+
+    def _parse_ternary(self) -> Node:
+        """condition ? then_expr : else_expr"""
+        condition = self._parse_or()
+        if self._check(TokenType.QUESTION):
+            op_tok = self._advance()
+            then_expr = self._parse_or()
+            self._expect(TokenType.COLON)
+            else_expr = self._parse_or()
+            return TernaryExpression(
+                condition=condition, then_expr=then_expr, else_expr=else_expr,
+                line=op_tok.line, column=op_tok.column,
+            )
+        return condition
 
     def _parse_or(self) -> Node:
         left = self._parse_and()
@@ -1141,13 +1168,40 @@ class Parser:
         return left
 
     def _parse_equality(self) -> Node:
-        left = self._parse_comparison()
+        left = self._parse_in()
         while self._check(TokenType.EQ_EQ, TokenType.BANG_EQ):
             op_tok = self._advance()
-            right = self._parse_comparison()
+            right = self._parse_in()
             left = BinaryExpression(
                 left=left, op=op_tok.value, right=right, line=op_tok.line, column=op_tok.column
             )
+        return left
+
+    def _parse_in(self) -> Node:
+        """item in collection  OR  item not in collection"""
+        # Handle 'not expr in collection' as 'not (expr in collection)'
+        if self._check(TokenType.NOT):
+            op_tok = self._advance()  # consume 'not'
+            inner_left = self._parse_comparison()
+            if self._check(TokenType.IN):
+                self._advance()  # consume 'in'
+                right = self._parse_comparison()
+                in_expr = InExpression(item=inner_left, collection=right, line=op_tok.line, column=op_tok.column)
+                return UnaryExpression(op="!", operand=in_expr, line=op_tok.line, column=op_tok.column)
+            # Plain 'not expr' without 'in'
+            return UnaryExpression(op="!", operand=inner_left, line=op_tok.line, column=op_tok.column)
+        left = self._parse_comparison()
+        if self._check(TokenType.NOT) and self._peek().type == TokenType.IN:
+            op_tok = self._advance()  # not
+            self._advance()           # in
+            right = self._parse_comparison()
+            # "not in" → negate the InExpression
+            inner = InExpression(item=left, collection=right, line=op_tok.line, column=op_tok.column)
+            return UnaryExpression(op="!", operand=inner, line=op_tok.line, column=op_tok.column)
+        if self._check(TokenType.IN):
+            op_tok = self._advance()
+            right = self._parse_comparison()
+            return InExpression(item=left, collection=right, line=op_tok.line, column=op_tok.column)
         return left
 
     def _parse_comparison(self) -> Node:
@@ -1171,14 +1225,23 @@ class Parser:
         return left
 
     def _parse_multiplication(self) -> Node:
-        left = self._parse_unary()
+        left = self._parse_power()
         while self._check(TokenType.STAR, TokenType.SLASH, TokenType.PERCENT):
             op_tok = self._advance()
-            right = self._parse_unary()
+            right = self._parse_power()
             left = BinaryExpression(
                 left=left, op=op_tok.value, right=right, line=op_tok.line, column=op_tok.column
             )
         return left
+
+    def _parse_power(self) -> Node:
+        """Right-associative: 2 ** 3 ** 2  →  2 ** (3 ** 2)"""
+        base = self._parse_unary()
+        if self._check(TokenType.STAR_STAR):
+            op_tok = self._advance()
+            exp = self._parse_power()   # right-assoc
+            return BinaryExpression(left=base, op="**", right=exp, line=op_tok.line, column=op_tok.column)
+        return base
 
     def _parse_unary(self) -> Node:
         if self._check(TokenType.BANG, TokenType.MINUS):
@@ -1270,6 +1333,10 @@ class Parser:
         if tok.type == TokenType.LBRACKET:
             return self._parse_array_literal()
 
+        if tok.type == TokenType.FSTRING:
+            self._advance()
+            return FStringExpression(raw_template=tok.value, line=tok.line, column=tok.column)
+
         if tok.type == TokenType.OK:
             self._advance()
             return Identifier(name="ok", line=tok.line, column=tok.column)
@@ -1353,7 +1420,12 @@ class Parser:
         tok = self._expect(TokenType.LBRACKET)
         items: list[Node] = []
         while not self._check(TokenType.RBRACKET) and not self._at_end():
-            items.append(self._parse_expression())
+            if self._check(TokenType.ELLIPSIS):
+                spread_tok = self._advance()
+                expr = self._parse_expression()
+                items.append(SpreadElement(expr=expr, line=spread_tok.line, column=spread_tok.column))
+            else:
+                items.append(self._parse_expression())
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACKET)

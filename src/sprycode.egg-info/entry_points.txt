@@ -1,4 +1,0 @@
-[console_scripts]
-spry = sprycode.cli:main
-spryc = sprycode.cli:compile_cmd
-sprypm = sprycode.cli:pm_cmd

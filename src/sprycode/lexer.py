@@ -182,6 +182,8 @@ class TokenType(Enum):
     SELF = auto()
     TYPEOF = auto()
     INSTANCEOF = auto()
+    VOID = auto()            # void operator
+    PRIVATE_IDENT = auto()   # #identifier (private field)
     SPAWN = auto()
     DEBIT = auto()
     CREDIT = auto()
@@ -234,6 +236,8 @@ class TokenType(Enum):
     GT_EQ = auto()
     AND_AND = auto()
     OR_OR = auto()
+    AND_AND_EQ = auto()   # &&= (logical-and assignment)
+    OR_OR_EQ = auto()     # ||= (logical-or assignment)
     BANG = auto()
     EQ = auto()
     ARROW = auto()        # ->
@@ -244,6 +248,7 @@ class TokenType(Enum):
     STAR_EQ = auto()      # *=
     SLASH_EQ = auto()     # /=
     STAR_STAR = auto()    # ** (power)
+    STAR_STAR_EQ = auto() # **= (power assign)
     QUESTION = auto()     # ? (ternary)
     QUESTION_QUESTION = auto()  # ?? (null coalescing)
     QUESTION_QUESTION_EQ = auto()  # ??= (null-coalescing assignment)
@@ -254,6 +259,20 @@ class TokenType(Enum):
     MINUS_MINUS = auto()  # -- (decrement)
     PERCENT_EQ = auto()   # %=
     REGEX = auto()        # /pattern/flags
+
+    # Bitwise operators
+    AMP = auto()          # &  (bitwise AND)
+    PIPE = auto()         # |  (bitwise OR)
+    CARET = auto()        # ^  (bitwise XOR)
+    TILDE = auto()        # ~  (bitwise NOT)
+    LSHIFT = auto()       # << (left shift)
+    RSHIFT = auto()       # >> (right shift)
+    URSHIFT = auto()      # >>> (unsigned right shift)
+    AMP_EQ = auto()       # &= (bitwise AND assign)
+    PIPE_EQ = auto()      # |= (bitwise OR assign)
+    CARET_EQ = auto()     # ^= (bitwise XOR assign)
+    LSHIFT_EQ = auto()    # <<= (left shift assign)
+    RSHIFT_EQ = auto()    # >>= (right shift assign)
 
     # Delimiters
     LPAREN = auto()
@@ -402,6 +421,7 @@ KEYWORDS: dict[str, TokenType] = {
     "self": TokenType.SELF,
     "typeof": TokenType.TYPEOF,
     "instanceof": TokenType.INSTANCEOF,
+    "void": TokenType.VOID,
     "spawn": TokenType.SPAWN,
     "debit": TokenType.DEBIT,
     "credit": TokenType.CREDIT,
@@ -579,6 +599,18 @@ class Lexer:
                 yield from self._scan_identifier(line, col)
                 continue
 
+            # Private field identifiers: #name
+            if ch == "#" and (self._peek().isalpha() or self._peek() == "_"):
+                self._advance()  # consume #
+                # Scan the identifier part
+                start_col = col
+                ident = ""
+                while self._current().isalnum() or self._current() == "_":
+                    ident += self._current()
+                    self._advance()
+                yield Token(TokenType.PRIVATE_IDENT, ident, line, start_col)
+                continue
+
             # Multi-char operators
             if ch == "-" and self._peek() == ">":
                 self._advance()
@@ -625,13 +657,21 @@ class Lexer:
             if ch == "&" and self._peek() == "&":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.AND_AND, "&&", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.AND_AND_EQ, "&&=", line, col)
+                else:
+                    yield Token(TokenType.AND_AND, "&&", line, col)
                 continue
 
             if ch == "|" and self._peek() == "|":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.OR_OR, "||", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.OR_OR_EQ, "||=", line, col)
+                else:
+                    yield Token(TokenType.OR_OR, "||", line, col)
                 continue
 
             # Compound assignment operators
@@ -668,7 +708,11 @@ class Lexer:
             if ch == "*" and self._peek() == "*":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.STAR_STAR, "**", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.STAR_STAR_EQ, "**=", line, col)
+                else:
+                    yield Token(TokenType.STAR_STAR, "**", line, col)
                 continue
 
             if ch == "*" and self._peek() == "=":
@@ -702,6 +746,69 @@ class Lexer:
             if ch == "?":
                 self._advance()
                 yield Token(TokenType.QUESTION, "?", line, col)
+                continue
+
+            # Bitwise operators (multi-char must come before single-char)
+            if ch == "&" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.AMP_EQ, "&=", line, col)
+                continue
+
+            if ch == "|" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.PIPE_EQ, "|=", line, col)
+                continue
+
+            if ch == "^" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.CARET_EQ, "^=", line, col)
+                continue
+
+            if ch == "<" and self._peek() == "<":
+                self._advance()
+                self._advance()
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.LSHIFT_EQ, "<<=", line, col)
+                else:
+                    yield Token(TokenType.LSHIFT, "<<", line, col)
+                continue
+
+            if ch == ">" and self._peek() == ">":
+                self._advance()
+                self._advance()
+                if self._current() == ">":
+                    # >>> unsigned right shift
+                    self._advance()
+                    yield Token(TokenType.URSHIFT, ">>>", line, col)
+                elif self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.RSHIFT_EQ, ">>=", line, col)
+                else:
+                    yield Token(TokenType.RSHIFT, ">>", line, col)
+                continue
+
+            if ch == "&":
+                self._advance()
+                yield Token(TokenType.AMP, "&", line, col)
+                continue
+
+            if ch == "|":
+                self._advance()
+                yield Token(TokenType.PIPE, "|", line, col)
+                continue
+
+            if ch == "^":
+                self._advance()
+                yield Token(TokenType.CARET, "^", line, col)
+                continue
+
+            if ch == "~":
+                self._advance()
+                yield Token(TokenType.TILDE, "~", line, col)
                 continue
 
             if ch == "." and self._peek() == "." and self.pos + 2 < len(self.source) and self.source[self.pos + 2] == ".":
@@ -900,6 +1007,42 @@ class Lexer:
         yield Token(TokenType.FSTRING, value, line, col)
 
     def _scan_number(self, line: int, col: int) -> Iterator[Token]:
+        # Check for 0x, 0b, 0o prefix literals
+        if self._current() == "0" and self.pos + 1 < len(self.source):
+            next_ch = self.source[self.pos + 1].lower()
+            if next_ch == "x":
+                self._advance()  # consume '0'
+                self._advance()  # consume 'x'
+                hex_val = ""
+                while self.pos < len(self.source) and (self._current() in "0123456789abcdefABCDEF_"):
+                    if self._current() != "_":
+                        hex_val += self._advance()
+                    else:
+                        self._advance()
+                yield Token(TokenType.NUMBER, str(int(hex_val or "0", 16)), line, col)
+                return
+            if next_ch == "b":
+                self._advance()  # consume '0'
+                self._advance()  # consume 'b'
+                bin_val = ""
+                while self.pos < len(self.source) and self._current() in "01_":
+                    if self._current() != "_":
+                        bin_val += self._advance()
+                    else:
+                        self._advance()
+                yield Token(TokenType.NUMBER, str(int(bin_val or "0", 2)), line, col)
+                return
+            if next_ch == "o":
+                self._advance()  # consume '0'
+                self._advance()  # consume 'o'
+                oct_val = ""
+                while self.pos < len(self.source) and self._current() in "01234567_":
+                    if self._current() != "_":
+                        oct_val += self._advance()
+                    else:
+                        self._advance()
+                yield Token(TokenType.NUMBER, str(int(oct_val or "0", 8)), line, col)
+                return
         value = ""
         has_dot = False
         while self.pos < len(self.source):
@@ -914,7 +1057,12 @@ class Lexer:
                 self._advance()
             else:
                 break
-        yield Token(TokenType.NUMBER, value, line, col)
+        # BigInt literal: 42n
+        if self.pos < len(self.source) and self._current() == "n" and not has_dot:
+            self._advance()  # consume 'n'
+            yield Token(TokenType.NUMBER, value + "n", line, col)
+        else:
+            yield Token(TokenType.NUMBER, value, line, col)
 
     def _scan_identifier(self, line: int, col: int) -> Iterator[Token]:
         value = ""

@@ -568,6 +568,17 @@ class ForStatement(Node):
     vars: list[str] = field(default_factory=list)  # for destructured: for i, v in ...
     iterable: Node | None = None
     body: Block | None = None
+    label: str | None = None  # set by LabeledStatement when wrapping this loop
+
+
+@dataclass
+class ForCStyleStatement(Node):
+    """for <init>; <condition>; <update> { <body> }"""
+    init: "Node | None" = None
+    condition: "Node | None" = None
+    update: "Node | None" = None
+    body: "Block | None" = None
+    label: str | None = None
 
 
 @dataclass
@@ -575,18 +586,26 @@ class WhileStatement(Node):
     """while <condition> { <body> }"""
     condition: Node | None = None
     body: Block | None = None
+    label: str | None = None  # set by LabeledStatement when wrapping this loop
 
 
 @dataclass
 class BreakStatement(Node):
-    """break"""
-    pass
+    """break [label]"""
+    label: str | None = None
 
 
 @dataclass
 class ContinueStatement(Node):
-    """continue"""
-    pass
+    """continue [label]"""
+    label: str | None = None
+
+
+@dataclass
+class LabeledStatement(Node):
+    """label: statement"""
+    label: str = ""
+    body: "Node | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +734,7 @@ class ListDestructure(Node):
     value: Node | None = None
     mutable: bool = False
     rest_name: str | None = None  # name of the ...rest element, if any
+    defaults: dict[str, "Node"] = field(default_factory=dict)  # name -> default expr
 
 
 @dataclass
@@ -722,8 +742,18 @@ class ObjectDestructure(Node):
     """let {a, b} = expr  — object destructuring"""
     names: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)  # {name: alias}
+    nested: dict[str, "Node"] = field(default_factory=dict)  # {name: nested destructure node}
     value: Node | None = None
     mutable: bool = False
+    defaults: dict[str, "Node"] = field(default_factory=dict)  # name/alias -> default expr
+
+
+@dataclass
+class ListDestructureAssignment(Node):
+    """[a, b] = expr — list destructuring assignment (without let/var)"""
+    names: list[str] = field(default_factory=list)
+    value: Node | None = None
+    rest_name: str | None = None  # ...rest element
 
 
 @dataclass
@@ -762,6 +792,16 @@ class AnonymousFunctionExpression(Node):
 class ListComprehension(Node):
     """[<expr> for <var> in <iterable> [if <cond>]]"""
     expr: Node | None = None
+    var: str = ""
+    iterable: Node | None = None
+    condition: Node | None = None  # optional filter
+
+
+@dataclass
+class DictComprehension(Node):
+    """{<key_expr>: <val_expr> for <var> in <iterable> [if <cond>]}"""
+    key_expr: Node | None = None
+    val_expr: Node | None = None
     var: str = ""
     iterable: Node | None = None
     condition: Node | None = None  # optional filter
@@ -869,7 +909,29 @@ class TypeCastExpression(Node):
 
 
 @dataclass
+class GetterDeclaration(Node):
+    """get propName() { ... } inside a class body"""
+    name: str = ""
+    body: "Block | None" = None
+
+
+@dataclass
+class SetterDeclaration(Node):
+    """set propName(param) { ... } inside a class body"""
+    name: str = ""
+    param: str = ""
+    body: "Block | None" = None
+
+
+@dataclass
 class ResultLiteral(Node):
     """result ok <value>  or  result fail <message>"""
     is_ok: bool = True
     value: Node | None = None
+
+
+@dataclass
+class TaggedTemplateExpression(Node):
+    """tag`template ${expr}` — a tagged template literal call"""
+    tag: "Node | None" = None       # the tag function expression
+    template: str = ""              # the raw template string (like FStringExpression.raw_template)

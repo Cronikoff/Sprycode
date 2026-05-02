@@ -106,7 +106,9 @@ from .ast_nodes import (
     ThrowStatement,
     TransactionStatement,
     TryCatchStatement,
+    TypeCastExpression,
     TypeofExpression,
+    ResultLiteral,
     UnaryExpression,
     UseStatement,
     ValidateStatement,
@@ -678,6 +680,23 @@ class Interpreter:
         env.define("Array", _ArrayNamespace())
         env.define("Object", _ObjectNamespace())
         env.define("Number", _NumberNamespace())
+
+        # Event bus
+        env.define("events", _EventsHelper(self._call_value))
+
+        # Python interop namespace
+        env.define("python", _PythonNamespace())
+
+        # Set builtin — creates a deduplicated list
+        def _builtin_set(lst: Any) -> list:
+            if not isinstance(lst, (list, tuple)):
+                raise SpryRuntimeError("Set() requires a list", None)  # type: ignore[arg-type]
+            seen: list = []
+            for item in lst:
+                if item not in seen:
+                    seen.append(item)
+            return seen
+        env.define("Set", _builtin_set)
 
         # Money helper
         env.define("money", _MoneyHelper())
@@ -1252,18 +1271,23 @@ class Interpreter:
 
         if isinstance(node, ObjectLiteral):
             result: dict[str, Any] = {}
-            # If entries list is populated (spread present), use it
+            # If entries list is populated (spread or computed keys present), use it
             if node.entries:
-                for key_or_none, val_node in node.entries:
-                    if key_or_none is None:
+                for key_or_marker, val_node in node.entries:
+                    if key_or_marker is None:
                         # Spread element
                         spread_val = self._eval(val_node.expr, env)  # type: ignore[union-attr]
                         if isinstance(spread_val, dict):
                             result.update(spread_val)
                         else:
                             raise SpryRuntimeError("Object spread requires an object", node)
+                    elif key_or_marker == "__computed__":
+                        # Computed key: ([key_expr], value_node) tuple
+                        key_expr_node, value_node_inner = val_node  # type: ignore[misc]
+                        computed_key = str(self._eval(key_expr_node, env))
+                        result[computed_key] = self._eval(value_node_inner, env)
                     else:
-                        result[key_or_none] = self._eval(val_node, env)
+                        result[key_or_marker] = self._eval(val_node, env)
             else:
                 for k, v in node.pairs.items():
                     result[k] = self._eval(v, env)
@@ -1399,6 +1423,15 @@ class Interpreter:
             val = self._eval(node.operand, env)
             return self._spry_instanceof(val, node.type_name)
 
+        if isinstance(node, TypeCastExpression):
+            return self._eval_type_cast(node, env)
+
+        if isinstance(node, ResultLiteral):
+            value = self._eval(node.value, env) if node.value is not None else None
+            if node.is_ok:
+                return SpryResult(ok=True, value=value)
+            return SpryResult(ok=False, error=str(value) if value is not None else "")
+
         if isinstance(node, DebitStatement):
             return self._exec_debit(node, env)
 
@@ -1482,8 +1515,11 @@ class Interpreter:
             return callee.create(args)
 
         if callable(callee) and not isinstance(callee, (SpryFunction, SpryTask)):
+            # SpryCode-aware callables (namespaces, event bus, etc.) receive raw args
+            # so they can handle SpryFunctions directly via _call_value
+            raw_args = args if getattr(callee, "_spry_raw_args", False) else py_args
             try:
-                return callee(*py_args)
+                return callee(*raw_args)
             except Exception as e:
                 raise SpryRuntimeError(str(e), node)
 
@@ -1902,20 +1938,27 @@ class Interpreter:
                 return lambda start, end=None: obj[int(start):int(end)] if end is not None else obj[int(start):]
             if prop == "match":
                 import re as _re
-                def _str_match(pattern: str, _obj: str = obj) -> Any:
-                    pat, flags = _parse_regex_pattern(pattern)
+                def _str_match(pattern: Any, _obj: str = obj) -> Any:
+                    if isinstance(pattern, SpryRegex):
+                        return pattern.pattern.findall(_obj) or None
+                    pat, flags = _parse_regex_pattern(str(pattern))
                     return _re.findall(pat, _obj, flags) or None
                 return _str_match
             if prop == "matchAll":
                 import re as _re
-                def _str_matchall(pattern: str, _obj: str = obj) -> list:
-                    pat, flags = _parse_regex_pattern(pattern)
+                def _str_matchall(pattern: Any, _obj: str = obj) -> list:
+                    if isinstance(pattern, SpryRegex):
+                        return [[m.group(), *m.groups()] for m in pattern.pattern.finditer(_obj)]
+                    pat, flags = _parse_regex_pattern(str(pattern))
                     return [[m.group(), *m.groups()] for m in _re.finditer(pat, _obj, flags)]
                 return _str_matchall
             if prop == "search":
                 import re as _re
-                def _str_search(pattern: str, _obj: str = obj) -> int:
-                    pat, flags = _parse_regex_pattern(pattern)
+                def _str_search(pattern: Any, _obj: str = obj) -> int:
+                    if isinstance(pattern, SpryRegex):
+                        m = pattern.pattern.search(_obj)
+                        return m.start() if m else -1
+                    pat, flags = _parse_regex_pattern(str(pattern))
                     m = _re.search(pat, _obj, flags)
                     return m.start() if m else -1
                 return _str_search
@@ -2135,11 +2178,19 @@ class Interpreter:
         if isinstance(lam, SpryLambda):
             child = lam.closure.child()
             child.define(lam.param, item, mutable=False)
-            return self._eval(lam.body, child)
-        # Fallback for raw LambdaExpression nodes (pipeline stages)
-        child = env.child()
-        child.define(lam.param, item, mutable=False)
-        return self._eval(lam.body, child)
+            body = lam.body
+        else:
+            # Fallback for raw LambdaExpression nodes (pipeline stages)
+            child = env.child()
+            child.define(lam.param, item, mutable=False)
+            body = lam.body
+        # Block body (from `x => { ... }`) — execute as a block
+        if isinstance(body, Block):
+            try:
+                return self._exec_block(body, child)
+            except ReturnSignal as r:
+                return r.value
+        return self._eval(body, child)
 
     def _apply_multi_lambda(self, lam: "MultiParamLambda | SpryMultiLambda", args: list[Any], env: Environment) -> Any:
         if isinstance(lam, SpryMultiLambda):
@@ -2148,7 +2199,13 @@ class Interpreter:
             child = env.child()
         for i, param in enumerate(lam.params):
             child.define(param, args[i] if i < len(args) else None, mutable=False)
-        return self._eval(lam.body, child)
+        body = lam.body
+        if isinstance(body, Block):
+            try:
+                return self._exec_block(body, child)
+            except ReturnSignal as r:
+                return r.value
+        return self._eval(body, child)
 
     def _to_py_callable(self, fn: Any, env: Environment) -> Any:
         """Wrap a SpryCode callable as a Python callable for use in method closures."""
@@ -2575,6 +2632,38 @@ class Interpreter:
             return "Folder"
         return type(val).__name__
 
+    def _eval_type_cast(self, node: TypeCastExpression, env: Environment) -> Any:
+        """Evaluate `expr as TypeName` — convert value to the target type."""
+        val = self._eval(node.operand, env)
+        t = node.type_name
+        try:
+            if t in ("Text", "String", "str"):
+                return self._builtin_str(val)
+            if t in ("Int", "Integer", "int"):
+                if isinstance(val, bool):
+                    return int(val)
+                if isinstance(val, float):
+                    return int(val)
+                if isinstance(val, str):
+                    return int(float(val.strip()))
+                return int(val)
+            if t in ("Float", "Number", "float"):
+                if isinstance(val, str):
+                    return float(val.strip())
+                return float(val)
+            if t in ("Bool", "Boolean", "bool"):
+                return self._truthy(val)
+            if t in ("List", "Array", "list"):
+                if isinstance(val, (list, tuple)):
+                    return list(val)
+                if isinstance(val, str):
+                    return list(val)
+                return [val]
+            # Unknown cast — return value unchanged
+            return val
+        except (ValueError, TypeError) as e:
+            raise SpryRuntimeError(f"Type cast to {t!r} failed: {e}", node) from e
+
     def _spry_instanceof(self, val: Any, type_name: str) -> bool:
         """Return True if val is an instance of the named SpryCode type."""
         actual = self._spry_typeof(val)
@@ -2802,6 +2891,29 @@ class Interpreter:
                         instance.set(field_vars[i], arg)
 
         return instance
+
+    def _call_value(self, fn: Any, args: list) -> Any:
+        """Call any SpryCode value as a function (used by event handlers, etc.)."""
+        if isinstance(fn, SpryFunction):
+            # Create a dummy CallExpression node for error context
+            from .ast_nodes import Node as _Node
+            class _DummyNode(_Node):
+                line: int = 0
+                column: int = 0
+            return self._call_function(fn, args, _DummyNode())
+        if isinstance(fn, BoundMethod):
+            from .ast_nodes import Node as _Node
+            class _DummyNode(_Node):
+                line: int = 0
+                column: int = 0
+            return self._call_bound_method(fn, args, _DummyNode())
+        if isinstance(fn, (SpryLambda, LambdaExpression)):
+            return self._apply_lambda(fn, args[0] if args else None, self.globals)
+        if isinstance(fn, (SpryMultiLambda, MultiParamLambda)):
+            return self._apply_multi_lambda(fn, args, self.globals)
+        if callable(fn):
+            return fn(*args)
+        return None
 
     def _call_bound_method(self, bm: BoundMethod, args: list[Any], node: Node) -> Any:
         """Call a method on an instance, binding `self` in the execution environment."""
@@ -4081,3 +4193,129 @@ class _DateHelper:
             return delta.days  # default: days
         except Exception as e:
             raise ValueError(f"Date diff error: {e}") from e
+
+
+class _EventsHelper:
+    """Simple synchronous event bus: events.on("name", handler), events.emit("name", arg)."""
+
+    def __init__(self, call_fn: Any = None) -> None:
+        self._handlers: dict[str, list] = {}
+        self._call_fn = call_fn  # interpreter._call_value reference
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "on":
+            return self._on
+        if prop == "off":
+            return self._off
+        if prop == "once":
+            return self._once
+        if prop == "emit":
+            return self._emit
+        if prop == "listeners":
+            return self._listeners
+        raise AttributeError(prop)
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return None
+
+    def _on(self, name: str, handler: Any) -> None:
+        self._handlers.setdefault(str(name), []).append(handler)
+    _on._spry_raw_args = True  # type: ignore[attr-defined]
+
+    def _off(self, name: str, handler: Any = None) -> None:
+        if handler is None:
+            self._handlers.pop(str(name), None)
+        else:
+            handlers = self._handlers.get(str(name), [])
+            if handler in handlers:
+                handlers.remove(handler)
+    _off._spry_raw_args = True  # type: ignore[attr-defined]
+
+    def _once(self, name: str, handler: Any) -> None:
+        """Register a one-shot handler that removes itself after first call."""
+        def _wrapper(*args: Any) -> Any:
+            self._off(name, _wrapper)
+            return self._invoke(handler, list(args))
+        self._handlers.setdefault(str(name), []).append(_wrapper)
+    _once._spry_raw_args = True  # type: ignore[attr-defined]
+
+    def _emit(self, name: str, *args: Any) -> Any:
+        """Emit an event, calling all registered handlers. Returns last handler result."""
+        result = None
+        for handler in list(self._handlers.get(str(name), [])):
+            result = self._invoke(handler, list(args))
+        return result
+
+    def _listeners(self, name: str) -> list:
+        return list(self._handlers.get(str(name), []))
+
+
+class _PythonNamespace:
+    """Python interop namespace: python.eval(expr), python.call(fn_name, args)."""
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "eval":
+            return self._py_eval
+        if prop == "call":
+            return self._py_call
+        if prop == "import_module":
+            return self._py_import
+        raise AttributeError(prop)
+
+    @staticmethod
+    def _py_eval(expr: str) -> Any:
+        """Evaluate a Python expression string safely."""
+        import ast as _ast
+        # Only allow simple expressions (no statements)
+        try:
+            tree = _ast.parse(str(expr), mode="eval")
+        except SyntaxError as e:
+            raise ValueError(f"python.eval: invalid expression: {e}") from e
+        # Restrict builtins to safe set
+        safe_builtins = {
+            "abs": abs, "round": round, "len": len, "min": min, "max": max,
+            "sum": sum, "int": int, "float": float, "str": str, "bool": bool,
+            "list": list, "dict": dict, "tuple": tuple, "set": set,
+            "range": range, "enumerate": enumerate, "zip": zip, "sorted": sorted,
+            "reversed": reversed, "any": any, "all": all, "pow": pow,
+            "__builtins__": {},
+        }
+        return eval(compile(tree, "<python.eval>", "eval"), {"__builtins__": safe_builtins}, {})  # noqa: S307
+
+    @staticmethod
+    def _py_call(fn_name: str, args: Any = None) -> Any:
+        """Call a Python builtin or stdlib function by name.
+
+        If `args` is a list, it is passed as the single argument (e.g. ``len([1,2,3])``).
+        For functions that take multiple positional args, pass them as separate args
+        from the SpryCode side via spread: ``python.call("pow", [2, 10])``.
+        """
+        import builtins as _builtins
+        fn = getattr(_builtins, str(fn_name), None)
+        if fn is None:
+            raise ValueError(f"python.call: unknown function {fn_name!r}")
+        if args is None:
+            return fn()
+        # A single list/tuple is passed as the one argument (matches most builtins)
+        if isinstance(args, (list, tuple)):
+            try:
+                return fn(args)
+            except TypeError:
+                # Fallback: try unpacking (for multi-arg builtins like pow, round, etc.)
+                return fn(*args)
+        return fn(args)
+
+    @staticmethod
+    def _py_import(module_name: str) -> Any:
+        """Import a Python module and return it."""
+        import importlib
+        allowed = {"math", "json", "re", "random", "statistics", "string",
+                   "datetime", "collections", "itertools", "functools"}
+        name = str(module_name)
+        if name not in allowed:
+            raise ValueError(f"python.import: module {name!r} not in allowed list")
+        return importlib.import_module(name)

@@ -78,6 +78,7 @@ from .ast_nodes import (
     RedactStatement,
     RegexLiteral,
     RepeatUntilStatement,
+    ResultLiteral,
     ReturnStatement,
     ScheduleStatement,
     SecretLiteral,
@@ -99,6 +100,7 @@ from .ast_nodes import (
     ThrowStatement,
     TransactionStatement,
     TryCatchStatement,
+    TypeCastExpression,
     TypeofExpression,
     UnaryExpression,
     UseStatement,
@@ -185,6 +187,7 @@ class Parser:
         TokenType.RESULT_TYPE,   # "Result"
         TokenType.OK,            # "ok"
         TokenType.FAIL,
+        TokenType.RESULT,        # "result"
         TokenType.TEST,          # "test" usable as identifier in some contexts
         TokenType.EXISTS,
         # Built-in function names that are also keywords
@@ -992,6 +995,24 @@ class Parser:
 
     def _parse_for(self) -> ForStatement:
         tok = self._expect(TokenType.FOR)
+        # Support: for [a, b] in ... — list destructuring
+        if self._check(TokenType.LBRACKET):
+            self._advance()  # consume '['
+            dest_vars: list[str] = []
+            while not self._check(TokenType.RBRACKET) and not self._at_end():
+                dest_vars.append(self._expect_ident().value)
+                if not self._match(TokenType.COMMA):
+                    break
+            self._expect(TokenType.RBRACKET)
+            self._expect(TokenType.IN)
+            iterable = self._parse_value_expression()
+            body = self._parse_block()
+            return ForStatement(
+                var=dest_vars[0] if dest_vars else "_",
+                vars=dest_vars,
+                iterable=iterable, body=body,
+                line=tok.line, column=tok.column,
+            )
         var_tok = self._expect_ident()
         # Destructured: for i, v in enumerate(...)
         extra_vars: list[str] = []
@@ -1107,7 +1128,7 @@ class Parser:
         else:
             module = self._expect_ident().value
         alias = None
-        if self._check(TokenType.IDENTIFIER) and self._current().value == "as":
+        if self._check(TokenType.AS) or (self._check(TokenType.IDENTIFIER) and self._current().value == "as"):
             self._advance()
             alias = self._expect_ident().value
         return ImportStatement(module=module, alias=alias,
@@ -1811,15 +1832,22 @@ class Parser:
                 params.append(self._expect_ident().value)
         self._expect(TokenType.RPAREN)
         self._expect(TokenType.FAT_ARROW)
-        body = self._parse_null_coalesce()
+        if self._check(TokenType.LBRACE):
+            body: Node = self._parse_block()
+        else:
+            body = self._parse_null_coalesce()
         return MultiParamLambda(params=params, body=body, line=tok.line, column=tok.column)
 
     def _parse_lambda(self) -> LambdaExpression:
         tok = self._current()
         param = self._expect_ident().value
         self._expect(TokenType.FAT_ARROW)
-        # Lambda body must NOT consume pipeline operators (|>) at this level.
-        body = self._parse_null_coalesce()
+        # Lambda body: if '{' follows, parse as block; otherwise expression
+        if self._check(TokenType.LBRACE):
+            body: Node = self._parse_block()
+        else:
+            # Lambda body must NOT consume pipeline operators (|>) at this level.
+            body = self._parse_null_coalesce()
         return LambdaExpression(param=param, body=body, line=tok.line, column=tok.column)
 
     def _parse_null_coalesce(self) -> Node:
@@ -2041,6 +2069,30 @@ class Parser:
                     line=inst_tok.line,
                     column=inst_tok.column,
                 )
+            elif self._check(TokenType.AS):
+                # Type cast: expr as TypeName — only if next token is a known type name
+                # (avoids conflict with `with expr as alias` and `import "mod" as alias`)
+                _type_tokens = {
+                    TokenType.NUMBER_TYPE, TokenType.INT_TYPE, TokenType.FLOAT_TYPE,
+                    TokenType.BOOL_TYPE, TokenType.TEXT, TokenType.RESULT_TYPE,
+                    TokenType.LIST_TYPE,
+                }
+                next_tok = self._peek()  # token after 'as'
+                if (
+                    next_tok.type in _type_tokens
+                    or (next_tok.type == TokenType.IDENTIFIER and next_tok.value[0].isupper())
+                ):
+                    as_tok = self._advance()  # consume 'as'
+                    type_tok = self._current()
+                    self._advance()  # consume the type name
+                    expr = TypeCastExpression(
+                        operand=expr,
+                        type_name=type_tok.value,
+                        line=as_tok.line,
+                        column=as_tok.column,
+                    )
+                else:
+                    break
             else:
                 break
         return expr
@@ -2164,7 +2216,10 @@ class Parser:
                     self._advance()  # )
                     if self._check(TokenType.FAT_ARROW):
                         self._advance()  # =>
-                        body = self._parse_null_coalesce()
+                        if self._check(TokenType.LBRACE):
+                            body: Node = self._parse_block()
+                        else:
+                            body = self._parse_null_coalesce()
                         if len(params) == 1:
                             return LambdaExpression(param=params[0], body=body,
                                                     line=tok.line, column=tok.column)
@@ -2258,13 +2313,32 @@ class Parser:
             self._advance()
             return self._parse_postfix()
 
+        # result ok <expr>  or  result fail <expr>
+        if tok.type == TokenType.RESULT:
+            self._advance()  # consume 'result'
+            if self._check(TokenType.OK):
+                self._advance()  # consume 'ok'
+                value_node = self._parse_null_coalesce()
+                return ResultLiteral(is_ok=True, value=value_node,
+                                     line=tok.line, column=tok.column)
+            if self._check(TokenType.FAIL):
+                self._advance()  # consume 'fail'
+                value_node = self._parse_null_coalesce()
+                return ResultLiteral(is_ok=False, value=value_node,
+                                     line=tok.line, column=tok.column)
+            # Bare 'result' — treat as identifier
+            return Identifier(name="result", line=tok.line, column=tok.column)
+
         # Allow identifiers and type-keywords used as identifiers
         if tok.type in self._IDENTIFIER_LIKE:
             self._advance()
-            # Check for lambda: ident => expr
+            # Check for lambda: ident => expr  or  ident => { block }
             if self._check(TokenType.FAT_ARROW):
                 self._advance()
-                body = self._parse_expression()
+                if self._check(TokenType.LBRACE):
+                    body: Node = self._parse_block()
+                else:
+                    body = self._parse_expression()
                 return LambdaExpression(param=tok.value, body=body, line=tok.line, column=tok.column)
             return Identifier(name=tok.value, line=tok.line, column=tok.column)
 
@@ -2275,6 +2349,7 @@ class Parser:
         pairs: dict[str, Node] = {}
         entries: list = []
         has_spread = False
+        has_computed = False
         while not self._check(TokenType.RBRACE) and not self._at_end():
             if self._check(TokenType.ELLIPSIS):
                 has_spread = True
@@ -2282,6 +2357,17 @@ class Parser:
                 expr = self._parse_expression()
                 spread = SpreadElement(expr=expr, line=spread_tok.line, column=spread_tok.column)
                 entries.append((None, spread))
+            elif self._check(TokenType.LBRACKET):
+                # Computed key: { [expr]: value }
+                has_computed = True
+                self._advance()  # consume '['
+                key_expr = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                self._expect(TokenType.COLON)
+                value = self._parse_expression()
+                # Use a placeholder key in pairs; runtime will evaluate key_expr
+                placeholder = f"__computed_{len(entries)}__"
+                entries.append(("__computed__", (key_expr, value)))
             else:
                 key_tok = self._current()
                 key = self._advance().value
@@ -2296,7 +2382,7 @@ class Parser:
                 break
         self._expect(TokenType.RBRACE)
         result = ObjectLiteral(pairs=pairs, line=tok.line, column=tok.column)
-        if has_spread:
+        if has_spread or has_computed:
             result.entries = entries
         return result
 

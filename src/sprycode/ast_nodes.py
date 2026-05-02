@@ -851,3 +851,17 @@ class IndexAssignment(Node):
     index: Node | None = None
     value: Node | None = None
 
+
+
+@dataclass
+class TypeCastExpression(Node):
+    """expr as TypeName — cast an expression to a named type"""
+    operand: Node | None = None
+    type_name: str = ""
+
+
+@dataclass
+class ResultLiteral(Node):
+    """result ok <value>  or  result fail <message>"""
+    is_ok: bool = True
+    value: Node | None = None

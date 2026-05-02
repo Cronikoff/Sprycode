@@ -102,6 +102,7 @@ class TokenType(Enum):
     LAST = auto()
     OK = auto()
     FAIL = auto()
+    RESULT = auto()
     TAKE = auto()
     SKIP = auto()
     GROUPBY = auto()
@@ -343,6 +344,7 @@ KEYWORDS: dict[str, TokenType] = {
     "last": TokenType.LAST,
     "ok": TokenType.OK,
     "fail": TokenType.FAIL,
+    "result": TokenType.RESULT,
     "take": TokenType.TAKE,
     "skip": TokenType.SKIP,
     "groupBy": TokenType.GROUPBY,

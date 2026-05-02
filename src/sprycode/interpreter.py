@@ -357,7 +357,13 @@ class SpryStruct:
 
 
 class BoundMethod:
-    """A SpryCode method bound to an instance (provides implicit self)."""
+    """A SpryCode method bound to an instance (provides implicit self).
+
+    When a SpryCode class method is accessed through an instance (e.g. ``obj.greet``),
+    we wrap it in a ``BoundMethod`` so that ``self`` is automatically bound during
+    invocation via ``_call_bound_method``.  This is analogous to Python's bound
+    method objects.
+    """
 
     def __init__(self, instance: "SpryInstance", fn: "SpryFunction") -> None:
         self.instance = instance
@@ -2353,65 +2359,62 @@ class _HttpHelper:
 class _MathHelper:
     """math namespace: math.abs, math.floor, math.PI, etc."""
 
-    import math as _math
-
-    PI = _math.pi
-    E = _math.e
-    INF = float("inf")
+    PI: float = math.pi
+    E: float = math.e
+    INF: float = float("inf")
 
     def abs(self, x: Any) -> Any:
         return abs(x)
 
     def floor(self, x: Any) -> int:
-        import math
         return math.floor(x)
 
     def ceil(self, x: Any) -> int:
-        import math
         return math.ceil(x)
 
     def round(self, x: Any, digits: int = 0) -> Any:
         return round(x, digits) if digits else round(x)
 
     def sqrt(self, x: Any) -> float:
-        import math
         return math.sqrt(x)
 
     def pow(self, base: Any, exp: Any) -> Any:
         return base ** exp
 
     def log(self, x: Any, base: Any = None) -> float:
-        import math
         return math.log(x, base) if base is not None else math.log(x)
 
     def log2(self, x: Any) -> float:
-        import math
         return math.log2(x)
 
     def log10(self, x: Any) -> float:
-        import math
         return math.log10(x)
 
     def sin(self, x: Any) -> float:
-        import math
         return math.sin(x)
 
     def cos(self, x: Any) -> float:
-        import math
         return math.cos(x)
 
     def tan(self, x: Any) -> float:
-        import math
         return math.tan(x)
 
     def min(self, *args: Any) -> Any:
-        return min(*args) if len(args) > 1 else min(args[0])
+        if len(args) == 1:
+            # Single argument must be an iterable (e.g. a list)
+            if not hasattr(args[0], "__iter__"):
+                raise TypeError(f"math.min() requires at least 2 arguments or an iterable, got {type(args[0]).__name__}")
+            return min(args[0])
+        return min(*args)
 
     def max(self, *args: Any) -> Any:
-        return max(*args) if len(args) > 1 else max(args[0])
+        if len(args) == 1:
+            if not hasattr(args[0], "__iter__"):
+                raise TypeError(f"math.max() requires at least 2 arguments or an iterable, got {type(args[0]).__name__}")
+            return max(args[0])
+        return max(*args)
 
     def trunc(self, x: Any) -> int:
-        import math
         return math.trunc(x)
 
     def sign(self, x: Any) -> int:

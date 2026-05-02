@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from decimal import Decimal
 from typing import Any
@@ -55,6 +56,7 @@ from .ast_nodes import (
     InterfaceDeclaration,
     LambdaExpression,
     LetDeclaration,
+    ListComprehension,
     ListDestructure,
     LogStatement,
     MatchArm,
@@ -72,10 +74,12 @@ from .ast_nodes import (
     OptionalMemberExpression,
     ParseStatement,
     PipelineExpression,
+    PostfixExpression,
     PrivateDataDeclaration,
     Program,
     ReadStatement,
     RedactStatement,
+    RegexLiteral,
     RepeatUntilStatement,
     ReturnStatement,
     ScheduleStatement,
@@ -87,6 +91,8 @@ from .ast_nodes import (
     StreamStatement,
     StringLiteral,
     StructDeclaration,
+    SwitchStatement,
+    AnonymousFunctionExpression,
     SyncStatement,
     TaskDeclaration,
     TernaryExpression,
@@ -371,6 +377,37 @@ class BoundMethod:
 
     def __repr__(self) -> str:
         return f"<bound method {self.fn.name}>"
+
+
+class SpryRegex:
+    """Runtime representation of a regex literal (compiled re pattern)."""
+
+    def __init__(self, pattern: "re.Pattern[str]") -> None:
+        self.pattern = pattern
+
+    def test(self, text: str) -> bool:
+        return bool(self.pattern.search(text))
+
+    def match(self, text: str) -> Any:
+        m = self.pattern.search(text)
+        if m is None:
+            return None
+        return {"match": m.group(0), "groups": list(m.groups()), "index": m.start()}
+
+    def exec(self, text: str) -> Any:
+        return self.match(text)
+
+    def replace(self, text: str, replacement: str, count: int = 1) -> str:
+        return self.pattern.sub(replacement, text, count=count)
+
+    def split(self, text: str) -> list[str]:
+        return self.pattern.split(text)
+
+    def findAll(self, text: str) -> list[str]:
+        return self.pattern.findall(text)
+
+    def __repr__(self) -> str:
+        return f"<regex /{self.pattern.pattern}/>"
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +744,10 @@ class Interpreter:
                 if rhs == 0:
                     raise SpryRuntimeError("Division by zero", node)
                 new_val = current / rhs
+            elif node.op == "%":
+                if rhs == 0:
+                    raise SpryRuntimeError("Division by zero in modulo", node)
+                new_val = current % rhs
             else:
                 raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
             env.set(node.name, new_val)
@@ -902,6 +943,9 @@ class Interpreter:
         if isinstance(node, MatchStatement):
             return self._exec_match(node, env)
 
+        if isinstance(node, SwitchStatement):
+            return self._exec_switch(node, env)
+
         if isinstance(node, RepeatUntilStatement):
             return self._exec_repeat_until(node, env)
 
@@ -1084,6 +1128,38 @@ class Interpreter:
         if isinstance(node, WriteStatement):
             return self._exec_write(node, env)
 
+        if isinstance(node, RegexLiteral):
+            flags_map = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
+            re_flags = 0
+            for f in node.flags:
+                re_flags |= flags_map.get(f, 0)
+            compiled = re.compile(node.pattern, re_flags)
+            return SpryRegex(compiled)
+
+        if isinstance(node, AnonymousFunctionExpression):
+            return SpryFunction(
+                name="<anonymous>",
+                params=node.params,
+                body=node.body,  # type: ignore
+                closure=env,
+                defaults=node.defaults,
+                rest_param=node.rest_param,
+            )
+
+        if isinstance(node, ListComprehension):
+            iterable = self._eval(node.iterable, env)
+            result_comp: list[Any] = []
+            for item_val in self._iter(iterable, node):
+                child = env.child()
+                child.define(node.var, item_val, mutable=False)
+                if node.condition is not None and not self._truthy(self._eval(node.condition, child)):
+                    continue
+                result_comp.append(self._eval(node.expr, child))
+            return result_comp
+
+        if isinstance(node, PostfixExpression):
+            return self._eval_postfix(node, env)
+
         # Fall through — try executing as a statement
         return self._exec(node, env)
 
@@ -1259,6 +1335,25 @@ class Interpreter:
 
     def _eval_member_on(self, obj: Any, prop: str, node: Node) -> Any:
         """Look up `prop` on `obj`. Used by both MemberExpression and OptionalMemberExpression."""
+
+        if isinstance(obj, SpryRegex):
+            if prop == "test":
+                return lambda text: obj.test(str(text))
+            if prop in ("match", "exec"):
+                return lambda text: obj.match(str(text))
+            if prop == "replace":
+                return lambda text, repl, count=1: obj.replace(str(text), str(repl), count)
+            if prop == "replaceAll":
+                return lambda text, repl: obj.replace(str(text), str(repl), 0)
+            if prop == "split":
+                return lambda text: obj.split(str(text))
+            if prop in ("findAll", "findall"):
+                return lambda text: obj.findAll(str(text))
+            if prop == "source":
+                return obj.pattern.pattern
+            if prop == "flags":
+                return obj.pattern.flags
+            raise SpryRuntimeError(f"Regex has no property {prop!r}", node)
 
         if isinstance(obj, SpryResult):
             if prop == "ok":
@@ -1945,6 +2040,69 @@ class Interpreter:
                 child = env.child()
                 return self._exec_block(arm.body, child)
         return None
+
+    def _exec_switch(self, node: SwitchStatement, env: Environment) -> Any:
+        subject_val = self._eval(node.subject, env)
+        for case in node.cases:
+            case_val = self._eval(case.value, env)
+            if subject_val == case_val:
+                try:
+                    return self._exec_block(case.body, env)
+                except BreakSignal:
+                    return None
+        if node.default_body is not None:
+            try:
+                return self._exec_block(node.default_body, env)
+            except BreakSignal:
+                return None
+        return None
+
+    def _eval_postfix(self, node: PostfixExpression, env: Environment) -> Any:
+        """Handle postfix and prefix ++/-- operators."""
+        op = node.op
+        operand = node.operand
+        if isinstance(operand, Identifier):
+            current = env.get(operand.name)
+            if op in ("++", "pre++"):
+                new_val = current + 1
+            elif op in ("--", "pre--"):
+                new_val = current - 1
+            else:
+                raise SpryRuntimeError(f"Unknown postfix operator: {op!r}", node)
+            env.set(operand.name, new_val)
+            # postfix: return old value; prefix: return new value
+            return current if op in ("++", "--") else new_val
+        if isinstance(operand, MemberExpression):
+            obj = self._eval(operand.object, env)
+            prop = operand.property
+            if isinstance(obj, SpryInstance):
+                current = obj.fields.get(prop)
+            elif isinstance(obj, dict):
+                current = obj.get(prop)
+            else:
+                raise SpryRuntimeError(f"Cannot apply {op!r} to {type(obj).__name__}", node)
+            if op in ("++", "pre++"):
+                new_val = current + 1
+            else:
+                new_val = current - 1
+            if isinstance(obj, SpryInstance):
+                obj.set(prop, new_val)
+            else:
+                obj[prop] = new_val
+            return current if op in ("++", "--") else new_val
+        raise SpryRuntimeError(f"Operator {op!r} requires an assignable target", node)
+
+    def _iter(self, value: Any, node: Node) -> Any:
+        """Return an iterable from a SpryCode value."""
+        if isinstance(value, (list, tuple, str)):
+            return value
+        if isinstance(value, dict):
+            return value.keys()
+        if hasattr(value, "__iter__"):
+            return value
+        raise SpryRuntimeError(
+            f"Cannot iterate over {type(value).__name__}", node
+        )
 
     def _exec_assert(self, node: AssertStatement, env: Environment) -> Any:
         cond = self._eval(node.condition, env)

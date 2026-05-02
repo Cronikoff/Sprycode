@@ -655,6 +655,54 @@ class MultiParamLambda(Node):
     body: Node | None = None
 
 
+@dataclass
+class SwitchStatement(Node):
+    """switch <expr> { case <val>: <body> ... default: <body> }"""
+    subject: Node | None = None
+    cases: list["SwitchCase"] = field(default_factory=list)
+    default_body: "Block | None" = None
+
+
+@dataclass
+class SwitchCase(Node):
+    """case <value>: <body>"""
+    value: Node | None = None
+    body: "Block | None" = None
+
+
+@dataclass
+class AnonymousFunctionExpression(Node):
+    """fn(<params>) { <body> }  — anonymous function used as a value"""
+    params: list[tuple[str, str | None]] = field(default_factory=list)
+    return_type: str | None = None
+    body: "Block | None" = None
+    defaults: dict[str, "Node"] = field(default_factory=dict)
+    rest_param: str | None = None
+
+
+@dataclass
+class ListComprehension(Node):
+    """[<expr> for <var> in <iterable> [if <cond>]]"""
+    expr: Node | None = None
+    var: str = ""
+    iterable: Node | None = None
+    condition: Node | None = None  # optional filter
+
+
+@dataclass
+class RegexLiteral(Node):
+    """/<pattern>/<flags>  — regular expression literal"""
+    pattern: str = ""
+    flags: str = ""
+
+
+@dataclass
+class PostfixExpression(Node):
+    """<expr>++  or  <expr>--"""
+    operand: Node | None = None
+    op: str = ""   # "++" or "--"
+
+
 # ---------------------------------------------------------------------------
 # Round 5: throw, enum, struct, class, optional chaining, default/rest params
 # ---------------------------------------------------------------------------

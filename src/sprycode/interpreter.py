@@ -2265,7 +2265,7 @@ class Interpreter:
                     v = float(_obj)
                     if v == int(v):
                         return f"{int(v):,}"
-                    return f"{v:,.2f}".rstrip("0").rstrip(".")
+                    return f"{v:,}"
                 return _to_locale_string
             if prop == "toPercent":
                 return lambda decimals=2, _obj=obj: f"{float(_obj) * 100:.{int(decimals)}f}%"
@@ -4871,6 +4871,17 @@ class _MapNamespace:
 class _StringNamespace:
     """String global namespace — String.fromCharCode(), String.isString(), etc."""
 
+    @staticmethod
+    def _spry_str(v: Any) -> str:
+        """Convert a SpryCode value to a string using SpryCode conventions."""
+        if v is None:
+            return "null"
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, float) and v == int(v):
+            return str(int(v))
+        return str(v)
+
     def fromCharCode(self, *codes: Any) -> str:
         """Create a string from character code points (integers)."""
         return "".join(chr(int(c)) for c in codes)
@@ -4888,16 +4899,16 @@ class _StringNamespace:
         return isinstance(value, str) and len(value) == 0
 
     def of(self, *chars: Any) -> str:
-        """Concatenate all arguments into a single string."""
-        return "".join(str(c) for c in chars)
+        """Concatenate all arguments into a single string using SpryCode conventions."""
+        return "".join(self._spry_str(c) for c in chars)
 
     def repeat(self, s: Any, n: Any) -> str:
         """Repeat string s exactly n times."""
-        return str(s) * int(n)
+        return self._spry_str(s) * int(n)
 
     def concat(self, *parts: Any) -> str:
-        """Concatenate multiple strings."""
-        return "".join(str(p) for p in parts)
+        """Concatenate multiple strings using SpryCode conventions."""
+        return "".join(self._spry_str(p) for p in parts)
 
     def __repr__(self) -> str:
         return "String"

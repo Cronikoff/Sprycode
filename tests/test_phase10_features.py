@@ -94,7 +94,7 @@ class TestStringNamespace:
 
     def test_of_mixed_types(self):
         i = run('let v = String.of("x", 1, true)')
-        assert val(i, "v") == "x1True"
+        assert val(i, "v") == "x1true"
 
     def test_repeat(self):
         i = run('let v = String.repeat("ab", 3)')

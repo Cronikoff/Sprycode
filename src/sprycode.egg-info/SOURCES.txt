@@ -30,3 +30,4 @@ tests/test_phase5_features.py
 tests/test_phase6_features.py
 tests/test_phase7_features.py
 tests/test_phase8_features.py
+tests/test_phase9_features.py

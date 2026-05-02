@@ -811,6 +811,7 @@ class ClassDeclaration(Node):
     name: str = ""
     superclass: str | None = None
     interfaces: list[str] = field(default_factory=list)
+    mixins: list[str] = field(default_factory=list)
     body: "Block | None" = None
 
 

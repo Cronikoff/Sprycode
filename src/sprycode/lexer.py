@@ -186,6 +186,7 @@ class TokenType(Enum):
     CREDIT = auto()
     YIELD = auto()
     FN_STAR = auto()  # fn* generator function
+    MIXIN = auto()    # mixin keyword for class mixins
 
     # Types
     TEXT = auto()
@@ -242,6 +243,7 @@ class TokenType(Enum):
     STAR_STAR = auto()    # ** (power)
     QUESTION = auto()     # ? (ternary)
     QUESTION_QUESTION = auto()  # ?? (null coalescing)
+    QUESTION_QUESTION_EQ = auto()  # ??= (null-coalescing assignment)
     QUESTION_DOT = auto()  # ?. (optional chaining)
     ELLIPSIS = auto()     # ... (spread)
     DOTDOT = auto()       # .. (range)
@@ -400,6 +402,7 @@ KEYWORDS: dict[str, TokenType] = {
     "debit": TokenType.DEBIT,
     "credit": TokenType.CREDIT,
     "yield": TokenType.YIELD,
+    "mixin": TokenType.MIXIN,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,
     "Number": TokenType.NUMBER_TYPE,
@@ -677,7 +680,11 @@ class Lexer:
             if ch == "?" and self._peek() == "?":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.QUESTION_QUESTION, "??", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.QUESTION_QUESTION_EQ, "??=", line, col)
+                else:
+                    yield Token(TokenType.QUESTION_QUESTION, "??", line, col)
                 continue
 
             if ch == "?" and self._peek() == ".":

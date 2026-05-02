@@ -201,6 +201,15 @@ class Parser:
         TokenType.VERIFY,        # verify(...)
         TokenType.OUTPUT,        # output(...)
         TokenType.TRANSLATE,     # translate(...)
+        # Type names used as global namespace identifiers (e.g. Number.isInteger, Array.isArray)
+        TokenType.NUMBER_TYPE,   # "Number"
+        TokenType.TEXT,          # "Text"
+        TokenType.BOOL_TYPE,     # "Bool"
+        TokenType.INT_TYPE,      # "Int"
+        TokenType.FLOAT_TYPE,    # "Float"
+        TokenType.DATE_TYPE,     # "Date"
+        TokenType.TIME_TYPE,     # "Time"
+        TokenType.DATETIME_TYPE, # "DateTime"
     })
 
     def _expect_ident(self) -> Token:
@@ -1144,9 +1153,15 @@ class Parser:
         name_tok = self._expect_ident()
         superclass = None
         interfaces: list[str] = []
+        mixins: list[str] = []
         if self._check(TokenType.EXTENDS):
             self._advance()
             superclass = self._expect_ident().value
+        if self._check(TokenType.MIXIN):
+            self._advance()
+            mixins.append(self._expect_ident().value)
+            while self._match(TokenType.COMMA):
+                mixins.append(self._expect_ident().value)
         if self._check(TokenType.IMPLEMENTS):
             self._advance()
             interfaces.append(self._expect_ident().value)
@@ -1154,7 +1169,7 @@ class Parser:
                 interfaces.append(self._expect_ident().value)
         body = self._parse_block()
         return ClassDeclaration(name=name_tok.value, superclass=superclass,
-                                interfaces=interfaces, body=body,
+                                interfaces=interfaces, mixins=mixins, body=body,
                                 line=tok.line, column=tok.column)
 
     def _parse_interface(self) -> InterfaceDeclaration:
@@ -1629,6 +1644,15 @@ class Parser:
             return CompoundMemberAssignment(
                 object=expr.object, property=expr.property, op=op, value=value,
                 line=expr.line, column=expr.column,
+            )
+
+        # Null-coalescing assignment: name ??= value
+        if self._current().type == TokenType.QUESTION_QUESTION_EQ and isinstance(expr, Identifier):
+            self._advance()
+            value = self._parse_expression()
+            # Desugar: x ??= v  →  if x == null { x = v }
+            return CompoundAssignment(
+                name=expr.name, op="??", value=value, line=expr.line, column=expr.column
             )
 
         return expr

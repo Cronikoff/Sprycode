@@ -535,6 +535,38 @@ class SpryGenerator:
 
 
 # ---------------------------------------------------------------------------
+# Regex pattern helper
+# ---------------------------------------------------------------------------
+
+
+def _parse_regex_pattern(pattern: str) -> tuple[str, int]:
+    """Parse a regex pattern string, stripping optional /pattern/flags delimiters.
+
+    Supports:
+      - Plain string:   "\\d+"
+      - JS-style:       "/\\d+/gi"
+
+    Returns (pattern, flags) where flags is a Python re flags integer.
+    """
+    import re as _re
+    if isinstance(pattern, str) and pattern.startswith("/"):
+        # Extract /pattern/flags
+        last_slash = pattern.rfind("/")
+        if last_slash > 0:
+            inner = pattern[1:last_slash]
+            flag_str = pattern[last_slash + 1:]
+            flags = 0
+            if "i" in flag_str:
+                flags |= _re.IGNORECASE
+            if "m" in flag_str:
+                flags |= _re.MULTILINE
+            if "s" in flag_str:
+                flags |= _re.DOTALL
+            return inner, flags
+    return pattern, 0
+
+
+# ---------------------------------------------------------------------------
 # Interpreter
 # ---------------------------------------------------------------------------
 
@@ -621,6 +653,16 @@ class Interpreter:
         env.define("values", lambda d: list(d.values()) if isinstance(d, dict) else [])
         env.define("entries", lambda d: [[k, v] for k, v in d.items()] if isinstance(d, dict) else [])
 
+        # Dict/Object helpers
+        env.define("fromEntries", lambda lst: dict(lst) if isinstance(lst, list) else {})
+        env.define("merge", lambda *dicts: {k: v for d in dicts if isinstance(d, dict) for k, v in d.items()})
+
+        # Parsing helpers (global convenience functions)
+        env.define("parseInt", lambda s, base=10: int(str(s), int(base)) if str(s).strip() else 0)
+        env.define("parseFloat", lambda s: float(str(s).strip()))
+        env.define("isNaN", lambda x: math.isnan(float(x)) if isinstance(x, (int, float)) else False)
+        env.define("isFinite", lambda x: math.isfinite(float(x)) if isinstance(x, (int, float)) else True)
+
         # Constants
         env.define("ok", SPRY_OK)
         env.define("true", True)
@@ -630,6 +672,12 @@ class Interpreter:
         # Environment and formatting
         env.define("env", lambda key, default=None: os.environ.get(str(key), default))
         env.define("format", lambda template, *args: self._builtin_format(template, *args))
+
+        # Global namespace objects (JS-style)
+        env.define("JSON", _JsonNamespace())
+        env.define("Array", _ArrayNamespace())
+        env.define("Object", _ObjectNamespace())
+        env.define("Number", _NumberNamespace())
 
         # Money helper
         env.define("money", _MoneyHelper())
@@ -688,10 +736,19 @@ class Interpreter:
 
     @staticmethod
     def _builtin_format(template: str, *args: Any) -> str:
-        """Simple positional string formatting: format("Hello {}", name)"""
+        """String formatting — supports both Python % style (format('%05d', 42))
+        and positional {} style (format('Hello {}', name))."""
         try:
+            # Detect printf/% style: template contains %d, %s, %f, %0Nd etc.
+            import re as _re
+            if _re.search(r"%[-+0 #]*\d*\.?\d*[diouxXeEfFgGcsr%]", template):
+                # Printf-style
+                if len(args) == 1:
+                    return template % args[0]
+                return template % args
+            # Positional {} style
             return template.format(*args)
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError, TypeError):
             return template
 
     def _encode(self, fmt: str, val: Any = None) -> Any:
@@ -872,6 +929,12 @@ class Interpreter:
                 if rhs == 0:
                     raise SpryRuntimeError("Division by zero in modulo", node)
                 new_val = current % rhs
+            elif node.op == "??":
+                # ??= : only assign if current value is null/None
+                if current is None:
+                    new_val = rhs
+                else:
+                    return None  # no-op
             else:
                 raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
             env.set(node.name, new_val)
@@ -1651,6 +1714,8 @@ class Interpreter:
         if isinstance(obj, list):
             if prop == "length":
                 return len(obj)
+            if prop == "at":
+                return lambda n, _obj=obj: _obj[int(n)] if -len(_obj) <= int(n) < len(_obj) else None
             if prop == "first":
                 return obj[0] if obj else None
             if prop == "last":
@@ -1837,13 +1902,23 @@ class Interpreter:
                 return lambda start, end=None: obj[int(start):int(end)] if end is not None else obj[int(start):]
             if prop == "match":
                 import re as _re
-                return lambda pattern: _re.findall(pattern, obj) or None
+                def _str_match(pattern: str, _obj: str = obj) -> Any:
+                    pat, flags = _parse_regex_pattern(pattern)
+                    return _re.findall(pat, _obj, flags) or None
+                return _str_match
             if prop == "matchAll":
                 import re as _re
-                return lambda pattern: [[m.group(), *m.groups()] for m in _re.finditer(pattern, obj)]
+                def _str_matchall(pattern: str, _obj: str = obj) -> list:
+                    pat, flags = _parse_regex_pattern(pattern)
+                    return [[m.group(), *m.groups()] for m in _re.finditer(pat, _obj, flags)]
+                return _str_matchall
             if prop == "search":
                 import re as _re
-                return lambda pattern: (m.start() if (m := _re.search(pattern, obj)) else -1)
+                def _str_search(pattern: str, _obj: str = obj) -> int:
+                    pat, flags = _parse_regex_pattern(pattern)
+                    m = _re.search(pat, _obj, flags)
+                    return m.start() if m else -1
+                return _str_search
             if prop in ("toNumber", "toFloat", "toInt", "parseInt", "parseFloat"):
                 try:
                     return int(obj) if "." not in obj else float(obj)
@@ -2635,7 +2710,20 @@ class Interpreter:
                     superclass = sc
             except SpryRuntimeError:
                 pass
+
+        # Resolve mixin classes
+        mixin_classes: list[SpryClass] = []
+        for mname in getattr(node, "mixins", []):
+            try:
+                mc = env.get(mname)
+                if isinstance(mc, SpryClass):
+                    mixin_classes.append(mc)
+            except SpryRuntimeError:
+                pass
+
         cls = SpryClass(name=node.name, body=node.body, closure=env, superclass=superclass)
+        # Attach mixin classes so _construct_class can use them
+        cls._mixins = mixin_classes  # type: ignore[attr-defined]
         env.define(node.name, cls, mutable=False)
         return None
 
@@ -2651,6 +2739,15 @@ class Interpreter:
             for k, v in super_inst.fields.items():
                 fields[k] = v
                 instance_env.define(k, v, mutable=True)
+
+        # Apply mixin classes: inject their fields/methods
+        for mixin_cls in getattr(cls, "_mixins", []):
+            mixin_inst = self._construct_class(mixin_cls, [], node, _for_inheritance=True)
+            for k, v in mixin_inst.fields.items():
+                # Only add if not already defined (class overrides mixin)
+                if k not in fields:
+                    fields[k] = v
+                    instance_env.define(k, v, mutable=True)
 
         # Execute the class body to pick up var/fn declarations (subclass overrides superclass)
         for stmt in cls.body.body:  # type: ignore[union-attr]
@@ -3031,6 +3128,184 @@ class _HttpHelper:
             return SpryResult(ok=False, error=str(e))
 
 
+# ---------------------------------------------------------------------------
+# Global Namespace Objects
+# ---------------------------------------------------------------------------
+
+
+class _JsonNamespace:
+    """JSON global namespace — JSON.stringify(), JSON.parse()."""
+
+    def stringify(self, value: Any, indent: int | None = None) -> str:
+        """Serialize a value to a JSON string."""
+        import json as _json
+        try:
+            return _json.dumps(value, indent=indent, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"JSON.stringify error: {e}") from e
+
+    def parse(self, text: str) -> Any:
+        """Parse a JSON string into a SpryCode value."""
+        import json as _json
+        try:
+            return _json.loads(text)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"JSON.parse error: {e}") from e
+
+    def __repr__(self) -> str:
+        return "JSON"
+
+
+class _ArrayNamespace:
+    """Array global namespace — Array.isArray(), Array.from(), Array.of()."""
+
+    def isArray(self, value: Any) -> bool:
+        """Return True if the value is a list."""
+        return isinstance(value, list)
+
+    def from_(self, iterable: Any) -> list:
+        """Create an array from an iterable (range, string, etc.)."""
+        if isinstance(iterable, range):
+            return list(iterable)
+        if isinstance(iterable, str):
+            return list(iterable)
+        try:
+            return list(iterable)
+        except TypeError:
+            return []
+
+    # Expose as 'from' attribute (Python reserved word workaround)
+    def __getattr__(self, name: str) -> Any:
+        if name == "from":
+            return self.from_
+        raise AttributeError(name)
+
+    def of(self, *args: Any) -> list:
+        """Create an array from arguments: Array.of(1, 2, 3) → [1, 2, 3]."""
+        return list(args)
+
+    def __repr__(self) -> str:
+        return "Array"
+
+
+class _ObjectNamespace:
+    """Object global namespace — Object.keys(), Object.values(), Object.assign(), etc."""
+
+    def keys(self, obj: Any) -> list:
+        """Return the keys of an object/dict."""
+        if isinstance(obj, dict):
+            return list(obj.keys())
+        return []
+
+    def values(self, obj: Any) -> list:
+        """Return the values of an object/dict."""
+        if isinstance(obj, dict):
+            return list(obj.values())
+        return []
+
+    def entries(self, obj: Any) -> list:
+        """Return [[key, value], ...] pairs."""
+        if isinstance(obj, dict):
+            return [[k, v] for k, v in obj.items()]
+        return []
+
+    def fromEntries(self, entries: Any) -> dict:
+        """Create an object from [[key, value], ...] pairs."""
+        if isinstance(entries, list):
+            return {str(k): v for k, v in entries}
+        return {}
+
+    def assign(self, *objs: Any) -> dict:
+        """Merge objects left-to-right: Object.assign({a:1}, {b:2}) → {a:1, b:2}."""
+        result: dict = {}
+        for obj in objs:
+            if isinstance(obj, dict):
+                result.update(obj)
+        return result
+
+    def freeze(self, obj: Any) -> Any:
+        """Return the object unchanged (SpryCode values are not mutable by default)."""
+        return obj
+
+    def create(self, proto: Any = None, props: Any = None) -> dict:
+        """Create a new object, optionally copying from a prototype dict."""
+        result: dict = {}
+        if isinstance(proto, dict):
+            result.update(proto)
+        return result
+
+    def hasOwn(self, obj: Any, key: str) -> bool:
+        """Return True if the object has the given own property."""
+        if isinstance(obj, dict):
+            return key in obj
+        return False
+
+    def __repr__(self) -> str:
+        return "Object"
+
+
+class _NumberNamespace:
+    """Number global namespace — Number.isInteger(), Number.isNaN(), Number.isFinite(), etc."""
+
+    MAX_VALUE: float = float("inf")
+    MIN_VALUE: float = float("-inf")
+    MAX_SAFE_INTEGER: int = 2 ** 53 - 1
+    MIN_SAFE_INTEGER: int = -(2 ** 53 - 1)
+    POSITIVE_INFINITY: float = float("inf")
+    NEGATIVE_INFINITY: float = float("-inf")
+    NaN: float = float("nan")
+    EPSILON: float = 2.220446049250313e-16
+
+    def isInteger(self, value: Any) -> bool:
+        """Return True if the value is an integer (no fractional part)."""
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        if isinstance(value, float):
+            return value == int(value) and not math.isinf(value) and not math.isnan(value)
+        return False
+
+    def isNaN(self, value: Any) -> bool:
+        """Return True if the value is NaN."""
+        if isinstance(value, float):
+            return math.isnan(value)
+        return False
+
+    def isFinite(self, value: Any) -> bool:
+        """Return True if the value is a finite number."""
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return math.isfinite(value)
+        return False
+
+    def isSafeInteger(self, value: Any) -> bool:
+        """Return True if the value is a safe integer (within ±2^53-1)."""
+        if not self.isInteger(value):
+            return False
+        return abs(int(value)) <= 2 ** 53 - 1
+
+    def parseInt(self, s: Any, base: int = 10) -> int:
+        """Parse a string as an integer."""
+        try:
+            return int(str(s).strip(), int(base))
+        except (ValueError, TypeError):
+            return 0
+
+    def parseFloat(self, s: Any) -> float:
+        """Parse a string as a float."""
+        try:
+            return float(str(s).strip())
+        except (ValueError, TypeError):
+            return float("nan")
+
+    def toFixed(self, value: Any, digits: int = 0) -> str:
+        """Format a number with a fixed number of decimal places."""
+        return f"{float(value):.{int(digits)}f}"
+
+    def __repr__(self) -> str:
+        return "Number"
+
+
 class _MathHelper:
     """math namespace: math.abs, math.floor, math.PI, etc.
 
@@ -3265,6 +3540,30 @@ class _MathHelper:
 
     def toDegrees(self, rad: Any) -> float:
         return math.degrees(float(rad))
+
+    # ── Random ────────────────────────────────────────────────────────────────
+
+    def random(self) -> float:
+        """Return a random float in [0, 1)."""
+        import random as _random
+        return _random.random()
+
+    def randomInt(self, a: Any, b: Any) -> int:
+        """Return a random integer in [a, b] inclusive."""
+        import random as _random
+        return _random.randint(int(a), int(b))
+
+    def shuffle(self, lst: Any) -> list:
+        """Return a shuffled copy of the list."""
+        import random as _random
+        result = list(lst)
+        _random.shuffle(result)
+        return result
+
+    def sample(self, lst: Any, k: int = 1) -> list:
+        """Return k random samples from the list without replacement."""
+        import random as _random
+        return _random.sample(list(lst), int(k))
 
     # ── min / max ─────────────────────────────────────────────────────────────
 

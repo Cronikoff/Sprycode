@@ -1,0 +1,76 @@
+// SpryCode Test File — Demonstrates the built-in test/expect syntax
+// Run with: spry test examples/tests.spry
+
+test "arithmetic is correct" {
+    expect 1 + 1 == 2
+    expect 10 - 3 == 7
+    expect 4 * 5 == 20
+    expect 10 / 2 == 5
+    expect 10 % 3 == 1
+}
+
+test "string operations work" {
+    let greeting = "Hello, SpryCode!"
+
+    expect greeting.length == 16
+    expect greeting.contains("SpryCode")
+    expect not greeting.isEmpty
+    expect greeting.startsWith("Hello")
+    expect greeting.endsWith("!")
+}
+
+test "list operations work" {
+    let nums = [10, 20, 30]
+
+    expect nums.length == 3
+    expect nums.first == 10
+    expect nums.last == 30
+    expect nums.includes(20)
+    expect not nums.isEmpty
+}
+
+test "pipeline filter works" {
+    let nums = [1, 2, 3, 4, 5, 6]
+    let evens = nums |> filter n => n % 2 == 0
+
+    expect evens.length == 3
+    expect evens.first == 2
+    expect evens.last == 6
+}
+
+test "pipeline map works" {
+    let nums = [1, 2, 3]
+    let doubled = nums |> map n => n * 2
+
+    expect doubled.first == 2
+    expect doubled.last == 6
+}
+
+test "for loop counts correctly" {
+    var count = 0
+    let items = ["a", "b", "c", "d", "e"]
+    for item in items {
+        count = count + 1
+    }
+    expect count == 5
+}
+
+test "while loop runs correctly" {
+    var n = 0
+    while n < 10 {
+        n = n + 1
+    }
+    expect n == 10
+}
+
+test "break exits loop early" {
+    var stopped = 0
+    let nums = [1, 2, 3, 4, 5]
+    for n in nums {
+        if n == 3 {
+            stopped = n
+            break
+        }
+    }
+    expect stopped == 3
+}

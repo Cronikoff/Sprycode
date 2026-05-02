@@ -1,0 +1,50 @@
+// SpryCode Pipeline Example
+// Demonstrates data streaming and pipeline processing
+
+app DataPipeline version "1.0.0"
+
+allow filesystem.read "./data"
+allow filesystem.write "./output"
+
+task processCSV {
+    log info "Processing CSV data pipeline"
+
+    // Pipeline: read -> parse -> filter -> map -> write
+    stream file "./data/users.csv"
+        |> parse csv
+        |> filter user => user.active == "true"
+        |> map user => user.email
+        |> write file "./output/active-emails.txt"
+
+    log info "Pipeline complete"
+}
+
+task filterFiles {
+    allow filesystem.read "./downloads"
+    allow filesystem.write "./documents"
+
+    log info "Filtering files"
+
+    // Stream folder, filter by extension
+    stream folder "./downloads"
+        |> filter file => file.extension == "pdf"
+        |> each file => log info file.name
+
+    log info "Done"
+}
+
+fn processRecord(record: Json) -> Json {
+    return redact record fields ["ssn", "cardNumber"]
+}
+
+task jsonPipeline {
+    let raw = read file "./data/records.json"
+
+    if raw failed {
+        log error "Failed to read records"
+        stop
+    }
+
+    let records = parse json raw.value
+    log info "Records loaded"
+}

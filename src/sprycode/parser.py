@@ -1078,10 +1078,15 @@ class Parser:
                                     line=tok.line, column=tok.column)
 
     def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
-        """Parse let [a, b, c] = expr"""
+        """Parse let [a, b, c] = expr  or  let [a, ...rest] = expr"""
         self._expect(TokenType.LBRACKET)
         names: list[str] = []
+        rest_name: str | None = None
         while not self._check(TokenType.RBRACKET) and not self._at_end():
+            if self._check(TokenType.ELLIPSIS):
+                self._advance()
+                rest_name = self._expect_ident().value
+                break  # rest must be last
             names.append(self._expect_ident().value)
             if not self._match(TokenType.COMMA):
                 break
@@ -1089,6 +1094,7 @@ class Parser:
         self._expect(TokenType.EQ)
         value = self._parse_expression()
         return ListDestructure(names=names, value=value, mutable=mutable,
+                               rest_name=rest_name,
                                line=let_tok.line, column=let_tok.column)
 
     def _parse_object_destructure(self, let_tok: Token, mutable: bool) -> ObjectDestructure:

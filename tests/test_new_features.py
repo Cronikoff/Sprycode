@@ -1168,6 +1168,26 @@ class TestListDestructure:
         assert any("a" in l for l in log_output)
         assert any("b" in l for l in log_output)
 
+    def test_rest_element(self):
+        interp = run('let [first, ...rest] = [1, 2, 3, 4]')
+        assert interp.globals.get("first") == 1
+        assert interp.globals.get("rest") == [2, 3, 4]
+
+    def test_rest_element_empty(self):
+        interp = run('let [a, b, ...rest] = [1, 2]')
+        assert interp.globals.get("a") == 1
+        assert interp.globals.get("b") == 2
+        assert interp.globals.get("rest") == []
+
+    def test_rest_only(self):
+        interp = run('let [...rest] = [10, 20, 30]')
+        assert interp.globals.get("rest") == [10, 20, 30]
+
+    def test_rest_mutable(self):
+        interp = run('var [head, ...tail] = [1, 2, 3]\nhead = 99')
+        assert interp.globals.get("head") == 99
+        assert interp.globals.get("tail") == [2, 3]
+
 
 # ---------------------------------------------------------------------------
 # Object destructuring

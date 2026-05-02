@@ -575,8 +575,9 @@ class SpryGenerator:
         try:
             try:
                 interp._exec_block(self._fn.body, env)
-            except ReturnSignal:
-                pass
+            except ReturnSignal as rs:
+                yield_q.put(("return", rs.value))
+                return
         except Exception as exc:
             yield_q.put(("error", exc))
             return
@@ -1048,13 +1049,22 @@ class Interpreter:
         strings.append(template[last:])
         return self._call_value(tag_fn, [strings, *values])
 
-    @staticmethod
-    def _builtin_str(value: Any) -> str:
+    def _builtin_str(self, value: Any) -> str:
         """Convert any SpryCode value to a string."""
         if value is None:
             return "null"
         if isinstance(value, bool):
             return "true" if value else "false"
+        if isinstance(value, SpryInstance):
+            # Prefer a user-defined toString() method
+            if "toString" in value.fields:
+                v = value.fields["toString"]
+                if isinstance(v, (SpryFunction, BoundMethod)):
+                    try:
+                        bm = v if isinstance(v, BoundMethod) else BoundMethod(instance=value, fn=v)
+                        return str(self._call_bound_method(bm, [], None))
+                    except Exception:
+                        pass
         if isinstance(value, SpryResult):
             if value.ok:
                 return str(value.value) if value.value is not None else ""
@@ -1747,6 +1757,10 @@ class Interpreter:
                 return item_val in coll_val
             if isinstance(coll_val, str):
                 return str(item_val) in coll_val
+            if isinstance(coll_val, SpryInstance):
+                return str(item_val) in coll_val.fields
+            if isinstance(coll_val, SprySet):
+                return coll_val.has(item_val)
             raise SpryRuntimeError(f"'in' requires a list, object, or string, got {type(coll_val).__name__}", node)
 
         if isinstance(node, FStringExpression):
@@ -3356,6 +3370,24 @@ class Interpreter:
             iterable = iterable._items  # iterate all items
         if isinstance(iterable, SprySet):
             iterable = list(iterable._data)
+        if isinstance(iterable, SpryInstance):
+            # Support iterator protocol: instance with next() method
+            if "next" in iterable.fields and isinstance(iterable.fields["next"], SpryFunction):
+                items: list[Any] = []
+                while True:
+                    bm = BoundMethod(instance=iterable, fn=iterable.fields["next"])
+                    result = self._call_bound_method(bm, [], node)
+                    if isinstance(result, dict):
+                        if result.get("done"):
+                            break
+                        items.append(result.get("value"))
+                    else:
+                        break
+                iterable = items
+            else:
+                raise SpryRuntimeError(
+                    f"'for' loop requires a list or object, got SpryInstance (no next() method)", node
+                )
         if not isinstance(iterable, (list, tuple, str, range)):
             raise SpryRuntimeError(
                 f"'for' loop requires a list or object, got {type(iterable).__name__}", node
@@ -3670,44 +3702,42 @@ class Interpreter:
         return {"type": "credit", "account": account, "amount": amount}
 
     def _spry_typeof(self, val: Any) -> str:
-        """Return the SpryCode type name of a value."""
+        """Return the JS-compatible type name of a value."""
         if val is None:
-            return "Null"
+            return "undefined"
         if isinstance(val, bool):
-            return "Bool"
+            return "boolean"
         if isinstance(val, int):
-            return "Int"
+            return "number"
         if isinstance(val, float):
-            return "Float"
+            return "number"
         if isinstance(val, str):
-            return "Text"
+            return "string"
         if isinstance(val, list):
-            return "List"
+            return "object"
         if isinstance(val, dict):
-            return "Object"
+            return "object"
         if isinstance(val, SpryGenerator):
-            return "Generator"
-        if isinstance(val, SpryFunction):
-            return "Function"
-        if isinstance(val, (SpryLambda, SpryMultiLambda)):
-            return "Function"
+            return "object"
+        if isinstance(val, (SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod)):
+            return "function"
+        if callable(val) and not isinstance(val, (SpryInstance, SpryClass)):
+            return "function"
+        if isinstance(val, SprySymbol):
+            return "symbol"
         if isinstance(val, SpryInstance):
-            return val.cls.name
+            return "object"
         if isinstance(val, SpryClass):
-            return "Class"
+            return "function"
         if isinstance(val, SpryStruct):
-            return "Struct"
+            return "object"
         if isinstance(val, SpryMoney):
-            return "Money"
+            return "object"
         if isinstance(val, SpryResult):
-            return "Result"
+            return "object"
         if isinstance(val, SpryRegex):
-            return "Regex"
-        if isinstance(val, SpryFile):
-            return "File"
-        if isinstance(val, SpryFolder):
-            return "Folder"
-        return type(val).__name__
+            return "object"
+        return "object"
 
     def _eval_type_cast(self, node: TypeCastExpression, env: Environment) -> Any:
         """Evaluate `expr as TypeName` — convert value to the target type."""
@@ -4518,13 +4548,21 @@ class _ArrayNamespace:
             result = list(iterable)
         elif isinstance(iterable, str):
             result = list(iterable)
+        elif isinstance(iterable, dict) and "length" in iterable:
+            # Array-like: {length: N} → [undefined × N]
+            n = int(iterable["length"])
+            result = [None] * max(n, 0)
         else:
             try:
                 result = list(iterable)
             except TypeError:
                 result = []
         if map_fn is not None:
-            result = [map_fn(item) for item in result]
+            arity = getattr(map_fn, "_spry_arity", 1)
+            if arity > 1:
+                result = [map_fn(item, idx) for idx, item in enumerate(result)]
+            else:
+                result = [map_fn(item) for item in result]
         return result
 
     # Expose as 'from' attribute (Python reserved word workaround)

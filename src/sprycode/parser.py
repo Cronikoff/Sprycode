@@ -6,7 +6,7 @@ Recursive descent parser that builds an AST from a token stream.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
 from .ast_nodes import (
     AdapterDeclaration,
@@ -1469,7 +1469,10 @@ class Parser:
         )
 
     def _parse_switch(self) -> SwitchStatement:
-        """switch <expr> { case <val>: <body> ... default: <body> }"""
+        """switch <expr> { case <val>: <body> ... default: <body> }
+        
+        Both colon syntax (case 1: ...) and brace syntax (case 1 { ... }) are supported.
+        """
         tok = self._expect(TokenType.SWITCH)
         subject = self._parse_expression()
         self._expect(TokenType.LBRACE)
@@ -1479,30 +1482,37 @@ class Parser:
             if self._check(TokenType.CASE):
                 case_tok = self._advance()
                 value = self._parse_expression()
-                self._expect(TokenType.COLON)
-                stmts: list[Node] = []
-                while (not self._check(TokenType.CASE)
-                       and not self._check(TokenType.DEFAULT)
-                       and not self._check(TokenType.RBRACE)
-                       and not self._at_end()):
-                    # Optionally allow a bare expression as the body of a case
-                    stmt = self._parse_statement()
-                    if stmt is not None:
-                        stmts.append(stmt)
-                case_body = Block(body=stmts, line=case_tok.line, column=case_tok.column)
+                if self._check(TokenType.LBRACE):
+                    # Brace-style body: case 1 { ... }
+                    case_body = self._parse_block()
+                else:
+                    self._expect(TokenType.COLON)
+                    stmts: list[Node] = []
+                    while (not self._check(TokenType.CASE)
+                           and not self._check(TokenType.DEFAULT)
+                           and not self._check(TokenType.RBRACE)
+                           and not self._at_end()):
+                        # Optionally allow a bare expression as the body of a case
+                        stmt = self._parse_statement()
+                        if stmt is not None:
+                            stmts.append(stmt)
+                    case_body = Block(body=stmts, line=case_tok.line, column=case_tok.column)
                 cases.append(SwitchCase(value=value, body=case_body,
                                         line=case_tok.line, column=case_tok.column))
             elif self._check(TokenType.DEFAULT):
                 def_tok = self._advance()
-                self._expect(TokenType.COLON)
-                stmts2: list[Node] = []
-                while (not self._check(TokenType.CASE)
-                       and not self._check(TokenType.RBRACE)
-                       and not self._at_end()):
-                    stmt = self._parse_statement()
-                    if stmt is not None:
-                        stmts2.append(stmt)
-                default_body = Block(body=stmts2, line=def_tok.line, column=def_tok.column)
+                if self._check(TokenType.LBRACE):
+                    default_body = self._parse_block()
+                else:
+                    self._expect(TokenType.COLON)
+                    stmts2: list[Node] = []
+                    while (not self._check(TokenType.CASE)
+                           and not self._check(TokenType.RBRACE)
+                           and not self._at_end()):
+                        stmt = self._parse_statement()
+                        if stmt is not None:
+                            stmts2.append(stmt)
+                    default_body = Block(body=stmts2, line=def_tok.line, column=def_tok.column)
             else:
                 break
         self._expect(TokenType.RBRACE)
@@ -2778,7 +2788,32 @@ class Parser:
             else:
                 key_tok = self._current()
                 key = self._advance().value
-                if self._match(TokenType.COLON):
+                if self._check(TokenType.LPAREN):
+                    # Method shorthand: { greet(x) { return x } }
+                    self._advance()  # consume '('
+                    params: list[tuple[str, str | None]] = []
+                    defaults: dict[str, Any] = {}
+                    rest_param: str | None = None
+                    while not self._check(TokenType.RPAREN) and not self._at_end():
+                        p_tok = self._current()
+                        if p_tok.type == TokenType.ELLIPSIS:
+                            self._advance()
+                            rest_param = self._expect_ident().value
+                            break
+                        pname = self._expect_ident().value
+                        if self._match(TokenType.EQUALS):
+                            defaults[pname] = self._parse_expression()
+                        params.append((pname, None))
+                        if not self._match(TokenType.COMMA):
+                            break
+                    self._expect(TokenType.RPAREN)
+                    fn_body = self._parse_block()
+                    value = AnonymousFunctionExpression(
+                        params=params, return_type=None, body=fn_body,
+                        defaults=defaults, rest_param=rest_param,
+                        line=key_tok.line, column=key_tok.column,
+                    )
+                elif self._match(TokenType.COLON):
                     value = self._parse_expression()
                 else:
                     # Shorthand: { name } → { name: name }

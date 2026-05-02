@@ -418,6 +418,11 @@ class Parser:
         tok = self._expect(TokenType.LBRACE)
         body: list[Node] = []
         while not self._check(TokenType.RBRACE) and not self._at_end():
+            # Skip statement-separator semicolons inside blocks
+            while self._check(TokenType.SEMICOLON):
+                self._advance()
+            if self._check(TokenType.RBRACE) or self._at_end():
+                break
             stmt = self._parse_statement()
             if stmt is not None:
                 body.append(stmt)

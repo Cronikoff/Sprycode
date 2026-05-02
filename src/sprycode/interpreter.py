@@ -771,8 +771,60 @@ class Interpreter:
         env.define("merge", lambda *dicts: {k: v for d in dicts if isinstance(d, dict) for k, v in d.items()})
 
         # Parsing helpers (global convenience functions)
-        env.define("parseInt", lambda s, base=10: int(str(s), int(base)) if str(s).strip() else 0)
-        env.define("parseFloat", lambda s: float(str(s).strip()))
+        def _js_parse_int(s: Any, base: Any = None) -> Any:
+            import re as _re
+            s_str = str(s).strip()
+            if not s_str:
+                return float("nan")
+            # Hex prefix
+            if base is None or int(base) == 16:
+                if s_str.startswith("0x") or s_str.startswith("0X"):
+                    m = _re.match(r"0[xX]([0-9a-fA-F]+)", s_str)
+                    return int(m.group(1), 16) if m else float("nan")
+            # Octal prefix (0o or 0 followed by digits)
+            if base is None or int(base) == 8:
+                if s_str.startswith("0o") or s_str.startswith("0O"):
+                    m = _re.match(r"0[oO]([0-7]+)", s_str)
+                    return int(m.group(1), 8) if m else float("nan")
+            # Binary prefix
+            if base is None or int(base) == 2:
+                if s_str.startswith("0b") or s_str.startswith("0B"):
+                    m = _re.match(r"0[bB]([01]+)", s_str)
+                    return int(m.group(1), 2) if m else float("nan")
+            actual_base = 10 if base is None else int(base)
+            # Match leading digits (and sign)
+            if actual_base == 10:
+                m = _re.match(r"[+-]?\d+", s_str)
+            elif actual_base == 16:
+                m = _re.match(r"[+-]?[0-9a-fA-F]+", s_str)
+            elif actual_base == 2:
+                m = _re.match(r"[+-]?[01]+", s_str)
+            elif actual_base == 8:
+                m = _re.match(r"[+-]?[0-7]+", s_str)
+            else:
+                m = _re.match(r"[+-]?[0-9a-zA-Z]+", s_str)
+            if not m:
+                return float("nan")
+            try:
+                return int(m.group(0), actual_base)
+            except ValueError:
+                return float("nan")
+
+        def _js_parse_float(s: Any) -> Any:
+            import re as _re
+            s_str = str(s).strip()
+            if not s_str:
+                return float("nan")
+            m = _re.match(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", s_str)
+            if not m:
+                return float("nan")
+            try:
+                return float(m.group(0))
+            except ValueError:
+                return float("nan")
+
+        env.define("parseInt", _js_parse_int)
+        env.define("parseFloat", _js_parse_float)
         env.define("isNaN", lambda x: math.isnan(float(x)) if isinstance(x, (int, float)) else False)
         env.define("isFinite", lambda x: math.isfinite(float(x)) if isinstance(x, (int, float)) else True)
 
@@ -912,6 +964,14 @@ class Interpreter:
 
         # URL global
         env.define("URL", _URLNamespace())
+        env.define("URLSearchParams", _URLSearchParamsNamespace())
+
+        # TextEncoder / TextDecoder
+        env.define("TextEncoder", _TextEncoderNamespace())
+        env.define("TextDecoder", _TextDecoderNamespace())
+
+        # AbortController / AbortSignal
+        env.define("AbortController", _AbortControllerNamespace())
 
         # ArrayBuffer and TypedArrays
         env.define("ArrayBuffer", _ArrayBufferNamespace())
@@ -2195,9 +2255,19 @@ class Interpreter:
             if prop == "reverse":
                 return list(reversed(obj))
             if prop == "sort":
-                return sorted(obj)
+                def _sort_fn(comparator: Any = None, _o: list = obj) -> list:
+                    if comparator is None:
+                        return sorted(_o)
+                    import functools
+                    return sorted(_o, key=functools.cmp_to_key(comparator))
+                return _CallableList(sorted(obj), _sort_fn)
             if prop == "sorted":
-                return sorted(obj)
+                def _sorted_fn(comparator: Any = None, _o: list = obj) -> list:
+                    if comparator is None:
+                        return sorted(_o)
+                    import functools
+                    return sorted(_o, key=functools.cmp_to_key(comparator))
+                return _CallableList(sorted(obj), _sorted_fn)
             if prop == "indexOf":
                 return lambda item: obj.index(item) if item in obj else -1
             if prop == "lastIndexOf":
@@ -2338,10 +2408,15 @@ class Interpreter:
             if prop in ("toReversed", "reversed"):
                 return list(reversed(obj))
             if prop in ("toSorted", "sortedBy"):
-                def _to_sorted(key_fn: Any = None) -> list:
-                    if key_fn is None:
+                def _to_sorted(comparator_or_key: Any = None) -> list:
+                    if comparator_or_key is None:
                         return sorted(obj)
-                    return sorted(obj, key=lambda x: key_fn(x))
+                    # Detect if it's a comparator (2-arg) or key fn (1-arg)
+                    arity = getattr(comparator_or_key, "_spry_arity", None)
+                    if arity is not None and arity > 1:
+                        import functools
+                        return sorted(obj, key=functools.cmp_to_key(comparator_or_key))
+                    return sorted(obj, key=lambda x: comparator_or_key(x))
                 return _to_sorted
             if prop == "toSpliced":
                 def _to_spliced(start: int, delete_count: int = 0, *items: Any) -> list:
@@ -2584,6 +2659,8 @@ class Interpreter:
                 return lambda width, ch=" ": obj.ljust(width, ch)
             if prop == "repeat":
                 return lambda n: obj * n
+            if prop == "concat":
+                return lambda *args: obj + "".join(str(a) for a in args)
             if prop == "chars":
                 return list(obj)
             if prop == "lines":
@@ -2930,7 +3007,9 @@ class Interpreter:
         if isinstance(obj, SpryProxy):
             return obj._spry_get_prop(prop)
 
-        if isinstance(obj, (SpryURL, SpryArrayBuffer, SpryTypedArray)):
+        if isinstance(obj, (SpryURL, SpryURLSearchParams, SpryArrayBuffer, SpryTypedArray,
+                             SpryTextEncoder, SpryTextDecoder,
+                             SpryAbortController, SpryAbortSignal)):
             return obj._spry_get_prop(prop)
 
         if isinstance(obj, SpryErrorObject):
@@ -4690,18 +4769,48 @@ class _NumberNamespace:
             return False
         return abs(int(value)) <= 2 ** 53 - 1
 
-    def parseInt(self, s: Any, base: int = 10) -> int:
-        """Parse a string as an integer."""
+    def parseInt(self, s: Any, base: Any = None) -> Any:
+        """Parse a string as an integer (JS-style: stop at first non-digit)."""
+        import re as _re
+        s_str = str(s).strip()
+        if not s_str:
+            return float("nan")
+        if base is None or int(base) == 16:
+            if s_str.startswith("0x") or s_str.startswith("0X"):
+                m = _re.match(r"0[xX]([0-9a-fA-F]+)", s_str)
+                return int(m.group(1), 16) if m else float("nan")
+        if base is None or int(base) == 8:
+            if s_str.startswith("0o") or s_str.startswith("0O"):
+                m = _re.match(r"0[oO]([0-7]+)", s_str)
+                return int(m.group(1), 8) if m else float("nan")
+        if base is None or int(base) == 2:
+            if s_str.startswith("0b") or s_str.startswith("0B"):
+                m = _re.match(r"0[bB]([01]+)", s_str)
+                return int(m.group(1), 2) if m else float("nan")
+        actual_base = 10 if base is None else int(base)
+        if actual_base == 10:
+            m = _re.match(r"[+-]?\d+", s_str)
+        else:
+            m = _re.match(r"[+-]?[0-9a-zA-Z]+", s_str)
+        if not m:
+            return float("nan")
         try:
-            return int(str(s).strip(), int(base))
-        except (ValueError, TypeError):
-            return 0
+            return int(m.group(0), actual_base)
+        except ValueError:
+            return float("nan")
 
     def parseFloat(self, s: Any) -> float:
-        """Parse a string as a float."""
+        """Parse a string as a float (JS-style: stop at first non-numeric)."""
+        import re as _re
+        s_str = str(s).strip()
+        if not s_str:
+            return float("nan")
+        m = _re.match(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", s_str)
+        if not m:
+            return float("nan")
         try:
-            return float(str(s).strip())
-        except (ValueError, TypeError):
+            return float(m.group(0))
+        except ValueError:
             return float("nan")
 
     def toFixed(self, value: Any, digits: int = 0) -> str:
@@ -7085,6 +7194,319 @@ class _URLNamespace:
 
     def __repr__(self) -> str:
         return "URL"
+
+
+# ---------------------------------------------------------------------------
+# URLSearchParams
+# ---------------------------------------------------------------------------
+
+class SpryURLSearchParams:
+    """URLSearchParams — parse and manipulate URL query strings."""
+
+    def __init__(self, init: Any = "") -> None:
+        self._params: list = []  # list of [key, value] pairs (multi-valued)
+        if isinstance(init, str):
+            self._parse_string(init.lstrip("?"))
+        elif isinstance(init, dict):
+            for k, v in init.items():
+                self._params.append([str(k), str(v)])
+        elif isinstance(init, list):
+            for item in init:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    self._params.append([str(item[0]), str(item[1])])
+
+    def _parse_string(self, s: str) -> None:
+        if not s:
+            return
+        from urllib.parse import parse_qsl
+        for k, v in parse_qsl(s, keep_blank_values=True):
+            self._params.append([k, v])
+
+    def get(self, name: str) -> Any:
+        """Return the first value for the given key, or None."""
+        for k, v in self._params:
+            if k == str(name):
+                return v
+        return None
+
+    def getAll(self, name: str) -> list:
+        """Return all values for the given key."""
+        return [v for k, v in self._params if k == str(name)]
+
+    def has(self, name: str) -> bool:
+        return any(k == str(name) for k, v in self._params)
+
+    def set(self, name: str, value: Any) -> None:
+        """Set a key to a value, replacing all existing entries for that key."""
+        name = str(name)
+        value = str(value)
+        found = False
+        new_params = []
+        for k, v in self._params:
+            if k == name:
+                if not found:
+                    new_params.append([k, value])
+                    found = True
+            else:
+                new_params.append([k, v])
+        if not found:
+            new_params.append([name, value])
+        self._params = new_params
+
+    def append(self, name: str, value: Any) -> None:
+        """Append a new key-value pair."""
+        self._params.append([str(name), str(value)])
+
+    def delete(self, name: str) -> None:
+        """Remove all entries for the given key."""
+        name = str(name)
+        self._params = [[k, v] for k, v in self._params if k != name]
+
+    def keys(self) -> "SpryIterator":
+        return SpryIterator([k for k, v in self._params])
+
+    def values(self) -> "SpryIterator":
+        return SpryIterator([v for k, v in self._params])
+
+    def entries(self) -> "SpryIterator":
+        return SpryIterator([[k, v] for k, v in self._params])
+
+    def forEach(self, fn: Any) -> None:
+        for k, v in self._params:
+            fn(v, k)
+
+    @property
+    def size(self) -> int:
+        return len(self._params)
+
+    def toString(self) -> str:
+        from urllib.parse import urlencode
+        return urlencode([(k, v) for k, v in self._params])
+
+    def sort(self) -> None:
+        self._params.sort(key=lambda p: p[0])
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        mapping = {
+            "size": self.size,
+            "get": self.get,
+            "getAll": self.getAll,
+            "has": self.has,
+            "set": self.set,
+            "append": self.append,
+            "delete": self.delete,
+            "keys": self.keys,
+            "values": self.values,
+            "entries": self.entries,
+            "forEach": self.forEach,
+            "toString": self.toString,
+            "sort": self.sort,
+        }
+        if prop in mapping:
+            return mapping[prop]
+        raise SpryRuntimeError(f"URLSearchParams has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"URLSearchParams({self.toString()!r})"
+
+
+class _URLSearchParamsNamespace:
+    """URLSearchParams global namespace."""
+
+    def new(self, init: Any = "") -> SpryURLSearchParams:
+        return SpryURLSearchParams(init)
+
+    def __call__(self, init: Any = "") -> SpryURLSearchParams:
+        return SpryURLSearchParams(init)
+
+    def __repr__(self) -> str:
+        return "URLSearchParams"
+
+
+# ---------------------------------------------------------------------------
+# TextEncoder / TextDecoder
+# ---------------------------------------------------------------------------
+
+class SpryTextEncoder:
+    """TextEncoder — encodes strings to UTF-8 byte arrays."""
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+    def encode(self, text: Any = "") -> list:
+        """Encode a string to a list of UTF-8 bytes."""
+        return list(str(text).encode("utf-8"))
+
+    def encodeInto(self, text: Any, dest: Any) -> dict:
+        """Encode into dest (list); returns {read, written} stats."""
+        encoded = str(text).encode("utf-8")
+        n = min(len(encoded), len(dest) if isinstance(dest, list) else 0)
+        if isinstance(dest, list):
+            for i in range(n):
+                dest[i] = encoded[i]
+        return {"read": len(str(text)), "written": n}
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "encoding":
+            return self.encoding
+        if prop == "encode":
+            return self.encode
+        if prop == "encodeInto":
+            return self.encodeInto
+        raise SpryRuntimeError(f"TextEncoder has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "TextEncoder"
+
+
+class _TextEncoderNamespace:
+    def new(self, encoding: Any = "utf-8") -> SpryTextEncoder:
+        return SpryTextEncoder()
+
+    def __call__(self, encoding: Any = "utf-8") -> SpryTextEncoder:
+        return SpryTextEncoder()
+
+    def __repr__(self) -> str:
+        return "TextEncoder"
+
+
+class SpryTextDecoder:
+    """TextDecoder — decodes byte arrays to strings."""
+
+    def __init__(self, encoding: str = "utf-8") -> None:
+        self._encoding = str(encoding).lower().replace("-", "").replace("_", "")
+
+    @property
+    def encoding(self) -> str:
+        return self._encoding
+
+    def decode(self, data: Any = None) -> str:
+        """Decode a list/bytes of UTF-8 bytes to a string."""
+        if data is None:
+            return ""
+        if isinstance(data, (bytes, bytearray)):
+            raw = bytes(data)
+        elif isinstance(data, list):
+            raw = bytes(int(b) & 0xFF for b in data)
+        else:
+            return str(data)
+        try:
+            return raw.decode(self._encoding or "utf-8")
+        except (UnicodeDecodeError, LookupError):
+            return raw.decode("utf-8", errors="replace")
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "encoding":
+            return self.encoding
+        if prop == "decode":
+            return self.decode
+        raise SpryRuntimeError(f"TextDecoder has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"TextDecoder({self._encoding!r})"
+
+
+class _TextDecoderNamespace:
+    def new(self, encoding: Any = "utf-8") -> SpryTextDecoder:
+        return SpryTextDecoder(str(encoding))
+
+    def __call__(self, encoding: Any = "utf-8") -> SpryTextDecoder:
+        return SpryTextDecoder(str(encoding))
+
+    def __repr__(self) -> str:
+        return "TextDecoder"
+
+
+# ---------------------------------------------------------------------------
+# AbortController / AbortSignal
+# ---------------------------------------------------------------------------
+
+class SpryAbortSignal:
+    """AbortSignal — reflects the abort state of an AbortController."""
+
+    def __init__(self) -> None:
+        self._aborted = False
+        self._reason: Any = None
+        self._listeners: list = []
+
+    @property
+    def aborted(self) -> bool:
+        return self._aborted
+
+    @property
+    def reason(self) -> Any:
+        return self._reason
+
+    def addEventListener(self, event_type: str, listener: Any) -> None:
+        if str(event_type) == "abort":
+            self._listeners.append(listener)
+
+    def removeEventListener(self, event_type: str, listener: Any) -> None:
+        if str(event_type) == "abort" and listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def _abort(self, reason: Any = None) -> None:
+        if not self._aborted:
+            self._aborted = True
+            self._reason = reason
+            for cb in list(self._listeners):
+                try:
+                    if callable(cb):
+                        cb()
+                except Exception:
+                    pass
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "aborted":
+            return self.aborted
+        if prop == "reason":
+            return self.reason
+        if prop == "addEventListener":
+            return self.addEventListener
+        if prop == "removeEventListener":
+            return self.removeEventListener
+        raise SpryRuntimeError(f"AbortSignal has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"AbortSignal(aborted={self._aborted})"
+
+
+class SpryAbortController:
+    """AbortController — allows aborting async operations via a signal."""
+
+    def __init__(self) -> None:
+        self._signal = SpryAbortSignal()
+
+    @property
+    def signal(self) -> SpryAbortSignal:
+        return self._signal
+
+    def abort(self, reason: Any = "AbortError") -> None:
+        self._signal._abort(reason)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "signal":
+            return self.signal
+        if prop == "abort":
+            return self.abort
+        raise SpryRuntimeError(f"AbortController has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "AbortController"
+
+
+class _AbortControllerNamespace:
+    """AbortController global namespace."""
+
+    def new(self) -> SpryAbortController:
+        return SpryAbortController()
+
+    def __call__(self) -> SpryAbortController:
+        return SpryAbortController()
+
+    def __repr__(self) -> str:
+        return "AbortController"
 
 
 # ---------------------------------------------------------------------------

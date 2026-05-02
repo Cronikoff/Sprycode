@@ -15,6 +15,7 @@ src/sprycode.egg-info/requires.txt
 src/sprycode.egg-info/top_level.txt
 src/sprycode/runtime/__init__.py
 src/sprycode/runtime/stdlib.py
+tests/test_batch2.py
 tests/test_builtins.py
 tests/test_interpreter.py
 tests/test_lexer.py

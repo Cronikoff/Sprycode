@@ -1424,17 +1424,34 @@ class Parser:
 
         if tok.type == TokenType.FILTER:
             self._advance()
-            lam = self._parse_lambda()
+            # Support both: `filter x => expr`  and  `filter(x => expr)`
+            if self._check(TokenType.LPAREN):
+                self._advance()  # consume '('
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
             lam.operation = "filter"
             return lam
         if tok.type == TokenType.MAP:
             self._advance()
-            lam = self._parse_lambda()
+            # Support both: `map x => expr`  and  `map(x => expr)`
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
             lam.operation = "map"
             return lam
         if tok.type == TokenType.EACH:
             self._advance()
-            lam = self._parse_lambda()
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
             lam.operation = "each"
             return lam
         if tok.type == TokenType.REDUCE:

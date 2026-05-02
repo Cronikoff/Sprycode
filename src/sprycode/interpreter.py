@@ -757,11 +757,11 @@ class Interpreter:
                 return self._exec_block(node.body, child)
             except SpryUserError as ue:
                 child = env.child()
-                # Expose user error: e.message is the message string, e.value is raw
-                err_obj = ue.value if isinstance(ue.value, dict) else {"message": ue.message, "__error__": True}
-                if isinstance(err_obj, dict) and "message" not in err_obj:
-                    err_obj["message"] = ue.message
-                child.define(node.error_name, err_obj, mutable=False)
+                # Bind the raw thrown value directly; dicts get their message field added
+                err_val = ue.value
+                if isinstance(err_val, dict) and "message" not in err_val:
+                    err_val = {**err_val, "message": ue.message}
+                child.define(node.error_name, err_val, mutable=False)
                 return self._exec_block(node.handler, child)
             except (SpryRuntimeError, Exception) as e:
                 child = env.child()
@@ -1315,12 +1315,14 @@ class Interpreter:
                 return list(obj.values())
             if prop == "entries":
                 return [[k, v] for k, v in obj.items()]
-            if prop == "length":
+            if prop in ("length", "size"):
                 return len(obj)
             if prop == "isEmpty":
                 return len(obj) == 0
             if prop == "has":
                 return lambda key: key in obj
+            if prop == "get":
+                return lambda key, default=None: obj.get(key, default)
             if prop == "set":
                 def _dict_set(key: str, value: Any) -> None:
                     obj[key] = value
@@ -1333,6 +1335,18 @@ class Interpreter:
                 def _dict_merge(other: dict) -> dict:
                     return {**obj, **other}
                 return _dict_merge
+            if prop in ("toList", "items"):
+                return [[k, v] for k, v in obj.items()]
+            if prop == "clone":
+                return dict(obj)
+            if prop == "toJSON":
+                import json as _json
+                return _json.dumps(obj, default=str)
+            if prop == "assign":
+                def _dict_assign(other: dict) -> dict:
+                    obj.update(other)
+                    return obj
+                return _dict_assign
             raise SpryRuntimeError(f"Key {prop!r} not found in object", node)
 
         if isinstance(obj, list):
@@ -1373,22 +1387,82 @@ class Interpreter:
             if prop in ("some", "any"):
                 return lambda pred: any(self._truthy(pred(x)) for x in obj)
             if prop == "reduce":
-                def _list_reduce(init_or_fn: Any, fn: Any = None) -> Any:
-                    # reduce(fn) or reduce(init, fn)
-                    if fn is None:
-                        _fn = init_or_fn
+                def _list_reduce(first_arg: Any, second_arg: Any = _SENTINEL) -> Any:
+                    # Support both:
+                    #   reduce(fn)        — no init, use first element as seed
+                    #   reduce(fn, init)  — fn first, init second (JS/SpryCode convention)
+                    #   reduce(init, fn)  — init first, fn second (legacy convention)
+                    if second_arg is _SENTINEL:
+                        # Single arg must be the function
+                        _fn = first_arg
                         if not obj:
                             return None
                         acc = obj[0]
                         for _item in obj[1:]:
                             acc = _fn(acc, _item)
                         return acc
-                    _fn2 = fn
-                    acc = init_or_fn
+                    # Two args: detect which is fn by callability
+                    if callable(first_arg) and not callable(second_arg):
+                        # reduce(fn, init) — fn first
+                        _fn2 = first_arg
+                        acc = second_arg
+                    elif callable(second_arg) and not callable(first_arg):
+                        # reduce(init, fn) — init first (legacy)
+                        _fn2 = second_arg
+                        acc = first_arg
+                    else:
+                        # Both callable: assume (fn, init) convention
+                        _fn2 = first_arg
+                        acc = second_arg
                     for _item in obj:
                         acc = _fn2(acc, _item)
                     return acc
                 return _list_reduce
+            if prop == "findIndex":
+                return lambda pred: next((i for i, x in enumerate(obj) if self._truthy(pred(x))), -1)
+            if prop == "concat":
+                return lambda other: obj + (other if isinstance(other, list) else [other])
+            if prop == "unshift":
+                def _list_unshift(item: Any) -> int:
+                    obj.insert(0, item)
+                    return len(obj)
+                return _list_unshift
+            if prop == "splice":
+                def _list_splice(start: int, delete_count: int = 0, *items: Any) -> list:
+                    removed = obj[start:start + delete_count]
+                    del obj[start:start + delete_count]
+                    for idx, it in enumerate(items):
+                        obj.insert(start + idx, it)
+                    return removed
+                return _list_splice
+            if prop == "fill":
+                def _list_fill(val: Any, start: int = 0, end: int | None = None) -> list:
+                    _end = end if end is not None else len(obj)
+                    for idx in range(start, min(_end, len(obj))):
+                        obj[idx] = val
+                    return obj
+                return _list_fill
+            if prop == "zip":
+                return lambda other: [[a, b] for a, b in zip(obj, other)]
+            if prop == "chunk":
+                def _list_chunk(size: int) -> list:
+                    n = int(size)
+                    return [obj[i:i + n] for i in range(0, len(obj), n)]
+                return _list_chunk
+            if prop == "take":
+                return lambda n: obj[:int(n)]
+            if prop == "drop":
+                return lambda n: obj[int(n):]
+            if prop in ("flatten", "flat_deep"):
+                def _deep_flatten(lst: list) -> list:
+                    result: list = []
+                    for item in lst:
+                        if isinstance(item, list):
+                            result.extend(_deep_flatten(item))
+                        else:
+                            result.append(item)
+                    return result
+                return _deep_flatten(obj)
             if prop in ("flatMap", "flat_map"):
                 return lambda fn: [item for x in obj for item in (fn(x) if isinstance(fn(x), list) else [fn(x)])]
             if prop == "flat":
@@ -1402,6 +1476,12 @@ class Interpreter:
             if prop == "unique":
                 seen: set = set()
                 return [x for x in obj if not (x in seen or seen.add(x))]  # type: ignore[func-returns-value]
+            if prop == "count":
+                return lambda val: obj.count(val)
+            if prop in ("copy", "clone"):
+                return list(obj)
+            if prop == "toSet":
+                return list(dict.fromkeys(obj))
 
         if isinstance(obj, str):
             if prop == "length":
@@ -1438,6 +1518,12 @@ class Interpreter:
                 return len(obj) > 0
             if prop == "indexOf":
                 return lambda sub: obj.find(sub)
+            if prop == "lastIndexOf":
+                return lambda sub: obj.rfind(sub)
+            if prop == "at":
+                return lambda n: obj[int(n)] if -len(obj) <= int(n) < len(obj) else None
+            if prop == "charAt":
+                return lambda n: obj[int(n)] if 0 <= int(n) < len(obj) else ""
             if prop in ("padStart", "padLeft"):
                 return lambda width, ch=" ": obj.rjust(width, ch)
             if prop in ("padEnd", "padRight"):
@@ -1448,14 +1534,29 @@ class Interpreter:
                 return list(obj)
             if prop == "lines":
                 return obj.splitlines()
+            if prop in ("substring", "substr"):
+                return lambda start, end=None: obj[int(start):int(end)] if end is not None else obj[int(start):]
             if prop == "match":
                 import re as _re
                 return lambda pattern: _re.findall(pattern, obj) or None
+            if prop == "matchAll":
+                import re as _re
+                return lambda pattern: [[m.group(), *m.groups()] for m in _re.finditer(pattern, obj)]
+            if prop == "search":
+                import re as _re
+                return lambda pattern: (m.start() if (m := _re.search(pattern, obj)) else -1)
             if prop in ("toNumber", "toFloat", "toInt", "parseInt", "parseFloat"):
                 try:
                     return int(obj) if "." not in obj else float(obj)
                 except ValueError:
                     return None
+            if prop in ("toString", "toStr"):
+                return obj
+            if prop == "normalize":
+                import unicodedata
+                return lambda form="NFC": unicodedata.normalize(form, obj)
+            if prop == "byteLength":
+                return len(obj.encode("utf-8"))
 
         if isinstance(obj, (int, float)):
             if prop in ("toFixed", "toFixed"):

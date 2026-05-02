@@ -413,13 +413,28 @@ class Interpreter:
         env.define("ceil", math.ceil)
         env.define("sqrt", math.sqrt)
         env.define("pow", pow)
+        # math namespace object
+        env.define("math", _MathHelper())
+
+        # JSON namespace object
+        env.define("json", _JsonHelper())
+
+        # date namespace object
+        env.define("date", _DateHelper())
+
+        # random number
+        env.define("random", lambda: __import__("random").random())
+        env.define("randint", lambda a, b: __import__("random").randint(int(a), int(b)))
+
+        # print (alias for log info)
+        env.define("print", lambda *args: print(*[self._builtin_str(a) for a in args]))
         env.define("len", len)
         env.define("str", self._builtin_str)
         env.define("int", int)
         env.define("float", float)
         env.define("bool", bool)
         env.define("list", list)
-        env.define("type", lambda v: type(v).__name__)
+        env.define("type", self._spry_type)
 
         # Sequence builtins
         env.define("range", lambda *args: list(range(*[int(a) for a in args])))
@@ -1116,8 +1131,17 @@ class Interpreter:
 
     def _eval_call(self, node: CallExpression, env: Environment) -> Any:
         callee = self._eval(node.callee, env)
-        # Evaluate args, wrapping SpryCode callables for use in Python closures
-        args = [self._eval(a, env) for a in node.args]
+        # Evaluate args, expanding any SpreadElements
+        args: list[Any] = []
+        for a in node.args:
+            if isinstance(a, SpreadElement):
+                spread_val = self._eval(a.expr, env)
+                if isinstance(spread_val, (list, tuple)):
+                    args.extend(spread_val)
+                else:
+                    args.append(spread_val)
+            else:
+                args.append(self._eval(a, env))
         # Wrap any lambda/function args so Python-level closures (e.g. list.map) can call them
         py_args = [self._to_py_callable(a, env) for a in args]
 
@@ -1717,7 +1741,14 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def _exec_for(self, node: ForStatement, env: Environment) -> Any:
-        iterable = self._eval(node.iterable, env)
+        # Range shorthand: for i in start..end (BinaryExpression with op="..")
+        if isinstance(node.iterable, BinaryExpression) and node.iterable.op == "..":
+            start = int(self._eval(node.iterable.left, env))
+            end = int(self._eval(node.iterable.right, env))
+            iterable: Any = range(start, end)
+        else:
+            iterable = self._eval(node.iterable, env)
+
         # Allow iterating over dict keys
         if isinstance(iterable, dict):
             iterable = list(iterable.keys())
@@ -1725,9 +1756,23 @@ class Interpreter:
             raise SpryRuntimeError(
                 f"'for' loop requires a list or object, got {type(iterable).__name__}", node
             )
+
+        # Destructured loop: for i, v in enumerate(list)
+        multi_vars = node.vars if node.vars else [node.var]
+        destructured = len(multi_vars) > 1
+
         for item in iterable:
             child = env.child()
-            child.define(node.var, item, mutable=False)
+            if destructured:
+                # item should be a list/tuple: [index, value]
+                if isinstance(item, (list, tuple)):
+                    for idx, vname in enumerate(multi_vars):
+                        child.define(vname, item[idx] if idx < len(item) else None, mutable=False)
+                else:
+                    # fallback: bind first var to item
+                    child.define(multi_vars[0], item, mutable=False)
+            else:
+                child.define(node.var, item, mutable=False)
             try:
                 self._exec_block(node.body, child)
             except BreakSignal:
@@ -2185,6 +2230,39 @@ class Interpreter:
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _spry_type(value: Any) -> str:
+        """Return the SpryCode type name for a value."""
+        if value is None:
+            return "Null"
+        if isinstance(value, bool):
+            return "Bool"
+        if isinstance(value, (int, float)):
+            return "Number"
+        if isinstance(value, str):
+            return "Text"
+        if isinstance(value, list):
+            return "List"
+        if isinstance(value, dict):
+            return "Map"
+        if isinstance(value, SpryResult):
+            return "Result"
+        if isinstance(value, SpryMoney):
+            return "Money"
+        if isinstance(value, SprySecret):
+            return "Secret"
+        if isinstance(value, SpryInstance):
+            return value.cls.name
+        if isinstance(value, SpryClass):
+            return "Class"
+        if isinstance(value, SpryEnum):
+            return "Enum"
+        if isinstance(value, SpryStruct):
+            return "Struct"
+        if isinstance(value, (SpryFunction, SpryTask)):
+            return "Function"
+        return type(value).__name__
+
     def _truthy(self, value: Any) -> bool:
         if value is None:
             return False
@@ -2270,3 +2348,145 @@ class _HttpHelper:
                 return SpryResult(ok=True, value={"status": resp.status, "body": ""})
         except Exception as e:
             return SpryResult(ok=False, error=str(e))
+
+
+class _MathHelper:
+    """math namespace: math.abs, math.floor, math.PI, etc."""
+
+    import math as _math
+
+    PI = _math.pi
+    E = _math.e
+    INF = float("inf")
+
+    def abs(self, x: Any) -> Any:
+        return abs(x)
+
+    def floor(self, x: Any) -> int:
+        import math
+        return math.floor(x)
+
+    def ceil(self, x: Any) -> int:
+        import math
+        return math.ceil(x)
+
+    def round(self, x: Any, digits: int = 0) -> Any:
+        return round(x, digits) if digits else round(x)
+
+    def sqrt(self, x: Any) -> float:
+        import math
+        return math.sqrt(x)
+
+    def pow(self, base: Any, exp: Any) -> Any:
+        return base ** exp
+
+    def log(self, x: Any, base: Any = None) -> float:
+        import math
+        return math.log(x, base) if base is not None else math.log(x)
+
+    def log2(self, x: Any) -> float:
+        import math
+        return math.log2(x)
+
+    def log10(self, x: Any) -> float:
+        import math
+        return math.log10(x)
+
+    def sin(self, x: Any) -> float:
+        import math
+        return math.sin(x)
+
+    def cos(self, x: Any) -> float:
+        import math
+        return math.cos(x)
+
+    def tan(self, x: Any) -> float:
+        import math
+        return math.tan(x)
+
+    def min(self, *args: Any) -> Any:
+        return min(*args) if len(args) > 1 else min(args[0])
+
+    def max(self, *args: Any) -> Any:
+        return max(*args) if len(args) > 1 else max(args[0])
+
+    def trunc(self, x: Any) -> int:
+        import math
+        return math.trunc(x)
+
+    def sign(self, x: Any) -> int:
+        if x > 0:
+            return 1
+        if x < 0:
+            return -1
+        return 0
+
+    def clamp(self, x: Any, lo: Any, hi: Any) -> Any:
+        return max(lo, min(hi, x))
+
+
+class _JsonHelper:
+    """json namespace: json.parse, json.stringify."""
+
+    def parse(self, text: str) -> Any:
+        import json
+        try:
+            return json.loads(str(text))
+        except Exception as e:
+            raise ValueError(f"JSON parse error: {e}") from e
+
+    def stringify(self, value: Any, indent: int | None = None) -> str:
+        import json
+        try:
+            return json.dumps(value, indent=indent, default=str)
+        except Exception as e:
+            raise ValueError(f"JSON stringify error: {e}") from e
+
+
+class _DateHelper:
+    """date namespace: date.today(), date.now(), date.format(), date.parse()."""
+
+    def today(self) -> str:
+        from datetime import date
+        return date.today().isoformat()
+
+    def now(self) -> str:
+        from datetime import datetime
+        return datetime.now().isoformat()
+
+    def utcnow(self) -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+
+    def parse(self, text: str, fmt: str | None = None) -> str:
+        from datetime import datetime
+        try:
+            if fmt:
+                return datetime.strptime(str(text), fmt).isoformat()
+            return datetime.fromisoformat(str(text)).isoformat()
+        except Exception as e:
+            raise ValueError(f"Date parse error: {e}") from e
+
+    def format(self, dt_str: str, fmt: str) -> str:
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(str(dt_str))
+            return dt.strftime(fmt)
+        except Exception as e:
+            raise ValueError(f"Date format error: {e}") from e
+
+    def diff(self, a: str, b: str, unit: str = "days") -> float:
+        from datetime import datetime
+        try:
+            da = datetime.fromisoformat(str(a))
+            db = datetime.fromisoformat(str(b))
+            delta = db - da
+            if unit == "seconds":
+                return delta.total_seconds()
+            if unit == "hours":
+                return delta.total_seconds() / 3600
+            if unit == "minutes":
+                return delta.total_seconds() / 60
+            return delta.days  # default: days
+        except Exception as e:
+            raise ValueError(f"Date diff error: {e}") from e

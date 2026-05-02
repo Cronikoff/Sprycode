@@ -491,11 +491,11 @@ class SecretLiteral(Node):
 # Loops
 # ---------------------------------------------------------------------------
 
-
 @dataclass
 class ForStatement(Node):
-    """for <var> in <iterable> { <body> }"""
+    """for <var> [, <var2>] in <iterable> { <body> }"""
     var: str = ""
+    vars: list[str] = field(default_factory=list)  # for destructured: for i, v in ...
     iterable: Node | None = None
     body: Block | None = None
 

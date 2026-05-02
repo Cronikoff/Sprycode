@@ -916,11 +916,27 @@ class Parser:
     def _parse_for(self) -> ForStatement:
         tok = self._expect(TokenType.FOR)
         var_tok = self._expect_ident()
+        # Destructured: for i, v in enumerate(...)
+        extra_vars: list[str] = []
+        if self._match(TokenType.COMMA):
+            extra_vars.append(self._expect_ident().value)
+            while self._match(TokenType.COMMA):
+                extra_vars.append(self._expect_ident().value)
         self._expect(TokenType.IN)
         iterable = self._parse_value_expression()
+        # Range shorthand: for i in 0..5  (iterable is the start of a range expression)
+        if self._check(TokenType.DOTDOT):
+            self._advance()
+            end_expr = self._parse_value_expression()
+            from .ast_nodes import BinaryExpression
+            iterable = BinaryExpression(op="..", left=iterable, right=end_expr,
+                                        line=iterable.line, column=iterable.column)
         body = self._parse_block()
+        all_vars = [var_tok.value] + extra_vars
         return ForStatement(
-            var=var_tok.value, iterable=iterable, body=body,
+            var=var_tok.value,
+            vars=all_vars,
+            iterable=iterable, body=body,
             line=tok.line, column=tok.column,
         )
 
@@ -1845,8 +1861,11 @@ class Parser:
             else:
                 key_tok = self._current()
                 key = self._advance().value
-                self._expect(TokenType.COLON)
-                value = self._parse_expression()
+                if self._match(TokenType.COLON):
+                    value = self._parse_expression()
+                else:
+                    # Shorthand: { name } → { name: name }
+                    value = Identifier(name=key, line=key_tok.line, column=key_tok.column)
                 pairs[key] = value
                 entries.append((key, value))
             if not self._match(TokenType.COMMA):

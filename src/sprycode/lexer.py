@@ -182,6 +182,8 @@ class TokenType(Enum):
     SELF = auto()
     TYPEOF = auto()
     INSTANCEOF = auto()
+    VOID = auto()            # void operator
+    PRIVATE_IDENT = auto()   # #identifier (private field)
     SPAWN = auto()
     DEBIT = auto()
     CREDIT = auto()
@@ -264,6 +266,7 @@ class TokenType(Enum):
     TILDE = auto()        # ~  (bitwise NOT)
     LSHIFT = auto()       # << (left shift)
     RSHIFT = auto()       # >> (right shift)
+    URSHIFT = auto()      # >>> (unsigned right shift)
     AMP_EQ = auto()       # &= (bitwise AND assign)
     PIPE_EQ = auto()      # |= (bitwise OR assign)
     CARET_EQ = auto()     # ^= (bitwise XOR assign)
@@ -417,6 +420,7 @@ KEYWORDS: dict[str, TokenType] = {
     "self": TokenType.SELF,
     "typeof": TokenType.TYPEOF,
     "instanceof": TokenType.INSTANCEOF,
+    "void": TokenType.VOID,
     "spawn": TokenType.SPAWN,
     "debit": TokenType.DEBIT,
     "credit": TokenType.CREDIT,
@@ -594,6 +598,18 @@ class Lexer:
                 yield from self._scan_identifier(line, col)
                 continue
 
+            # Private field identifiers: #name
+            if ch == "#" and (self._peek().isalpha() or self._peek() == "_"):
+                self._advance()  # consume #
+                # Scan the identifier part
+                start_col = col
+                ident = ""
+                while self._current().isalnum() or self._current() == "_":
+                    ident += self._current()
+                    self._advance()
+                yield Token(TokenType.PRIVATE_IDENT, ident, line, start_col)
+                continue
+
             # Multi-char operators
             if ch == "-" and self._peek() == ">":
                 self._advance()
@@ -759,7 +775,11 @@ class Lexer:
             if ch == ">" and self._peek() == ">":
                 self._advance()
                 self._advance()
-                if self._current() == "=":
+                if self._current() == ">":
+                    # >>> unsigned right shift
+                    self._advance()
+                    yield Token(TokenType.URSHIFT, ">>>", line, col)
+                elif self._current() == "=":
                     self._advance()
                     yield Token(TokenType.RSHIFT_EQ, ">>=", line, col)
                 else:

@@ -473,6 +473,47 @@ class _CallableList(list):
         return self._fn(*args)
 
 
+class SpryIterator:
+    """JS-compatible iterator with .next() → {value, done} dict interface.
+
+    Also compares equal to the underlying list for backward compatibility
+    with existing tests that use `assert result == [...]`.
+    """
+
+    def __init__(self, items: list) -> None:
+        self._items = list(items)
+        self._index = 0
+
+    def next(self) -> dict:
+        if self._index < len(self._items):
+            val = self._items[self._index]
+            self._index += 1
+            return {"value": val, "done": False}
+        return {"value": None, "done": True}
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, SpryIterator):
+            return self._items == other._items
+        if isinstance(other, list):
+            return self._items == other
+        return NotImplemented
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._items[index]
+
+    def toList(self) -> list:
+        return list(self._items[self._index:])
+
+    def __repr__(self) -> str:
+        return f"Iterator({self._items!r})"
+
+
 class SpryGenerator:
     """Runtime generator object produced by calling a generator function (fn*).
 
@@ -804,16 +845,46 @@ class Interpreter:
         # queueMicrotask — executes fn immediately (synchronous SpryCode model)
         env.define("queueMicrotask", lambda fn: fn() if callable(fn) else None)
 
-        # Set builtin — creates a deduplicated list (kept for backward compat)
-        def _builtin_set(lst: Any) -> list:
-            if not isinstance(lst, (list, tuple)):
-                raise TypeError("set() requires a list")
-            seen: list = []
-            for item in lst:
-                if item not in seen:
-                    seen.append(item)
-            return seen
-        env.define("Set", _builtin_set)
+        # Set — now a proper SprySet namespace supporting Set.new([...])
+        env.define("Set", _SprySetNamespace())
+
+        # setTimeout / clearTimeout / setInterval / clearInterval — sync stubs
+        _timer_counter = [0]
+        def _set_timeout(fn: Any, delay: Any = 0) -> int:
+            _timer_counter[0] += 1
+            # Execute immediately in synchronous SpryCode model
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+            return _timer_counter[0]
+        def _clear_timeout(timer_id: Any = None) -> None:
+            pass  # no-op in synchronous model
+        def _set_interval(fn: Any, delay: Any = 0) -> int:
+            _timer_counter[0] += 1
+            return _timer_counter[0]  # no-op stub
+        env.define("setTimeout", _set_timeout)
+        env.define("clearTimeout", _clear_timeout)
+        env.define("setInterval", _set_interval)
+        env.define("clearInterval", _clear_timeout)
+
+        # performance namespace
+        env.define("performance", _PerformanceNamespace())
+
+        # URL global
+        env.define("URL", _URLNamespace())
+
+        # ArrayBuffer and TypedArrays
+        env.define("ArrayBuffer", _ArrayBufferNamespace())
+        env.define("Int8Array", _TypedArrayNamespace("Int8Array", 1))
+        env.define("Uint8Array", _TypedArrayNamespace("Uint8Array", 1))
+        env.define("Int16Array", _TypedArrayNamespace("Int16Array", 2))
+        env.define("Uint16Array", _TypedArrayNamespace("Uint16Array", 2))
+        env.define("Int32Array", _TypedArrayNamespace("Int32Array", 4))
+        env.define("Uint32Array", _TypedArrayNamespace("Uint32Array", 4))
+        env.define("Float32Array", _TypedArrayNamespace("Float32Array", 4))
+        env.define("Float64Array", _TypedArrayNamespace("Float64Array", 8))
 
         # Money helper
         env.define("money", _MoneyHelper())
@@ -1671,6 +1742,9 @@ class Interpreter:
             return int(left) << int(right)
         if op == ">>":
             return int(left) >> int(right)
+        if op == ">>>":
+            # Unsigned right shift: treat left as 32-bit unsigned
+            return (int(left) & 0xFFFFFFFF) >> int(right)
         raise SpryRuntimeError(f"Unknown operator: {op!r}", node)
 
     def _eval_unary(self, node: UnaryExpression, env: Environment) -> Any:
@@ -1681,6 +1755,8 @@ class Interpreter:
             return -operand
         if node.op == "~":
             return ~int(operand)
+        if node.op == "void":
+            return None  # void operator evaluates expression and returns null
         raise SpryRuntimeError(f"Unknown unary operator: {node.op!r}", node)
 
     def _eval_call(self, node: CallExpression, env: Environment) -> Any:
@@ -2145,11 +2221,11 @@ class Interpreter:
                     return copy
                 return _with_index
             if prop == "entries":
-                return [[i, v] for i, v in enumerate(obj)]
+                return SpryIterator([[i, v] for i, v in enumerate(obj)])
             if prop == "keys":
-                return list(range(len(obj)))
+                return SpryIterator(list(range(len(obj))))
             if prop == "values":
-                return list(obj)
+                return SpryIterator(list(obj))
             if prop == "flat":
                 def _do_flat(lst: list, d: int) -> list:
                     result_f: list = []
@@ -2453,6 +2529,12 @@ class Interpreter:
             if prop == "toWellFormed":
                 # Python strings are already well-formed; return unchanged
                 return lambda _obj=obj: _obj
+            if prop == "bytes":
+                return lambda _obj=obj: list(_obj.encode("utf-8"))
+            if prop == "values":
+                return lambda _obj=obj: SpryIterator(list(_obj))
+            if prop == "chars":
+                return lambda _obj=obj: list(_obj)
             if prop == "replaceRegex":
                 def _replace_regex(pattern: Any, repl: str = "", _obj: str = obj) -> str:
                     if isinstance(pattern, SpryRegex):
@@ -2650,7 +2732,19 @@ class Interpreter:
                 return len(obj._values)
             raise SpryRuntimeError(f"Generator has no property {prop!r}", node)
 
+        if isinstance(obj, SpryIterator):
+            if prop == "next":
+                return lambda _it=obj: _it.next()
+            if prop == "toList":
+                return lambda _it=obj: _it.toList()
+            if prop in ("values", "entries", "keys"):
+                return lambda _it=obj: _it  # iterators are already iterators
+            raise SpryRuntimeError(f"Iterator has no property {prop!r}", node)
+
         if isinstance(obj, SpryProxy):
+            return obj._spry_get_prop(prop)
+
+        if isinstance(obj, (SpryURL, SpryArrayBuffer, SpryTypedArray)):
             return obj._spry_get_prop(prop)
 
         # Try attribute access
@@ -2979,6 +3073,10 @@ class Interpreter:
             iterable = list(iterable.keys())
         if isinstance(iterable, SpryGenerator):
             iterable = list(iterable)  # materialise generator
+        if isinstance(iterable, SpryIterator):
+            iterable = iterable._items  # iterate all items
+        if isinstance(iterable, SprySet):
+            iterable = list(iterable._data)
         if not isinstance(iterable, (list, tuple, str, range)):
             raise SpryRuntimeError(
                 f"'for' loop requires a list or object, got {type(iterable).__name__}", node
@@ -4211,6 +4309,18 @@ class _ObjectNamespace:
             return math.copysign(1.0, float(a)) == math.copysign(1.0, float(b))
         return a is b or a == b
 
+    def groupBy(self, arr: Any, key_fn: Any) -> dict:
+        """Group array elements by the result of key_fn. Returns a plain dict."""
+        result: dict = {}
+        items = list(arr) if not isinstance(arr, list) else arr
+        for item in items:
+            key = key_fn(item) if callable(key_fn) else str(item)
+            key = str(key) if not isinstance(key, str) else key
+            if key not in result:
+                result[key] = []
+            result[key].append(item)
+        return result
+
     def __getattr__(self, prop: str) -> Any:
         if prop == "is":
             return self.is_
@@ -5277,14 +5387,14 @@ class SpryMap:
     def spry_clear(self) -> None:
         self._data.clear()
 
-    def spry_keys(self) -> list:
-        return list(self._data.keys())
+    def spry_keys(self) -> "SpryIterator":
+        return SpryIterator(list(self._data.keys()))
 
-    def spry_values(self) -> list:
-        return list(self._data.values())
+    def spry_values(self) -> "SpryIterator":
+        return SpryIterator(list(self._data.values()))
 
-    def spry_entries(self) -> list:
-        return [[k, v] for k, v in self._data.items()]
+    def spry_entries(self) -> "SpryIterator":
+        return SpryIterator([[k, v] for k, v in self._data.items()])
 
     def spry_forEach(self, fn: Any) -> None:
         for k, v in self._data.items():
@@ -5594,15 +5704,34 @@ class SprySet:
         for item in self._data:
             fn(item)
 
+    def values(self) -> "SpryIterator":
+        return SpryIterator(list(self._data))
+
+    def keys(self) -> "SpryIterator":
+        return SpryIterator(list(self._data))
+
+    def entries(self) -> "SpryIterator":
+        return SpryIterator([[v, v] for v in self._data])
+
     def __iter__(self):
         return iter(self._data)
 
     def __repr__(self) -> str:
-        return f"SprySet({self._data!r})"
+        return f"Set({self._data!r})"
 
 
 class _SprySetNamespace:
-    """SprySet global — SprySet.new([items])."""
+    """Set global — supports both Set(list) for dedup and Set.new([items]) for SprySet."""
+
+    def __call__(self, lst: Any) -> list:
+        """Backward compat: Set([1,2,3]) returns a deduplicated list."""
+        if not isinstance(lst, (list, tuple)):
+            raise TypeError("Set() requires a list")
+        seen: list = []
+        for item in lst:
+            if item not in seen:
+                seen.append(item)
+        return seen
 
     def new(self, items: Any = None) -> SprySet:
         if items is None:
@@ -5899,7 +6028,7 @@ class _DateNamespace:
                 return (dt - epoch).total_seconds() * 1000
             except ValueError:
                 continue
-        return float('nan')
+        return math.nan
 
     def UTC(self, year: Any, month: Any = 1, day: Any = 1,
             hour: Any = 0, minute: Any = 0, second: Any = 0) -> float:
@@ -6495,3 +6624,254 @@ class _ProxyNamespace:
 
     def __repr__(self) -> str:
         return "Proxy"
+
+
+# ---------------------------------------------------------------------------
+# performance namespace
+# ---------------------------------------------------------------------------
+
+class _PerformanceNamespace:
+    """performance.now() and performance.mark() stubs."""
+
+    import time as _time_module
+
+    def now(self) -> float:
+        import time as _t
+        return _t.perf_counter() * 1000.0
+
+    def mark(self, name: Any = None) -> None:
+        pass  # no-op stub
+
+    def measure(self, name: Any = None, start: Any = None, end: Any = None) -> None:
+        pass  # no-op stub
+
+    def getEntriesByType(self, entry_type: Any = None) -> list:
+        return []
+
+    def __repr__(self) -> str:
+        return "performance"
+
+
+# ---------------------------------------------------------------------------
+# URL global
+# ---------------------------------------------------------------------------
+
+class SpryURL:
+    """Basic URL object supporting common properties."""
+
+    def __init__(self, href: str) -> None:
+        from urllib.parse import urlparse, parse_qs, urlencode
+        self._raw = href
+        self._parsed = urlparse(href)
+
+    @property
+    def href(self) -> str:
+        return self._raw
+
+    @property
+    def protocol(self) -> str:
+        return (self._parsed.scheme + ":") if self._parsed.scheme else ""
+
+    @property
+    def hostname(self) -> str:
+        return self._parsed.hostname or ""
+
+    @property
+    def port(self) -> str:
+        return str(self._parsed.port) if self._parsed.port else ""
+
+    @property
+    def pathname(self) -> str:
+        return self._parsed.path or "/"
+
+    @property
+    def search(self) -> str:
+        return ("?" + self._parsed.query) if self._parsed.query else ""
+
+    @property
+    def hash(self) -> str:
+        return ("#" + self._parsed.fragment) if self._parsed.fragment else ""
+
+    @property
+    def origin(self) -> str:
+        scheme = self._parsed.scheme
+        host = self._parsed.hostname or ""
+        port = self._parsed.port
+        if port:
+            return f"{scheme}://{host}:{port}"
+        return f"{scheme}://{host}" if scheme else ""
+
+    @property
+    def username(self) -> str:
+        return self._parsed.username or ""
+
+    @property
+    def password(self) -> str:
+        return self._parsed.password or ""
+
+    def toString(self) -> str:
+        return self._raw
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        mapping = {
+            "href": self.href, "protocol": self.protocol,
+            "hostname": self.hostname, "port": self.port,
+            "pathname": self.pathname, "search": self.search,
+            "hash": self.hash, "origin": self.origin,
+            "username": self.username, "password": self.password,
+        }
+        if prop in mapping:
+            return mapping[prop]
+        if prop == "toString":
+            return self.toString
+        raise SpryRuntimeError(f"URL has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"URL({self._raw!r})"
+
+
+class _URLNamespace:
+    """URL global namespace — URL.new(href)."""
+
+    def new(self, href: Any) -> SpryURL:
+        return SpryURL(str(href))
+
+    def canParse(self, href: Any) -> bool:
+        try:
+            from urllib.parse import urlparse
+            result = urlparse(str(href))
+            return bool(result.scheme)
+        except Exception:
+            return False
+
+    def __repr__(self) -> str:
+        return "URL"
+
+
+# ---------------------------------------------------------------------------
+# ArrayBuffer and TypedArrays
+# ---------------------------------------------------------------------------
+
+class SpryArrayBuffer:
+    """Fixed-size binary data buffer."""
+
+    def __init__(self, byte_length: int) -> None:
+        self._data = bytearray(int(byte_length))
+
+    @property
+    def byteLength(self) -> int:
+        return len(self._data)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "byteLength":
+            return self.byteLength
+        raise SpryRuntimeError(f"ArrayBuffer has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"ArrayBuffer({self.byteLength})"
+
+
+class _ArrayBufferNamespace:
+    def new(self, byte_length: Any) -> SpryArrayBuffer:
+        return SpryArrayBuffer(int(byte_length))
+
+    def isView(self, obj: Any) -> bool:
+        return isinstance(obj, SpryTypedArray)
+
+    def __repr__(self) -> str:
+        return "ArrayBuffer"
+
+
+class SpryTypedArray:
+    """Fixed-size typed array."""
+
+    def __init__(self, type_name: str, element_size: int, length_or_buffer: Any) -> None:
+        self._type_name = type_name
+        self._element_size = element_size
+        if isinstance(length_or_buffer, SpryArrayBuffer):
+            length = len(length_or_buffer._data) // element_size
+        elif isinstance(length_or_buffer, list):
+            length = len(length_or_buffer)
+        else:
+            length = int(length_or_buffer)
+        self._data: list = [0] * length
+        if isinstance(length_or_buffer, list):
+            for i, v in enumerate(length_or_buffer):
+                if i < length:
+                    self._data[i] = v
+
+    @property
+    def length(self) -> int:
+        return len(self._data)
+
+    @property
+    def byteLength(self) -> int:
+        return len(self._data) * self._element_size
+
+    def get(self, index: Any) -> Any:
+        return self._data[int(index)]
+
+    def set(self, index: Any, value: Any) -> None:
+        self._data[int(index)] = value
+
+    def toList(self) -> list:
+        return list(self._data)
+
+    def fill(self, value: Any, start: Any = 0, end: Any = None) -> "SpryTypedArray":
+        s = int(start)
+        e = len(self._data) if end is None else int(end)
+        for i in range(s, e):
+            self._data[i] = value
+        return self
+
+    def subarray(self, start: Any = 0, end: Any = None) -> "SpryTypedArray":
+        s = int(start)
+        e = len(self._data) if end is None else int(end)
+        result = SpryTypedArray(self._type_name, self._element_size, e - s)
+        result._data = self._data[s:e]
+        return result
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "length":
+            return self.length
+        if prop == "byteLength":
+            return self.byteLength
+        if prop == "get":
+            return self.get
+        if prop == "set":
+            return self.set
+        if prop == "toList":
+            return self.toList
+        if prop == "fill":
+            return self.fill
+        if prop == "subarray":
+            return self.subarray
+        raise SpryRuntimeError(f"{self._type_name} has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"{self._type_name}({self._data!r})"
+
+
+class _TypedArrayNamespace:
+    def __init__(self, type_name: str, element_size: int) -> None:
+        self._type_name = type_name
+        self._element_size = element_size
+
+    def new(self, length_or_buffer: Any = 0) -> SpryTypedArray:
+        return SpryTypedArray(self._type_name, self._element_size, length_or_buffer)
+
+    def from_(self, iterable: Any) -> SpryTypedArray:
+        items = list(iterable)
+        arr = SpryTypedArray(self._type_name, self._element_size, items)
+        return arr
+
+    def of(self, *args: Any) -> SpryTypedArray:
+        return SpryTypedArray(self._type_name, self._element_size, list(args))
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "from":
+            return self.from_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return self._type_name

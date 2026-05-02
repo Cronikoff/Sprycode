@@ -267,6 +267,8 @@ class Parser:
             self._advance()
             if self._check(TokenType.FN):
                 return self._parse_fn()
+            if self._check(TokenType.FN_STAR):
+                return self._parse_fn(is_generator=True)
             # async block or expression — parse remainder as expression stmt
             return self._parse_expr_or_assignment()
         if tok.type == TokenType.TASK:
@@ -456,7 +458,13 @@ class Parser:
         # Check for object destructuring: var {a, b} = expr
         if self._check(TokenType.LBRACE):
             return self._parse_object_destructure(tok, mutable=True)
-        name_tok = self._expect_ident()
+        # Private field: var #name = value
+        if self._check(TokenType.PRIVATE_IDENT):
+            priv_tok = self._advance()
+            name = f"__private__{priv_tok.value}"
+        else:
+            name_tok = self._expect_ident()
+            name = name_tok.value
         type_annotation = None
         if self._match(TokenType.COLON):
             type_annotation = self._parse_type_name()
@@ -464,7 +472,7 @@ class Parser:
         if self._match(TokenType.EQ):
             value = self._parse_expression()
         return VarDeclaration(
-            name=name_tok.value,
+            name=name,
             type_annotation=type_annotation,
             value=value,
             line=tok.line,
@@ -2032,7 +2040,7 @@ class Parser:
 
     def _parse_shift(self) -> Node:
         left = self._parse_equality()
-        while self._check(TokenType.LSHIFT, TokenType.RSHIFT):
+        while self._check(TokenType.LSHIFT, TokenType.RSHIFT, TokenType.URSHIFT):
             op_tok = self._advance()
             right = self._parse_equality()
             left = BinaryExpression(left=left, op=op_tok.value, right=right, line=op_tok.line, column=op_tok.column)
@@ -2127,6 +2135,11 @@ class Parser:
             op_tok = self._advance()
             operand = self._parse_unary()
             return UnaryExpression(op="~", operand=operand, line=op_tok.line, column=op_tok.column)
+        # void <expr> — evaluate and return null
+        if self._check(TokenType.VOID):
+            op_tok = self._advance()
+            operand = self._parse_unary()
+            return UnaryExpression(op="void", operand=operand, line=op_tok.line, column=op_tok.column)
         # Prefix ++ / --
         if self._check(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
             op_tok = self._advance()
@@ -2503,6 +2516,11 @@ class Parser:
                                      line=tok.line, column=tok.column)
             # Bare 'result' — treat as identifier
             return Identifier(name="result", line=tok.line, column=tok.column)
+
+        # Private field identifiers #name — used inside class methods
+        if tok.type == TokenType.PRIVATE_IDENT:
+            self._advance()
+            return Identifier(name=f"__private__{tok.value}", line=tok.line, column=tok.column)
 
         # Allow identifiers and type-keywords used as identifiers
         if tok.type in self._IDENTIFIER_LIKE:

@@ -198,7 +198,7 @@ class TestMathUppercase:
         assert abs(result - 1.5) < 1e-7
 
     def test_math_log(self):
-        assert abs(val("let v = Math.log(math.E)") - 1.0) < 1e-10
+        assert abs(val("let v = Math.log(Math.E)") - 1.0) < 1e-10
 
     def test_math_sin_cos(self):
         assert abs(val("let v = Math.sin(0)")) < 1e-10

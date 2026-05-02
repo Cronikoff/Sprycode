@@ -113,6 +113,8 @@ from .ast_nodes import (
     WriteStatement,
     YieldStatement,
     SuperExpression,
+    GetterDeclaration,
+    SetterDeclaration,
 )
 from .lexer import Token, TokenType
 
@@ -214,6 +216,7 @@ class Parser:
         TokenType.DATE_TYPE,     # "Date"
         TokenType.TIME_TYPE,     # "Time"
         TokenType.DATETIME_TYPE, # "DateTime"
+        TokenType.MAP_TYPE,      # "Map" — used as global namespace identifier
     })
 
     def _expect_ident(self) -> Token:
@@ -1198,10 +1201,50 @@ class Parser:
             interfaces.append(self._expect_ident().value)
             while self._match(TokenType.COMMA):
                 interfaces.append(self._expect_ident().value)
-        body = self._parse_block()
+        body = self._parse_class_body()
         return ClassDeclaration(name=name_tok.value, superclass=superclass,
                                 interfaces=interfaces, mixins=mixins, body=body,
                                 line=tok.line, column=tok.column)
+
+    def _parse_class_body(self) -> Block:
+        """Parse a class body, recognising contextual `get`/`set` accessor keywords."""
+        tok = self._expect(TokenType.LBRACE)
+        body: list[Node] = []
+        while not self._check(TokenType.RBRACE) and not self._at_end():
+            cur = self._current()
+            # Contextual `get propName() { ... }`
+            if (cur.type == TokenType.IDENTIFIER and cur.value == "get"
+                    and self._peek(1).type in self._IDENTIFIER_LIKE):
+                self._advance()  # consume 'get'
+                name_tok = self._expect_ident()
+                self._expect(TokenType.LPAREN)
+                self._expect(TokenType.RPAREN)
+                # optional return type annotation
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                getter_body = self._parse_block()
+                body.append(GetterDeclaration(name=name_tok.value, body=getter_body,
+                                              line=cur.line, column=cur.column))
+                continue
+            # Contextual `set propName(param) { ... }`
+            if (cur.type == TokenType.IDENTIFIER and cur.value == "set"
+                    and self._peek(1).type in self._IDENTIFIER_LIKE):
+                self._advance()  # consume 'set'
+                name_tok = self._expect_ident()
+                self._expect(TokenType.LPAREN)
+                param_tok = self._expect_ident()
+                self._expect(TokenType.RPAREN)
+                setter_body = self._parse_block()
+                body.append(SetterDeclaration(name=name_tok.value, param=param_tok.value,
+                                              body=setter_body,
+                                              line=cur.line, column=cur.column))
+                continue
+            stmt = self._parse_statement()
+            if stmt is not None:
+                body.append(stmt)
+        self._expect(TokenType.RBRACE)
+        return Block(body=body, line=tok.line, column=tok.column)
 
     def _parse_interface(self) -> InterfaceDeclaration:
         tok = self._expect(TokenType.INTERFACE)

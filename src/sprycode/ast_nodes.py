@@ -869,6 +869,21 @@ class TypeCastExpression(Node):
 
 
 @dataclass
+class GetterDeclaration(Node):
+    """get propName() { ... } inside a class body"""
+    name: str = ""
+    body: "Block | None" = None
+
+
+@dataclass
+class SetterDeclaration(Node):
+    """set propName(param) { ... } inside a class body"""
+    name: str = ""
+    param: str = ""
+    body: "Block | None" = None
+
+
+@dataclass
 class ResultLiteral(Node):
     """result ok <value>  or  result fail <message>"""
     is_ok: bool = True

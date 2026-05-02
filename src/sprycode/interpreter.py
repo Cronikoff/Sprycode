@@ -120,6 +120,8 @@ from .ast_nodes import (
     WriteStatement,
     YieldStatement,
     SuperExpression,
+    GetterDeclaration,
+    SetterDeclaration,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -700,6 +702,13 @@ class Interpreter:
         # Python interop namespace
         env.define("python", _PythonNamespace())
 
+        # String global namespace
+        env.define("String", _StringNamespace())
+
+        # Map global namespace
+        _map_ns = _MapNamespace()
+        env.define("Map", _map_ns)
+
         # Set builtin — creates a deduplicated list
         def _builtin_set(lst: Any) -> list:
             if not isinstance(lst, (list, tuple)):
@@ -896,6 +905,14 @@ class Interpreter:
             obj = self._eval(node.object, env)
             value = self._eval(node.value, env)
             if isinstance(obj, SpryInstance):
+                # Check for setter first
+                setter_key = f"__setter__{node.property}"
+                if setter_key in obj.fields:
+                    setter_fn = obj.fields[setter_key]
+                    if isinstance(setter_fn, SpryFunction):
+                        bm = BoundMethod(instance=obj, fn=setter_fn)
+                        self._call_bound_method(bm, [value], node)
+                        return None
                 obj.set(node.property, value)
             elif isinstance(obj, dict):
                 obj[node.property] = value
@@ -1640,6 +1657,33 @@ class Interpreter:
     def _eval_member_on(self, obj: Any, prop: str, node: Node) -> Any:
         """Look up `prop` on `obj`. Used by both MemberExpression and OptionalMemberExpression."""
 
+        if isinstance(obj, SpryMap):
+            if prop == "size":
+                return len(obj._data)
+            if prop == "set":
+                return obj.spry_set
+            if prop == "get":
+                return obj.spry_get
+            if prop == "has":
+                return obj.spry_has
+            if prop == "delete":
+                return obj.spry_delete
+            if prop == "clear":
+                return obj.spry_clear
+            if prop == "keys":
+                return obj.spry_keys
+            if prop == "values":
+                return obj.spry_values
+            if prop == "entries":
+                return obj.spry_entries
+            if prop == "forEach":
+                return obj.spry_forEach
+            if prop == "toObject":
+                return obj.spry_toObject
+            if prop == "isEmpty":
+                return len(obj._data) == 0
+            raise SpryRuntimeError(f"Map has no property {prop!r}", node)
+
         if isinstance(obj, SpryWebSocket):
             if prop == "send":
                 return lambda msg: obj.send(msg)
@@ -1689,6 +1733,13 @@ class Interpreter:
             raise SpryRuntimeError(f"Enum {obj.name!r} has no variant {prop!r}", node)
 
         if isinstance(obj, SpryInstance):
+            # Check for getter first
+            getter_key = f"__getter__{prop}"
+            if getter_key in obj.fields:
+                getter_fn = obj.fields[getter_key]
+                if isinstance(getter_fn, SpryFunction):
+                    bm = BoundMethod(instance=obj, fn=getter_fn)
+                    return self._call_bound_method(bm, [], node)
             # Instance field or method lookup
             if prop in obj.fields:
                 v = obj.fields[prop]
@@ -2208,6 +2259,20 @@ class Interpreter:
                 return math.radians(float(obj))
             if prop in ("toDegrees", "deg"):
                 return math.degrees(float(obj))
+            # --- Phase 10 number formatting ---
+            if prop == "toLocaleString":
+                def _to_locale_string(_obj: Any = obj) -> str:
+                    v = float(_obj)
+                    if v == int(v):
+                        return f"{int(v):,}"
+                    return f"{v:,.2f}".rstrip("0").rstrip(".")
+                return _to_locale_string
+            if prop == "toPercent":
+                return lambda decimals=2, _obj=obj: f"{float(_obj) * 100:.{int(decimals)}f}%"
+            if prop == "toCurrency":
+                def _to_currency(symbol: str = "$", decimals: int = 2, _obj: Any = obj) -> str:
+                    return f"{symbol}{float(_obj):,.{int(decimals)}f}"
+                return _to_currency
 
         if isinstance(obj, SpryClass):
             if prop == "new":
@@ -3127,6 +3192,30 @@ class Interpreter:
                 val = self._eval(stmt.value, instance_env) if stmt.value is not None else None
                 fields[stmt.name] = val
                 instance_env.define(stmt.name, val, mutable=False)
+            elif isinstance(stmt, GetterDeclaration):
+                # Store getter function; will be wrapped in BoundMethod after self is defined
+                getter_fn = SpryFunction(
+                    name=f"get_{stmt.name}",
+                    params=[],
+                    body=stmt.body,  # type: ignore
+                    closure=instance_env,
+                    defaults={},
+                    rest_param=None,
+                )
+                fields[f"__getter__{stmt.name}"] = getter_fn
+                instance_env.define(f"__getter__{stmt.name}", getter_fn, mutable=False)
+            elif isinstance(stmt, SetterDeclaration):
+                # Store setter function; will be wrapped in BoundMethod after self is defined
+                setter_fn = SpryFunction(
+                    name=f"set_{stmt.name}",
+                    params=[(stmt.param, None)],
+                    body=stmt.body,  # type: ignore
+                    closure=instance_env,
+                    defaults={},
+                    rest_param=None,
+                )
+                fields[f"__setter__{stmt.name}"] = setter_fn
+                instance_env.define(f"__setter__{stmt.name}", setter_fn, mutable=False)
 
         instance = SpryInstance(cls=cls, fields=fields)
 
@@ -4684,3 +4773,131 @@ class _PythonNamespace:
         if name not in allowed:
             raise ValueError(f"python.import: module {name!r} not in allowed list")
         return importlib.import_module(name)
+
+
+# ---------------------------------------------------------------------------
+# Map built-in data structure
+# ---------------------------------------------------------------------------
+
+
+class SpryMap:
+    """Ordered map data structure supporting any hashable key type.
+
+    Accessible in SpryCode via the ``Map`` global namespace:
+    ``let m = Map.new()``
+    """
+
+    def __init__(self) -> None:
+        self._data: dict = {}
+
+    # ------------------------------------------------------------------
+    # Instance methods exposed as properties
+    # ------------------------------------------------------------------
+
+    def spry_set(self, k: Any, v: Any) -> "SpryMap":
+        self._data[k] = v
+        return self
+
+    def spry_get(self, k: Any, default: Any = None) -> Any:
+        return self._data.get(k, default)
+
+    def spry_has(self, k: Any) -> bool:
+        return k in self._data
+
+    def spry_delete(self, k: Any) -> bool:
+        if k in self._data:
+            del self._data[k]
+            return True
+        return False
+
+    def spry_clear(self) -> None:
+        self._data.clear()
+
+    def spry_keys(self) -> list:
+        return list(self._data.keys())
+
+    def spry_values(self) -> list:
+        return list(self._data.values())
+
+    def spry_entries(self) -> list:
+        return [[k, v] for k, v in self._data.items()]
+
+    def spry_forEach(self, fn: Any) -> None:
+        for k, v in self._data.items():
+            fn(v, k)
+
+    def spry_toObject(self) -> dict:
+        return dict(self._data)
+
+    def __repr__(self) -> str:
+        return f"Map({self._data!r})"
+
+
+class _MapNamespace:
+    """Map global namespace — Map.new(), Map.from()."""
+
+    def new(self) -> SpryMap:
+        """Create an empty Map."""
+        return SpryMap()
+
+    def from_(self, entries: Any) -> SpryMap:
+        """Create a Map from a list of [key, value] pairs."""
+        m = SpryMap()
+        if isinstance(entries, list):
+            for pair in entries:
+                if isinstance(pair, list) and len(pair) >= 2:
+                    m.spry_set(pair[0], pair[1])
+                elif isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    m.spry_set(pair[0], pair[1])
+        elif isinstance(entries, dict):
+            for k, v in entries.items():
+                m.spry_set(k, v)
+        return m
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "from":
+            return self.from_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return "Map"
+
+
+# ---------------------------------------------------------------------------
+# String global namespace
+# ---------------------------------------------------------------------------
+
+
+class _StringNamespace:
+    """String global namespace — String.fromCharCode(), String.isString(), etc."""
+
+    def fromCharCode(self, *codes: Any) -> str:
+        """Create a string from character code points (integers)."""
+        return "".join(chr(int(c)) for c in codes)
+
+    def fromCodePoint(self, *codes: Any) -> str:
+        """Create a string from Unicode code points."""
+        return "".join(chr(int(c)) for c in codes)
+
+    def isString(self, value: Any) -> bool:
+        """Return True if the value is a string."""
+        return isinstance(value, str)
+
+    def isEmpty(self, value: Any) -> bool:
+        """Return True if the value is an empty string."""
+        return isinstance(value, str) and len(value) == 0
+
+    def of(self, *chars: Any) -> str:
+        """Concatenate all arguments into a single string."""
+        return "".join(str(c) for c in chars)
+
+    def repeat(self, s: Any, n: Any) -> str:
+        """Repeat string s exactly n times."""
+        return str(s) * int(n)
+
+    def concat(self, *parts: Any) -> str:
+        """Concatenate multiple strings."""
+        return "".join(str(p) for p in parts)
+
+    def __repr__(self) -> str:
+        return "String"

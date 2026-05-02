@@ -2040,7 +2040,7 @@ class Interpreter:
                 child_val = child.get(fname)
             except SpryRuntimeError:
                 continue
-            if child_val is not initial and child_val != initial:
+            if child_val != initial:
                 bm.instance.fields[fname] = child_val
 
         return return_val

@@ -25,6 +25,7 @@ tests/test_new_features.py
 tests/test_oop.py
 tests/test_parser.py
 tests/test_permissions.py
+tests/test_phase10_features.py
 tests/test_phase4_plus.py
 tests/test_phase5_features.py
 tests/test_phase6_features.py

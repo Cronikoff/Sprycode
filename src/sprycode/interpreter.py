@@ -2313,12 +2313,11 @@ class Interpreter:
             if prop == "codePointAt":
                 return lambda n=0, _obj=obj: ord(_obj[int(n)]) if 0 <= int(n) < len(_obj) else None
             if prop == "replaceRegex":
-                import re as _re
                 def _replace_regex(pattern: Any, repl: str = "", _obj: str = obj) -> str:
                     if isinstance(pattern, SpryRegex):
                         return pattern.pattern.sub(str(repl), _obj)
                     pat, flags = _parse_regex_pattern(str(pattern))
-                    return _re.sub(pat, str(repl), _obj, flags=flags)
+                    return re.sub(pat, str(repl), _obj, flags=flags)
                 return _replace_regex
 
         if isinstance(obj, (int, float)):
@@ -4977,7 +4976,7 @@ class SpryMap:
         return result
 
     def spry_toEntries(self) -> list:
-        return [[k, v] for k, v in self._data.items()]
+        return self.spry_entries()
 
     def spry_clone(self) -> "SpryMap":
         result = SpryMap()

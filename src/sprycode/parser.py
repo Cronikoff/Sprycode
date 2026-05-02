@@ -2460,7 +2460,7 @@ class Parser:
 
         raise ParseError(f"Unexpected token in expression", tok)
 
-    def _parse_object_literal(self) -> "ObjectLiteral | DictComprehension":
+    def _parse_object_literal(self) -> ObjectLiteral | DictComprehension:
         tok = self._expect(TokenType.LBRACE)
         pairs: dict[str, Node] = {}
         entries: list = []

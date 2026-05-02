@@ -1179,6 +1179,12 @@ class TestListDestructure:
         assert interp.globals.get("b") == 2
         assert interp.globals.get("rest") == []
 
+    def test_rest_element_rhs_shorter_than_pattern(self):
+        interp = run('let [a, b, ...rest] = [1]')
+        assert interp.globals.get("a") == 1
+        assert interp.globals.get("b") is None
+        assert interp.globals.get("rest") == []
+
     def test_rest_only(self):
         interp = run('let [...rest] = [10, 20, 30]')
         assert interp.globals.get("rest") == [10, 20, 30]

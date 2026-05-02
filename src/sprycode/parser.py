@@ -30,8 +30,11 @@ from .ast_nodes import (
     ContinueStatement,
     CopyStatement,
     CreateStatement,
+    CreditStatement,
+    DebitStatement,
     DeleteStatement,
     DenyStatement,
+    DoWhileStatement,
     EnumDeclaration,
     ExpectStatement,
     ExtractStatement,
@@ -45,6 +48,7 @@ from .ast_nodes import (
     IndexAssignment,
     InExpression,
     IndexExpression,
+    InstanceofExpression,
     InterfaceDeclaration,
     LambdaExpression,
     LetDeclaration,
@@ -78,6 +82,7 @@ from .ast_nodes import (
     SecretLiteral,
     SensitiveDataDeclaration,
     SleepStatement,
+    SpawnStatement,
     SpreadElement,
     StopStatement,
     StreamStatement,
@@ -93,12 +98,15 @@ from .ast_nodes import (
     ThrowStatement,
     TransactionStatement,
     TryCatchStatement,
+    TypeofExpression,
     UnaryExpression,
     UseStatement,
     ValidateStatement,
     VarDeclaration,
     WatchStatement,
+    WebSocketStatement,
     WhileStatement,
+    WithStatement,
     WriteStatement,
 )
 from .lexer import Token, TokenType
@@ -336,6 +344,18 @@ class Parser:
             return self._parse_interface()
         if tok.type == TokenType.SWITCH:
             return self._parse_switch()
+        if tok.type == TokenType.DO:
+            return self._parse_do_while()
+        if tok.type == TokenType.SPAWN:
+            return self._parse_spawn()
+        if tok.type == TokenType.WEBSOCKET:
+            return self._parse_websocket()
+        if tok.type == TokenType.WITH:
+            return self._parse_with()
+        if tok.type == TokenType.DEBIT:
+            return self._parse_debit()
+        if tok.type == TokenType.CREDIT:
+            return self._parse_credit()
 
         # Expression statement or assignment
         return self._parse_expr_or_assignment()
@@ -578,11 +598,25 @@ class Parser:
     def _parse_try(self) -> TryCatchStatement:
         tok = self._expect(TokenType.TRY)
         body = self._parse_block()
-        self._expect(TokenType.CATCH)
-        err_name = self._expect(TokenType.IDENTIFIER).value
-        handler = self._parse_block()
+        # catch is optional if finally is present
+        err_name = ""
+        handler: Block | None = None
+        if self._check(TokenType.CATCH):
+            self._advance()
+            err_name = self._expect_ident().value
+            handler = self._parse_block()
+        # optional finally block
+        finally_block: Block | None = None
+        if self._check(TokenType.FINALLY):
+            self._advance()
+            finally_block = self._parse_block()
         return TryCatchStatement(
-            body=body, error_name=err_name, handler=handler, line=tok.line, column=tok.column
+            body=body,
+            error_name=err_name,
+            handler=handler,
+            finally_block=finally_block,
+            line=tok.line,
+            column=tok.column,
         )
 
     def _parse_atomic(self) -> AtomicStatement:
@@ -1201,6 +1235,74 @@ class Parser:
                 break
         self._expect(TokenType.RBRACE)
         return SwitchStatement(subject=subject, cases=cases, default_body=default_body,
+                               line=tok.line, column=tok.column)
+
+    def _parse_do_while(self) -> DoWhileStatement:
+        """do { <body> } while <condition>"""
+        tok = self._expect(TokenType.DO)
+        body = self._parse_block()
+        self._expect(TokenType.WHILE)
+        condition = self._parse_expression()
+        return DoWhileStatement(body=body, condition=condition,
+                                line=tok.line, column=tok.column)
+
+    def _parse_spawn(self) -> SpawnStatement:
+        """spawn <call_expr>"""
+        tok = self._expect(TokenType.SPAWN)
+        call = self._parse_expression()
+        return SpawnStatement(call=call, line=tok.line, column=tok.column)
+
+    def _parse_websocket(self) -> WebSocketStatement:
+        """websocket <name> <url_expr> { <body> }"""
+        tok = self._expect(TokenType.WEBSOCKET)
+        name_tok = self._expect_ident()
+        url = self._parse_expression()
+        body = self._parse_block()
+        return WebSocketStatement(name=name_tok.value, url=url, body=body,
+                                  line=tok.line, column=tok.column)
+
+    def _parse_with(self) -> WithStatement:
+        """with <expr> as <name> { <body> }"""
+        tok = self._expect(TokenType.WITH)
+        expr = self._parse_expression()
+        alias = ""
+        # Check for 'as name'
+        if self._check(TokenType.AS):
+            self._advance()  # consume 'as'
+            alias = self._expect_ident().value
+        elif self._check(TokenType.IDENTIFIER) and self._current().value == "as":
+            self._advance()  # consume 'as' identifier
+            alias = self._expect_ident().value
+        body = self._parse_block()
+        return WithStatement(expr=expr, alias=alias, body=body,
+                             line=tok.line, column=tok.column)
+
+    def _parse_debit(self) -> DebitStatement:
+        """debit account <account_expr> amount <amount_expr>"""
+        tok = self._expect(TokenType.DEBIT)
+        # optional 'account' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "account":
+            self._advance()
+        account = self._parse_expression()
+        # optional 'amount' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "amount":
+            self._advance()
+        amount = self._parse_expression()
+        return DebitStatement(account=account, amount=amount,
+                              line=tok.line, column=tok.column)
+
+    def _parse_credit(self) -> CreditStatement:
+        """credit account <account_expr> amount <amount_expr>"""
+        tok = self._expect(TokenType.CREDIT)
+        # optional 'account' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "account":
+            self._advance()
+        account = self._parse_expression()
+        # optional 'amount' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "amount":
+            self._advance()
+        amount = self._parse_expression()
+        return CreditStatement(account=account, amount=amount,
                                line=tok.line, column=tok.column)
 
     def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
@@ -1847,12 +1949,35 @@ class Parser:
                     line=op_tok.line,
                     column=op_tok.column,
                 )
+            elif self._check(TokenType.INSTANCEOF):
+                inst_tok = self._advance()
+                type_tok = self._advance()  # consume the type name token
+                expr = InstanceofExpression(
+                    operand=expr,
+                    type_name=type_tok.value,
+                    line=inst_tok.line,
+                    column=inst_tok.column,
+                )
             else:
                 break
         return expr
 
     def _parse_primary(self) -> Node:
         tok = self._current()
+
+        # typeof <expr>
+        if tok.type == TokenType.TYPEOF:
+            self._advance()
+            operand = self._parse_postfix()  # allow chaining: typeof items[0]
+            return TypeofExpression(operand=operand, line=tok.line, column=tok.column)
+
+        # debit / credit as expressions (inside transactions or let/var)
+        if tok.type == TokenType.DEBIT:
+            stmt = self._parse_debit()
+            return stmt  # DebitStatement also acts as expression (returns dict)
+        if tok.type == TokenType.CREDIT:
+            stmt = self._parse_credit()
+            return stmt  # CreditStatement also acts as expression (returns dict)
 
         if tok.type == TokenType.STRING:
             self._advance()

@@ -125,10 +125,67 @@ class IfStatement(Node):
 
 @dataclass
 class TryCatchStatement(Node):
-    """try { <body> } catch <err_name> { <handler> }"""
+    """try { <body> } catch <err_name> { <handler> } [finally { <finally_block> }]"""
     body: Block | None = None
     error_name: str = ""
     handler: Block | None = None
+    finally_block: "Block | None" = None
+
+
+@dataclass
+class DoWhileStatement(Node):
+    """do { <body> } while <condition>"""
+    body: Block | None = None
+    condition: "Node | None" = None
+
+
+@dataclass
+class TypeofExpression(Node):
+    """typeof <expr>  — returns a string describing the type"""
+    operand: "Node | None" = None
+
+
+@dataclass
+class InstanceofExpression(Node):
+    """<expr> instanceof <TypeName>  — returns bool"""
+    operand: "Node | None" = None
+    type_name: str = ""
+
+
+@dataclass
+class SpawnStatement(Node):
+    """spawn <call_expr>  — fire-and-forget async execution"""
+    call: "Node | None" = None
+
+
+@dataclass
+class DebitStatement(Node):
+    """debit account <name> amount <expr>"""
+    account: "Node | None" = None
+    amount: "Node | None" = None
+
+
+@dataclass
+class CreditStatement(Node):
+    """credit account <name> amount <expr>"""
+    account: "Node | None" = None
+    amount: "Node | None" = None
+
+
+@dataclass
+class WebSocketStatement(Node):
+    """websocket <name> <url> { <body> }"""
+    name: str = ""
+    url: "Node | None" = None
+    body: "Block | None" = None
+
+
+@dataclass
+class WithStatement(Node):
+    """with <expr> as <name> { <body> }"""
+    expr: "Node | None" = None
+    alias: str = ""
+    body: "Block | None" = None
 
 
 @dataclass

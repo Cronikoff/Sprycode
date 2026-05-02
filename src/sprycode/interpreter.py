@@ -38,8 +38,11 @@ from .ast_nodes import (
     ContinueStatement,
     CopyStatement,
     CreateStatement,
+    CreditStatement,
+    DebitStatement,
     DeleteStatement,
     DenyStatement,
+    DoWhileStatement,
     EnumDeclaration,
     ExpectStatement,
     ExtractStatement,
@@ -53,6 +56,7 @@ from .ast_nodes import (
     IndexAssignment,
     InExpression,
     IndexExpression,
+    InstanceofExpression,
     InterfaceDeclaration,
     LambdaExpression,
     LetDeclaration,
@@ -86,6 +90,7 @@ from .ast_nodes import (
     SecretLiteral,
     SensitiveDataDeclaration,
     SleepStatement,
+    SpawnStatement,
     SpreadElement,
     StopStatement,
     StreamStatement,
@@ -100,12 +105,15 @@ from .ast_nodes import (
     ThrowStatement,
     TransactionStatement,
     TryCatchStatement,
+    TypeofExpression,
     UnaryExpression,
     UseStatement,
     ValidateStatement,
     VarDeclaration,
     WatchStatement,
+    WebSocketStatement,
     WhileStatement,
+    WithStatement,
     WriteStatement,
 )
 from .permissions import PermissionSet
@@ -408,6 +416,30 @@ class SpryRegex:
 
     def __repr__(self) -> str:
         return f"<regex /{self.pattern.pattern}/>"
+
+
+class SpryWebSocket:
+    """Runtime representation of a WebSocket connection (stub)."""
+
+    def __init__(self, url: str, interpreter: "Interpreter") -> None:
+        self.url = url
+        self._interp = interpreter
+        self._handlers: list[Any] = []
+        self.connected = True
+
+    def send(self, message: Any) -> None:
+        self._interp.logger.info(f"[WebSocket] send → {self.url!r}: {message!r}")
+
+    def close(self) -> None:
+        self.connected = False
+        self._interp.logger.info(f"[WebSocket] closed {self.url!r}")
+
+    def onMessage(self, handler: Any) -> None:
+        """Register a message handler (stored but not called at runtime)."""
+        self._handlers.append(handler)
+
+    def __repr__(self) -> str:
+        return f"<WebSocket {self.url!r} connected={self.connected}>"
 
 
 # ---------------------------------------------------------------------------
@@ -796,22 +828,36 @@ class Interpreter:
             return None
 
         if isinstance(node, TryCatchStatement):
+            result = None
+            exc_to_reraise = None
             try:
                 child = env.child()
-                return self._exec_block(node.body, child)
+                result = self._exec_block(node.body, child)
             except SpryUserError as ue:
-                child = env.child()
-                # Bind the raw thrown value directly; dicts get their message field added
-                err_val = ue.value
-                if isinstance(err_val, dict) and "message" not in err_val:
-                    err_val = {**err_val, "message": ue.message}
-                child.define(node.error_name, err_val, mutable=False)
-                return self._exec_block(node.handler, child)
+                if node.handler is not None:
+                    child = env.child()
+                    err_val = ue.value
+                    if isinstance(err_val, dict) and "message" not in err_val:
+                        err_val = {**err_val, "message": ue.message}
+                    child.define(node.error_name, err_val, mutable=False)
+                    result = self._exec_block(node.handler, child)
+                else:
+                    exc_to_reraise = ue
             except (SpryRuntimeError, Exception) as e:
-                child = env.child()
-                result = SpryResult(ok=False, error=str(e))
-                child.define(node.error_name, result, mutable=False)
-                return self._exec_block(node.handler, child)
+                if node.handler is not None:
+                    child = env.child()
+                    err_val = SpryResult(ok=False, error=str(e))
+                    child.define(node.error_name, err_val, mutable=False)
+                    result = self._exec_block(node.handler, child)
+                else:
+                    exc_to_reraise = e
+            finally:
+                if node.finally_block is not None:
+                    finally_child = env.child()
+                    self._exec_block(node.finally_block, finally_child)
+            if exc_to_reraise is not None:
+                raise exc_to_reraise
+            return result
 
         if isinstance(node, AtomicStatement):
             return self._exec_atomic(node, env)
@@ -977,6 +1023,24 @@ class Interpreter:
 
         if isinstance(node, ObjectDestructure):
             return self._exec_object_destructure(node, env)
+
+        if isinstance(node, DoWhileStatement):
+            return self._exec_do_while(node, env)
+
+        if isinstance(node, SpawnStatement):
+            return self._exec_spawn(node, env)
+
+        if isinstance(node, WebSocketStatement):
+            return self._exec_websocket(node, env)
+
+        if isinstance(node, WithStatement):
+            return self._exec_with(node, env)
+
+        if isinstance(node, DebitStatement):
+            return self._exec_debit(node, env)
+
+        if isinstance(node, CreditStatement):
+            return self._exec_credit(node, env)
 
         # Expression as statement
         return self._eval(node, env)
@@ -1160,6 +1224,20 @@ class Interpreter:
         if isinstance(node, PostfixExpression):
             return self._eval_postfix(node, env)
 
+        if isinstance(node, TypeofExpression):
+            val = self._eval(node.operand, env)
+            return self._spry_typeof(val)
+
+        if isinstance(node, InstanceofExpression):
+            val = self._eval(node.operand, env)
+            return self._spry_instanceof(val, node.type_name)
+
+        if isinstance(node, DebitStatement):
+            return self._exec_debit(node, env)
+
+        if isinstance(node, CreditStatement):
+            return self._exec_credit(node, env)
+
         # Fall through — try executing as a statement
         return self._exec(node, env)
 
@@ -1335,6 +1413,19 @@ class Interpreter:
 
     def _eval_member_on(self, obj: Any, prop: str, node: Node) -> Any:
         """Look up `prop` on `obj`. Used by both MemberExpression and OptionalMemberExpression."""
+
+        if isinstance(obj, SpryWebSocket):
+            if prop == "send":
+                return lambda msg: obj.send(msg)
+            if prop == "close":
+                return lambda: obj.close()
+            if prop == "onMessage":
+                return lambda handler: obj.onMessage(handler)
+            if prop == "connected":
+                return obj.connected
+            if prop == "url":
+                return obj.url
+            raise SpryRuntimeError(f"WebSocket has no property {prop!r}", node)
 
         if isinstance(obj, SpryRegex):
             if prop == "test":
@@ -2103,6 +2194,139 @@ class Interpreter:
         raise SpryRuntimeError(
             f"Cannot iterate over {type(value).__name__}", node
         )
+
+    def _exec_do_while(self, node: DoWhileStatement, env: Environment) -> Any:
+        max_iterations = 100_000
+        count = 0
+        while True:
+            child = env.child()
+            try:
+                self._exec_block(node.body, child)
+            except BreakSignal:
+                break
+            except ContinueSignal:
+                pass
+            count += 1
+            if count >= max_iterations:
+                raise SpryRuntimeError("Do-while loop exceeded maximum iteration limit (100,000)", node)
+            # Continue while condition is true; stop when it becomes false
+            if not self._truthy(self._eval(node.condition, env)):
+                break
+        return None
+
+    def _exec_spawn(self, node: SpawnStatement, env: Environment) -> Any:
+        """Spawn: evaluate the call expression asynchronously (fire-and-forget).
+        Since SpryCode is synchronous at runtime, spawn is treated as an
+        immediate synchronous call — the result is discarded.
+        """
+        try:
+            self._eval(node.call, env)
+        except Exception:
+            pass  # Spawned calls never propagate exceptions to the caller
+        return None
+
+    def _exec_websocket(self, node: WebSocketStatement, env: Environment) -> Any:
+        """WebSocket statement: registers a WebSocket connection object.
+        At runtime, creates a stub object with send/close/onMessage methods.
+        """
+        url_val = self._eval(node.url, env)
+        ws_obj = SpryWebSocket(str(url_val), self)
+        if node.name:
+            env.define(node.name, ws_obj, mutable=True)
+        # Execute the body in a child scope where the ws name is visible
+        if node.body:
+            child = env.child()
+            self._exec_block(node.body, child)
+        return ws_obj
+
+    def _exec_with(self, node: WithStatement, env: Environment) -> Any:
+        """with <expr> as <name> { body } — resource management.
+        Calls __enter__-like open/connect, executes body, then closes.
+        """
+        resource = self._eval(node.expr, env)
+        child = env.child()
+        if node.alias:
+            child.define(node.alias, resource, mutable=False)
+        try:
+            return self._exec_block(node.body, child)
+        finally:
+            # Auto-close the resource if it supports it
+            if hasattr(resource, "close"):
+                try:
+                    resource.close()
+                except Exception:
+                    pass
+
+    def _exec_debit(self, node: DebitStatement, env: Environment) -> Any:
+        """debit account <name> amount <val> — records a debit ledger entry."""
+        account = self._eval(node.account, env)
+        amount = self._eval(node.amount, env)
+        self.logger.info(f"DEBIT  account={account!r}  amount={amount!r}")
+        self.audit.log("debit", {"account": account, "amount": amount})
+        return {"type": "debit", "account": account, "amount": amount}
+
+    def _exec_credit(self, node: CreditStatement, env: Environment) -> Any:
+        """credit account <name> amount <val> — records a credit ledger entry."""
+        account = self._eval(node.account, env)
+        amount = self._eval(node.amount, env)
+        self.logger.info(f"CREDIT account={account!r}  amount={amount!r}")
+        self.audit.log("credit", {"account": account, "amount": amount})
+        return {"type": "credit", "account": account, "amount": amount}
+
+    def _spry_typeof(self, val: Any) -> str:
+        """Return the SpryCode type name of a value."""
+        if val is None:
+            return "Null"
+        if isinstance(val, bool):
+            return "Bool"
+        if isinstance(val, int):
+            return "Int"
+        if isinstance(val, float):
+            return "Float"
+        if isinstance(val, str):
+            return "Text"
+        if isinstance(val, list):
+            return "List"
+        if isinstance(val, dict):
+            return "Object"
+        if isinstance(val, SpryFunction):
+            return "Function"
+        if isinstance(val, (SpryLambda, SpryMultiLambda)):
+            return "Function"
+        if isinstance(val, SpryInstance):
+            return val.cls.name
+        if isinstance(val, SpryClass):
+            return "Class"
+        if isinstance(val, SpryStruct):
+            return "Struct"
+        if isinstance(val, SpryMoney):
+            return "Money"
+        if isinstance(val, SpryResult):
+            return "Result"
+        if isinstance(val, SpryRegex):
+            return "Regex"
+        if isinstance(val, SpryFile):
+            return "File"
+        if isinstance(val, SpryFolder):
+            return "Folder"
+        return type(val).__name__
+
+    def _spry_instanceof(self, val: Any, type_name: str) -> bool:
+        """Return True if val is an instance of the named SpryCode type."""
+        actual = self._spry_typeof(val)
+        # Normalize aliases
+        aliases: dict[str, list[str]] = {
+            "Number": ["Int", "Float"],
+            "Text": ["Text"],
+            "Bool": ["Bool"],
+            "List": ["List"],
+            "Object": ["Object"],
+            "Null": ["Null"],
+            "Function": ["Function"],
+        }
+        if type_name in aliases:
+            return actual in aliases[type_name]
+        return actual == type_name
 
     def _exec_assert(self, node: AssertStatement, env: Environment) -> Any:
         cond = self._eval(node.condition, env)

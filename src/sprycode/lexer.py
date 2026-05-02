@@ -132,6 +132,8 @@ class TokenType(Enum):
     CONTINUE = auto()
     REPEAT = auto()
     UNTIL = auto()
+    DO = auto()
+    FINALLY = auto()
 
     # Keywords — switch / case
     SWITCH = auto()
@@ -173,6 +175,11 @@ class TokenType(Enum):
     ASYNC = auto()
     AWAIT = auto()
     SELF = auto()
+    TYPEOF = auto()
+    INSTANCEOF = auto()
+    SPAWN = auto()
+    DEBIT = auto()
+    CREDIT = auto()
 
     # Types
     TEXT = auto()
@@ -352,6 +359,8 @@ KEYWORDS: dict[str, TokenType] = {
     "continue": TokenType.CONTINUE,
     "repeat": TokenType.REPEAT,
     "until": TokenType.UNTIL,
+    "do": TokenType.DO,
+    "finally": TokenType.FINALLY,
     "switch": TokenType.SWITCH,
     "default": TokenType.DEFAULT,
     "match": TokenType.MATCH,
@@ -375,6 +384,11 @@ KEYWORDS: dict[str, TokenType] = {
     "async": TokenType.ASYNC,
     "await": TokenType.AWAIT,
     "self": TokenType.SELF,
+    "typeof": TokenType.TYPEOF,
+    "instanceof": TokenType.INSTANCEOF,
+    "spawn": TokenType.SPAWN,
+    "debit": TokenType.DEBIT,
+    "credit": TokenType.CREDIT,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,
     "Number": TokenType.NUMBER_TYPE,

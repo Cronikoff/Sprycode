@@ -422,6 +422,9 @@ class Interpreter:
         # math namespace object
         env.define("math", _MathHelper())
 
+        # stats namespace object
+        env.define("stats", _StatsHelper())
+
         # JSON namespace object
         env.define("json", _JsonHelper())
 
@@ -2458,11 +2461,29 @@ class _HttpHelper:
 
 
 class _MathHelper:
-    """math namespace: math.abs, math.floor, math.PI, etc."""
+    """math namespace: math.abs, math.floor, math.PI, etc.
 
+    Provides a comprehensive set of mathematical functions suitable for
+    algebra, trigonometry, number theory, statistics and geometry.
+    """
+
+    # ── Constants ────────────────────────────────────────────────────────────
     PI: float = math.pi
     E: float = math.e
+    TAU: float = math.tau
     INF: float = float("inf")
+    INFINITY: float = float("inf")
+    NAN: float = float("nan")
+    SQRT2: float = math.sqrt(2)
+    SQRT1_2: float = math.sqrt(0.5)
+    PHI: float = (1 + math.sqrt(5)) / 2          # golden ratio
+    LN2: float = math.log(2)
+    LN10: float = math.log(10)
+    LOG2E: float = math.log2(math.e)
+    LOG10E: float = math.log10(math.e)
+    EPSILON: float = 2.220446049250313e-16        # machine epsilon (float64)
+
+    # ── Basic arithmetic ─────────────────────────────────────────────────────
 
     def abs(self, x: Any) -> Any:
         return abs(x)
@@ -2476,20 +2497,120 @@ class _MathHelper:
     def round(self, x: Any, digits: int = 0) -> Any:
         return round(x, digits) if digits else round(x)
 
+    def roundTo(self, x: Any, digits: int = 0) -> Any:
+        """Round x to `digits` decimal places."""
+        return round(float(x), int(digits))
+
+    def toSF(self, x: Any, sig_figs: int = 3) -> float:
+        """Round x to `sig_figs` significant figures."""
+        if x == 0:
+            return 0.0
+        import math as _m
+        d = _m.ceil(_m.log10(abs(float(x))))
+        power = sig_figs - d
+        factor = 10 ** power
+        return round(float(x) * factor) / factor
+
+    def trunc(self, x: Any) -> int:
+        return math.trunc(x)
+
+    def sign(self, x: Any) -> int:
+        if x > 0:
+            return 1
+        if x < 0:
+            return -1
+        return 0
+
+    def frac(self, x: Any) -> float:
+        """Fractional part of x (always non-negative)."""
+        return math.modf(float(x))[0]
+
+    def intDiv(self, a: Any, b: Any) -> int:
+        """Integer (floor) division: intDiv(10, 3) == 3."""
+        return int(a) // int(b)
+
+    def mod(self, a: Any, b: Any) -> Any:
+        """Modulo — same as the % operator."""
+        return a % b
+
+    def clamp(self, x: Any, lo: Any, hi: Any) -> Any:
+        return max(lo, min(hi, x))
+
+    def lerp(self, a: Any, b: Any, t: Any) -> float:
+        """Linear interpolation: lerp(0, 10, 0.5) == 5.0."""
+        return float(a) + float(t) * (float(b) - float(a))
+
+    def isEven(self, n: Any) -> bool:
+        return int(n) % 2 == 0
+
+    def isOdd(self, n: Any) -> bool:
+        return int(n) % 2 != 0
+
+    def isInteger(self, x: Any) -> bool:
+        return isinstance(x, int) or (isinstance(x, float) and x == int(x))
+
+    def isFinite(self, x: Any) -> bool:
+        return math.isfinite(float(x))
+
+    def isNaN(self, x: Any) -> bool:
+        return isinstance(x, float) and math.isnan(x)
+
+    def isBetween(self, x: Any, lo: Any, hi: Any) -> bool:
+        """True iff lo <= x <= hi."""
+        return float(lo) <= float(x) <= float(hi)
+
+    # ── Powers, roots & exponentials ─────────────────────────────────────────
+
     def sqrt(self, x: Any) -> float:
         return math.sqrt(x)
+
+    def cbrt(self, x: Any) -> float:
+        """Cube root (handles negative x)."""
+        v = float(x)
+        return math.copysign(abs(v) ** (1 / 3), v)
+
+    def nthRoot(self, x: Any, n: Any) -> float:
+        """n-th root of x (handles negative x when n is odd)."""
+        v, nn = float(x), float(n)
+        if v < 0 and nn % 2 == 1:
+            return -(-v) ** (1 / nn)
+        return v ** (1 / nn)
 
     def pow(self, base: Any, exp: Any) -> Any:
         return base ** exp
 
+    def exp(self, x: Any) -> float:
+        """e raised to the power x."""
+        return math.exp(float(x))
+
+    def expm1(self, x: Any) -> float:
+        """exp(x) - 1  (numerically stable for small x)."""
+        return math.expm1(float(x))
+
+    # ── Logarithms ───────────────────────────────────────────────────────────
+
     def log(self, x: Any, base: Any = None) -> float:
         return math.log(x, base) if base is not None else math.log(x)
+
+    def ln(self, x: Any) -> float:
+        """Natural logarithm (base e)."""
+        return math.log(float(x))
+
+    def log1p(self, x: Any) -> float:
+        """ln(1 + x)  (numerically stable for small x)."""
+        return math.log1p(float(x))
 
     def log2(self, x: Any) -> float:
         return math.log2(x)
 
     def log10(self, x: Any) -> float:
         return math.log10(x)
+
+    def logN(self, x: Any, base: Any) -> float:
+        """Logarithm of x in any base: logN(8, 2) == 3."""
+        return math.log(float(x), float(base))
+
+    # ── Trigonometry (radians) ────────────────────────────────────────────────
 
     def sin(self, x: Any) -> float:
         return math.sin(x)
@@ -2499,6 +2620,70 @@ class _MathHelper:
 
     def tan(self, x: Any) -> float:
         return math.tan(x)
+
+    def asin(self, x: Any) -> float:
+        return math.asin(float(x))
+
+    def acos(self, x: Any) -> float:
+        return math.acos(float(x))
+
+    def atan(self, x: Any) -> float:
+        return math.atan(float(x))
+
+    def atan2(self, y: Any, x: Any) -> float:
+        """atan2(y, x) — angle in radians of the vector (x, y)."""
+        return math.atan2(float(y), float(x))
+
+    def sinh(self, x: Any) -> float:
+        return math.sinh(float(x))
+
+    def cosh(self, x: Any) -> float:
+        return math.cosh(float(x))
+
+    def tanh(self, x: Any) -> float:
+        return math.tanh(float(x))
+
+    def asinh(self, x: Any) -> float:
+        return math.asinh(float(x))
+
+    def acosh(self, x: Any) -> float:
+        return math.acosh(float(x))
+
+    def atanh(self, x: Any) -> float:
+        return math.atanh(float(x))
+
+    def sec(self, x: Any) -> float:
+        """Secant: 1 / cos(x)."""
+        return 1 / math.cos(float(x))
+
+    def csc(self, x: Any) -> float:
+        """Cosecant: 1 / sin(x)."""
+        return 1 / math.sin(float(x))
+
+    def cot(self, x: Any) -> float:
+        """Cotangent: 1 / tan(x)."""
+        return 1 / math.tan(float(x))
+
+    def hypot(self, *args: Any) -> float:
+        """Euclidean distance: hypot(3, 4) == 5."""
+        return math.hypot(*[float(a) for a in args])
+
+    # ── Angle conversions ─────────────────────────────────────────────────────
+
+    def degToRad(self, deg: Any) -> float:
+        return math.radians(float(deg))
+
+    def radToDeg(self, rad: Any) -> float:
+        return math.degrees(float(rad))
+
+    # aliases
+    def toRadians(self, deg: Any) -> float:
+        return math.radians(float(deg))
+
+    def toDegrees(self, rad: Any) -> float:
+        return math.degrees(float(rad))
+
+    # ── min / max ─────────────────────────────────────────────────────────────
 
     def min(self, *args: Any) -> Any:
         if len(args) == 1:
@@ -2515,18 +2700,438 @@ class _MathHelper:
             return max(args[0])
         return max(*args)
 
-    def trunc(self, x: Any) -> int:
-        return math.trunc(x)
+    def sum(self, lst: Any) -> Any:
+        """Sum all values in a list."""
+        return sum(lst)
 
-    def sign(self, x: Any) -> int:
-        if x > 0:
-            return 1
-        if x < 0:
-            return -1
-        return 0
+    def product(self, lst: Any) -> Any:
+        """Multiply all values in a list."""
+        result = 1
+        for v in lst:
+            result *= v
+        return result
 
-    def clamp(self, x: Any, lo: Any, hi: Any) -> Any:
-        return max(lo, min(hi, x))
+    # ── Number theory ─────────────────────────────────────────────────────────
+
+    def gcd(self, a: Any, b: Any) -> int:
+        return math.gcd(int(a), int(b))
+
+    def lcm(self, a: Any, b: Any) -> int:
+        a, b = int(a), int(b)
+        return abs(a * b) // math.gcd(a, b) if a and b else 0
+
+    def factorial(self, n: Any) -> int:
+        return math.factorial(int(n))
+
+    def fibonacci(self, n: Any) -> int:
+        """Return the n-th Fibonacci number (0-indexed: fib(0)=0, fib(1)=1)."""
+        n = int(n)
+        if n < 0:
+            raise ValueError("fibonacci requires n >= 0")
+        a, b = 0, 1
+        for _ in range(n):
+            a, b = b, a + b
+        return a
+
+    def isPrime(self, n: Any) -> bool:
+        """Return True if n is a prime number."""
+        n = int(n)
+        if n < 2:
+            return False
+        if n == 2:
+            return True
+        if n % 2 == 0:
+            return False
+        limit = int(math.isqrt(n))
+        for i in range(3, limit + 1, 2):
+            if n % i == 0:
+                return False
+        return True
+
+    def isPerfect(self, n: Any) -> bool:
+        """Return True if n is a perfect number (sum of proper divisors equals n)."""
+        n = int(n)
+        if n < 2:
+            return False
+        return sum(i for i in range(1, n) if n % i == 0) == n
+
+    def primes(self, limit: Any) -> list:
+        """Return all prime numbers up to (and including) limit using the Sieve of Eratosthenes."""
+        n = int(limit)
+        if n < 2:
+            return []
+        sieve = bytearray([1]) * (n + 1)
+        sieve[0] = sieve[1] = 0
+        for i in range(2, int(math.isqrt(n)) + 1):
+            if sieve[i]:
+                sieve[i * i::i] = bytearray(len(sieve[i * i::i]))
+        return [i for i, v in enumerate(sieve) if v]
+
+    def primeFactors(self, n: Any) -> list:
+        """Return the prime factorization of n as a sorted list."""
+        n = int(n)
+        factors: list = []
+        d = 2
+        while d * d <= n:
+            while n % d == 0:
+                factors.append(d)
+                n //= d
+            d += 1
+        if n > 1:
+            factors.append(n)
+        return factors
+
+    def combination(self, n: Any, k: Any) -> int:
+        """Binomial coefficient C(n, k) = n! / (k! * (n-k)!)."""
+        return math.comb(int(n), int(k))
+
+    def permutation(self, n: Any, k: Any) -> int:
+        """Number of permutations P(n, k) = n! / (n-k)!."""
+        return math.perm(int(n), int(k))
+
+    def bernoulli(self, n: Any) -> float:
+        """Return the n-th Bernoulli number (B0=1, B1=-1/2 convention)."""
+        n = int(n)
+        if n < 0:
+            raise ValueError("bernoulli requires n >= 0")
+        # Use the recursive formula
+        from fractions import Fraction
+        B: list = [Fraction(0)] * (n + 1)
+        B[0] = Fraction(1)
+        for m in range(1, n + 1):
+            B[m] = -sum(math.comb(m + 1, k) * B[k] for k in range(m)) / (m + 1)
+        return float(B[n])
+
+    def divisors(self, n: Any) -> list:
+        """Return all positive divisors of n in sorted order."""
+        n = int(n)
+        divs = sorted(set(
+            d
+            for i in range(1, int(math.isqrt(n)) + 1)
+            if n % i == 0
+            for d in (i, n // i)
+        ))
+        return divs
+
+    def totient(self, n: Any) -> int:
+        """Euler's totient function φ(n): count of integers 1..n coprime to n."""
+        n = int(n)
+        result = n
+        p = 2
+        tmp = n
+        while p * p <= tmp:
+            if tmp % p == 0:
+                while tmp % p == 0:
+                    tmp //= p
+                result -= result // p
+            p += 1
+        if tmp > 1:
+            result -= result // tmp
+        return result
+
+    # ── Digit utilities ────────────────────────────────────────────────────────
+
+    def digits(self, n: Any) -> list:
+        """Return the decimal digits of n as a list: digits(1234) == [1,2,3,4]."""
+        return [int(d) for d in str(abs(int(n)))]
+
+    def sumDigits(self, n: Any) -> int:
+        """Sum of decimal digits: sumDigits(1234) == 10."""
+        return sum(int(d) for d in str(abs(int(n))))
+
+    def reverseDigits(self, n: Any) -> int:
+        """Reverse the digits of n: reverseDigits(1234) == 4321."""
+        return int(str(abs(int(n)))[::-1])
+
+    def isPalindrome(self, n: Any) -> bool:
+        """True if the decimal representation of n is a palindrome."""
+        s = str(abs(int(n)))
+        return s == s[::-1]
+
+    # ── Statistics ────────────────────────────────────────────────────────────
+
+    def mean(self, lst: Any) -> float:
+        """Arithmetic mean of a list."""
+        data = list(lst)
+        if not data:
+            raise ValueError("mean() requires a non-empty list")
+        return sum(data) / len(data)
+
+    def median(self, lst: Any) -> float:
+        """Median of a list."""
+        data = sorted(lst)
+        n = len(data)
+        if n == 0:
+            raise ValueError("median() requires a non-empty list")
+        mid = n // 2
+        return float(data[mid]) if n % 2 else (data[mid - 1] + data[mid]) / 2.0
+
+    def mode(self, lst: Any) -> Any:
+        """Most frequent value in a list (first one if tied)."""
+        data = list(lst)
+        if not data:
+            raise ValueError("mode() requires a non-empty list")
+        freq: dict = {}
+        for v in data:
+            freq[v] = freq.get(v, 0) + 1
+        return max(freq, key=lambda k: freq[k])
+
+    def variance(self, lst: Any, population: bool = True) -> float:
+        """Variance of a list (population by default; pass False for sample)."""
+        data = [float(x) for x in lst]
+        n = len(data)
+        if n < 2:
+            raise ValueError("variance() requires at least 2 values")
+        m = sum(data) / n
+        denom = n if population else n - 1
+        return sum((x - m) ** 2 for x in data) / denom
+
+    def stdDev(self, lst: Any, population: bool = True) -> float:
+        """Standard deviation of a list."""
+        return math.sqrt(self.variance(lst, population))
+
+    def range(self, lst: Any) -> Any:  # type: ignore[override]
+        """Statistical range: max - min of a list."""
+        data = list(lst)
+        return max(data) - min(data)
+
+    def percentile(self, lst: Any, p: Any) -> float:
+        """p-th percentile of a list (linear interpolation, 0 <= p <= 100)."""
+        data = sorted(float(x) for x in lst)
+        n = len(data)
+        if n == 0:
+            raise ValueError("percentile() requires a non-empty list")
+        rank = float(p) / 100 * (n - 1)
+        lo, hi = int(rank), min(int(rank) + 1, n - 1)
+        frac_part = rank - lo
+        return data[lo] + frac_part * (data[hi] - data[lo])
+
+    def quartiles(self, lst: Any) -> list:
+        """Return [Q1, Q2, Q3] of the list."""
+        return [self.percentile(lst, 25), self.percentile(lst, 50), self.percentile(lst, 75)]
+
+    def correlation(self, xs: Any, ys: Any) -> float:
+        """Pearson correlation coefficient between two equal-length lists."""
+        xs_f = [float(x) for x in xs]
+        ys_f = [float(y) for y in ys]
+        n = len(xs_f)
+        if n != len(ys_f) or n < 2:
+            raise ValueError("correlation() requires two equal-length lists of length >= 2")
+        mx, my = sum(xs_f) / n, sum(ys_f) / n
+        num = sum((x - mx) * (y - my) for x, y in zip(xs_f, ys_f))
+        denom = math.sqrt(sum((x - mx) ** 2 for x in xs_f) * sum((y - my) ** 2 for y in ys_f))
+        return num / denom if denom else 0.0
+
+    def dot(self, a: Any, b: Any) -> float:
+        """Dot product of two equal-length lists."""
+        return sum(float(x) * float(y) for x, y in zip(a, b))
+
+    def normalize(self, lst: Any) -> list:
+        """Normalize a list to [0, 1] range."""
+        data = [float(x) for x in lst]
+        lo, hi = min(data), max(data)
+        if hi == lo:
+            return [0.0] * len(data)
+        return [(x - lo) / (hi - lo) for x in data]
+
+    # ── Series & sequences ─────────────────────────────────────────────────────
+
+    def arithmetic(self, start: Any, diff: Any, n: Any) -> list:
+        """Return an arithmetic sequence: a, a+d, a+2d, ... (n terms)."""
+        a, d, count = float(start), float(diff), int(n)
+        return [a + i * d for i in range(count)]
+
+    def geometric(self, start: Any, ratio: Any, n: Any) -> list:
+        """Return a geometric sequence: a, a*r, a*r², ... (n terms)."""
+        a, r, count = float(start), float(ratio), int(n)
+        return [a * (r ** i) for i in range(count)]
+
+    def sumAP(self, n: Any, a: Any, d: Any) -> float:
+        """Sum of n terms of an arithmetic progression: n/2 * (2a + (n-1)d)."""
+        n, a, d = int(n), float(a), float(d)
+        return n / 2 * (2 * a + (n - 1) * d)
+
+    def sumGP(self, n: Any, a: Any, r: Any) -> float:
+        """Sum of n terms of a geometric progression: a*(r^n - 1)/(r - 1)."""
+        n, a, r = int(n), float(a), float(r)
+        if r == 1:
+            return a * n
+        return a * (r ** n - 1) / (r - 1)
+
+    def sumInfGP(self, a: Any, r: Any) -> float:
+        """Sum of an infinite geometric series (|r| < 1): a / (1 - r)."""
+        a, r = float(a), float(r)
+        if abs(r) >= 1:
+            raise ValueError("sumInfGP requires |r| < 1")
+        return a / (1 - r)
+
+    # ── Algebra solvers ────────────────────────────────────────────────────────
+
+    def quadratic(self, a: Any, b: Any, c: Any) -> list:
+        """Solve ax² + bx + c = 0. Returns list of real roots (empty if none)."""
+        a, b, c = float(a), float(b), float(c)
+        if a == 0:
+            if b == 0:
+                return []
+            return [-c / b]
+        disc = b * b - 4 * a * c
+        if disc < 0:
+            return []
+        if disc == 0:
+            return [-b / (2 * a)]
+        sq = math.sqrt(disc)
+        return [(-b + sq) / (2 * a), (-b - sq) / (2 * a)]
+
+    def linearSolve(self, a: Any, b: Any) -> float:
+        """Solve ax + b = 0 → x = -b/a."""
+        a, b = float(a), float(b)
+        if a == 0:
+            raise ValueError("linearSolve: coefficient a must be non-zero")
+        return -b / a
+
+    # ── Geometry helpers ───────────────────────────────────────────────────────
+
+    def circleArea(self, r: Any) -> float:
+        """Area of a circle: π * r²."""
+        return math.pi * float(r) ** 2
+
+    def circumference(self, r: Any) -> float:
+        """Circumference of a circle: 2 * π * r."""
+        return 2 * math.pi * float(r)
+
+    def triangleArea(self, base: Any, height: Any) -> float:
+        """Area of a triangle: 0.5 * base * height."""
+        return 0.5 * float(base) * float(height)
+
+    def heronArea(self, a: Any, b: Any, c: Any) -> float:
+        """Area of a triangle via Heron's formula given three side lengths."""
+        a, b, c = float(a), float(b), float(c)
+        s = (a + b + c) / 2
+        return math.sqrt(s * (s - a) * (s - b) * (s - c))
+
+    def distance(self, x1: Any, y1: Any, x2: Any, y2: Any) -> float:
+        """Euclidean distance between two 2-D points."""
+        return math.hypot(float(x2) - float(x1), float(y2) - float(y1))
+
+    def slope(self, x1: Any, y1: Any, x2: Any, y2: Any) -> float:
+        """Slope of the line through two points: (y2-y1) / (x2-x1)."""
+        dx = float(x2) - float(x1)
+        if dx == 0:
+            raise ValueError("slope: vertical line (x1 == x2)")
+        return (float(y2) - float(y1)) / dx
+
+    def midpoint(self, x1: Any, y1: Any, x2: Any, y2: Any) -> list:
+        """Midpoint of two 2-D points: [(x1+x2)/2, (y1+y2)/2]."""
+        return [(float(x1) + float(x2)) / 2, (float(y1) + float(y2)) / 2]
+
+
+class _StatsHelper:
+    """stats namespace: stats.mean, stats.stdDev, etc.
+
+    Exposes the same statistical functions as math.* under a dedicated
+    'stats' namespace for readability.
+    """
+
+    def mean(self, lst: Any) -> float:
+        data = list(lst)
+        if not data:
+            raise ValueError("stats.mean() requires a non-empty list")
+        return sum(data) / len(data)
+
+    def median(self, lst: Any) -> float:
+        data = sorted(lst)
+        n = len(data)
+        if n == 0:
+            raise ValueError("stats.median() requires a non-empty list")
+        mid = n // 2
+        return float(data[mid]) if n % 2 else (data[mid - 1] + data[mid]) / 2.0
+
+    def mode(self, lst: Any) -> Any:
+        data = list(lst)
+        if not data:
+            raise ValueError("stats.mode() requires a non-empty list")
+        freq: dict = {}
+        for v in data:
+            freq[v] = freq.get(v, 0) + 1
+        return max(freq, key=lambda k: freq[k])
+
+    def variance(self, lst: Any, population: bool = True) -> float:
+        data = [float(x) for x in lst]
+        n = len(data)
+        if n < 2:
+            raise ValueError("stats.variance() requires at least 2 values")
+        m = sum(data) / n
+        denom = n if population else n - 1
+        return sum((x - m) ** 2 for x in data) / denom
+
+    def stdDev(self, lst: Any, population: bool = True) -> float:
+        return math.sqrt(self.variance(lst, population))
+
+    def range(self, lst: Any) -> Any:  # type: ignore[override]
+        data = list(lst)
+        return max(data) - min(data)
+
+    def min(self, lst: Any) -> Any:
+        return min(lst)
+
+    def max(self, lst: Any) -> Any:
+        return max(lst)
+
+    def sum(self, lst: Any) -> Any:
+        return sum(lst)
+
+    def product(self, lst: Any) -> Any:
+        r = 1
+        for v in lst:
+            r *= v
+        return r
+
+    def percentile(self, lst: Any, p: Any) -> float:
+        data = sorted(float(x) for x in lst)
+        n = len(data)
+        if n == 0:
+            raise ValueError("stats.percentile() requires a non-empty list")
+        rank = float(p) / 100 * (n - 1)
+        lo, hi = int(rank), min(int(rank) + 1, n - 1)
+        frac_part = rank - lo
+        return data[lo] + frac_part * (data[hi] - data[lo])
+
+    def quartiles(self, lst: Any) -> list:
+        return [self.percentile(lst, 25), self.percentile(lst, 50), self.percentile(lst, 75)]
+
+    def correlation(self, xs: Any, ys: Any) -> float:
+        xs_f = [float(x) for x in xs]
+        ys_f = [float(y) for y in ys]
+        n = len(xs_f)
+        if n != len(ys_f) or n < 2:
+            raise ValueError("stats.correlation() requires two equal-length lists of length >= 2")
+        mx, my = sum(xs_f) / n, sum(ys_f) / n
+        num = sum((x - mx) * (y - my) for x, y in zip(xs_f, ys_f))
+        denom = math.sqrt(sum((x - mx) ** 2 for x in xs_f) * sum((y - my) ** 2 for y in ys_f))
+        return num / denom if denom else 0.0
+
+    def normalize(self, lst: Any) -> list:
+        data = [float(x) for x in lst]
+        lo, hi = min(data), max(data)
+        if hi == lo:
+            return [0.0] * len(data)
+        return [(x - lo) / (hi - lo) for x in data]
+
+    def zscore(self, lst: Any) -> list:
+        """Return z-scores (standard scores) for each element."""
+        data = [float(x) for x in lst]
+        m = sum(data) / len(data)
+        sd = math.sqrt(sum((x - m) ** 2 for x in data) / len(data))
+        if sd == 0:
+            return [0.0] * len(data)
+        return [(x - m) / sd for x in data]
+
+    def frequency(self, lst: Any) -> dict:
+        """Return a frequency dict: {value: count}."""
+        freq: dict = {}
+        for v in lst:
+            freq[v] = freq.get(v, 0) + 1
+        return freq
 
 
 class _JsonHelper:

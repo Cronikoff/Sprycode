@@ -30,6 +30,7 @@ tests/test_phase11_features.py
 tests/test_phase12_features.py
 tests/test_phase13_features.py
 tests/test_phase14_features.py
+tests/test_phase15_features.py
 tests/test_phase4_plus.py
 tests/test_phase5_features.py
 tests/test_phase6_features.py

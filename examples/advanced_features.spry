@@ -1,0 +1,175 @@
+// SpryCode Example — Advanced Features
+// Demonstrates: f-strings, ternary, null coalescing, in operator,
+//               spread, range, power, new builtins, dict/list methods.
+
+app AdvancedDemo version "1.0.0"
+
+// ── f-string interpolation ────────────────────────────────────────────────
+task interpolationDemo {
+    let first = "Alice"
+    let last  = "Smith"
+    let age   = 30
+
+    log info f"Name: {first} {last}, Age: {age}"
+    log info f"In 10 years: {age + 10}"
+    log info f"Score: {100 * 0.85}%"
+}
+
+// ── Ternary expressions ───────────────────────────────────────────────────
+task ternaryDemo {
+    let score = 74
+
+    let grade = score >= 90 ? "A" : (score >= 80 ? "B" : (score >= 70 ? "C" : "F"))
+    log info f"Score {score} → grade {grade}"
+
+    let status = score >= 60 ? "pass" : "fail"
+    log info f"Status: {status}"
+}
+
+// ── Null coalescing ───────────────────────────────────────────────────────
+task nullCoalesceDemo {
+    let username = null
+    let display  = username ?? "Anonymous"
+    log info f"Hello, {display}!"
+
+    let port = null
+    let serverPort = port ?? 8080
+    log info f"Listening on port {serverPort}"
+}
+
+// ── in operator ──────────────────────────────────────────────────────────
+task inOperatorDemo {
+    let fruits = ["apple", "banana", "cherry"]
+
+    if "banana" in fruits {
+        log info "banana is in the list"
+    }
+
+    if not "grape" in fruits {
+        log info "grape is not in the list"
+    }
+
+    let config = {debug: true, port: 3000}
+    if "debug" in config {
+        log info "debug mode is configured"
+    }
+}
+
+// ── Spread operator ───────────────────────────────────────────────────────
+task spreadDemo {
+    let primes  = [2, 3, 5]
+    let squares = [4, 9, 16]
+    let combined = [...primes, ...squares]
+    log info f"Combined: {combined}"
+
+    let base = [1, 2, 3]
+    let extended = [0, ...base, 4, 5]
+    log info f"Extended: {extended}"
+}
+
+// ── range() and numeric builtins ──────────────────────────────────────────
+task rangeDemo {
+    // Sum 1..100
+    var total = 0
+    for i in range(1, 101) {
+        total += i
+    }
+    log info f"Sum 1..100 = {total}"
+
+    // Powers of 2
+    let powers = range(10) |> map n => 2 ** n
+    log info f"Powers of 2 (0-9): {powers}"
+
+    // sqrt demo
+    log info f"sqrt(144) = {sqrt(144)}"
+    log info f"2 ** 32 = {2 ** 32}"
+}
+
+// ── sorted, sum, any, all ─────────────────────────────────────────────────
+task sequenceBuiltins {
+    let scores = [88, 42, 95, 67, 73, 55, 81, 90]
+
+    log info f"Sorted: {sorted(scores)}"
+    log info f"Total:  {sum(scores)}"
+    log info f"Avg:    {sum(scores) / scores.length}"
+    log info f"Max:    {scores.max}"
+    log info f"Min:    {scores.min}"
+
+    let passing = scores |> filter s => s >= 60
+    log info f"Passing: {passing.length} students"
+
+    log info f"All pass? {all(scores |> map s => s >= 60)}"
+    log info f"Any A?   {any(scores |> map s => s >= 90)}"
+}
+
+// ── zip and enumerate ─────────────────────────────────────────────────────
+task zipDemo {
+    let names = ["Alice", "Bob", "Carol"]
+    let grades = [95, 82, 78]
+
+    let report = zip(names, grades)
+    for entry in report {
+        log info f"{entry[0]}: {entry[1]}"
+    }
+
+    for item in enumerate(names) {
+        log info f"  {item[0] + 1}. {item[1]}"
+    }
+}
+
+// ── Dict methods ──────────────────────────────────────────────────────────
+task dictDemo {
+    let config = {host: "localhost", port: 3000, debug: false}
+
+    log info f"Keys:   {config.keys}"
+    log info f"Values: {config.values}"
+    log info f"Length: {config.length}"
+    log info f"Has 'port'? {config.has('port')}"
+
+    let overrides = {port: 8080, tls: true}
+    let merged = config.merge(overrides)
+    log info f"Merged port: {merged.port}"
+}
+
+// ── Enhanced list methods ─────────────────────────────────────────────────
+task listMethodsDemo {
+    let words = ["banana", "apple", "cherry", "date"]
+
+    log info f"Sorted:  {words.sort}"
+    log info f"indexOf apple: {words.indexOf('apple')}"
+    log info f"unique([1,1,2,3,2]): {[1,1,2,3,2].unique}"
+
+    let matrix = [[1, 2], [3, 4], [5, 6]]
+    log info f"Flat: {matrix.flat}"
+}
+
+// ── Enhanced string methods ───────────────────────────────────────────────
+task stringMethodsDemo {
+    let s = "  Hello, SpryCode!  "
+
+    log info s.trim
+    log info s.trimStart
+    log info s.trimEnd
+    log info f"indexOf 'SpryCode': {s.trim.indexOf('SpryCode')}"
+    log info f"padStart: {'42'.padStart(6)}"
+    log info f"padEnd:   {'42'.padEnd(6, '0')}"
+    log info f"repeat:   {'ha'.repeat(3)}"
+    log info f"chars:    {'abc'.chars}"
+    let multiline = "a\nb\nc"
+    log info f"lines:    {multiline.lines}"
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────
+task main {
+    interpolationDemo()
+    ternaryDemo()
+    nullCoalesceDemo()
+    inOperatorDemo()
+    spreadDemo()
+    rangeDemo()
+    sequenceBuiltins()
+    zipDemo()
+    dictDemo()
+    listMethodsDemo()
+    stringMethodsDemo()
+}

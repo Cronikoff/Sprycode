@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sprycode"
+version = "0.1.0"
+description = "SpryCode: agile code for fast, secure, adaptive systems"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "SpryCode-Free" }
+keywords = ["programming-language", "sprycode", "interpreter"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Interpreters",
+]
+dependencies = [
+    "tomli; python_version < '3.11'",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+spry = "sprycode.cli:main"
+spryc = "sprycode.cli:compile_cmd"
+sprypm = "sprycode.cli:pm_cmd"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v"

@@ -1,0 +1,38 @@
+// SpryCode Full Example — SecureDataMover
+// From the SpryCode language specification
+
+app SecureDataMover version "1.0.0"
+
+allow filesystem.read "./incoming"
+allow filesystem.write "./processed"
+allow filesystem.write "./failed"
+allow secret.read "ARCHIVE_KEY"
+
+private data customerEmail: Email
+sensitive data paymentToken: Secret
+
+connector archiveStore {
+    allow filesystem.write "./processed"
+}
+
+task processIncomingPayments {
+    log info "Starting payment file processing"
+
+    stream folder "./incoming"
+        |> filter file => file.extension == "json"
+        |> each file => log info file.name
+
+    log info "Payment file processing complete"
+}
+
+fn processPaymentFile(name: Text) -> Result {
+    log info "Processing: " + name
+    return ok
+}
+
+fraud check transaction "tx_12345" {
+    reason "technical verification of duplicate transaction pattern"
+    case "AUTO-GENERATED"
+    scope minimal
+    redact personalData
+}

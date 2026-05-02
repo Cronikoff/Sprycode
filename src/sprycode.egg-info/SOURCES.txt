@@ -18,6 +18,7 @@ src/sprycode/runtime/stdlib.py
 tests/test_batch2.py
 tests/test_builtins.py
 tests/test_interpreter.py
+tests/test_lang_features.py
 tests/test_lexer.py
 tests/test_math.py
 tests/test_new_features.py

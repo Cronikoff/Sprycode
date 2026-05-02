@@ -2372,8 +2372,8 @@ class Parser:
                         else:
                             body = self._parse_null_coalesce()
                         if len(params) == 0:
-                            # Zero-arg lambda: () => expr  — use a special single-param lambda
-                            # with no param name (empty string) so we can detect it later
+                            # Zero-arg lambda: () => expr  — modelled as MultiParamLambda
+                            # with an empty params list (no binding needed on call)
                             return MultiParamLambda(params=[], body=body,
                                                    line=tok.line, column=tok.column)
                         if len(params) == 1:

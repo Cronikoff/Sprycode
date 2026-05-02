@@ -772,7 +772,7 @@ class Interpreter:
         # Set builtin — creates a deduplicated list (kept for backward compat)
         def _builtin_set(lst: Any) -> list:
             if not isinstance(lst, (list, tuple)):
-                raise TypeError("Set() requires a list")
+                raise TypeError("set() requires a list")
             seen: list = []
             for item in lst:
                 if item not in seen:
@@ -2429,7 +2429,8 @@ class Interpreter:
                 return _to_precision
             if prop in ("toStr", "toString"):
                 def _num_to_str(base: int = 10, _n: Any = obj) -> str:
-                    n = int(_n) if isinstance(_n, float) and _n == int(_n) else _n
+                    is_integer_float = isinstance(_n, float) and _n == int(_n)
+                    n = int(_n) if is_integer_float else _n
                     if base == 10:
                         return str(int(n)) if isinstance(n, float) and n == int(n) else str(n)
                     if base == 16:
@@ -5417,7 +5418,7 @@ class _WeakRefNamespace:
 class SprySet:
     """A set of unique values supporting set-theory operations."""
 
-    def __init__(self, items: list = None) -> None:  # type: ignore[assignment]
+    def __init__(self, items: list | None = None) -> None:
         self._data: list = []
         if items:
             for item in items:
@@ -5774,9 +5775,13 @@ class _DateNamespace:
         return SpryDate(year, month, day, hour, minute, second, millisecond)
 
     def parse(self, date_str: str) -> float:
-        """Parse a date string and return milliseconds since epoch."""
+        """Parse a date string and return milliseconds since epoch.
+
+        Returns float('nan') if the string cannot be parsed — matching
+        the JS Date.parse() convention of returning NaN for invalid dates.
+        Callers can detect failure with: Number.isNaN(Date.parse(s)).
+        """
         import datetime
-        import time
         formats = ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
                    "%Y-%m-%d", "%m/%d/%Y"]
         for fmt in formats:

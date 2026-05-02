@@ -2208,7 +2208,7 @@ class Interpreter:
                 pass
             count += 1
             if count >= max_iterations:
-                raise SpryRuntimeError("Do-while loop exceeded maximum iteration limit (100,000)", node)
+                raise SpryRuntimeError(f"Do-while loop exceeded maximum iteration limit ({max_iterations})", node)
             # Continue while condition is true; stop when it becomes false
             if not self._truthy(self._eval(node.condition, env)):
                 break

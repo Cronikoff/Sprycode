@@ -2502,16 +2502,16 @@ class _MathHelper:
 
     def min(self, *args: Any) -> Any:
         if len(args) == 1:
-            # Single argument must be an iterable (e.g. a list)
-            if not hasattr(args[0], "__iter__"):
-                raise TypeError(f"math.min() requires at least 2 arguments or an iterable, got {type(args[0]).__name__}")
+            # Single argument must be a numeric iterable (e.g. a list of numbers)
+            if not hasattr(args[0], "__iter__") or isinstance(args[0], str):
+                raise TypeError(f"math.min() requires at least 2 arguments or a numeric iterable, got {type(args[0]).__name__}")
             return min(args[0])
         return min(*args)
 
     def max(self, *args: Any) -> Any:
         if len(args) == 1:
-            if not hasattr(args[0], "__iter__"):
-                raise TypeError(f"math.max() requires at least 2 arguments or an iterable, got {type(args[0]).__name__}")
+            if not hasattr(args[0], "__iter__") or isinstance(args[0], str):
+                raise TypeError(f"math.max() requires at least 2 arguments or a numeric iterable, got {type(args[0]).__name__}")
             return max(args[0])
         return max(*args)
 

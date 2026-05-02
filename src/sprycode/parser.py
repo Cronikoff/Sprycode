@@ -40,6 +40,7 @@ from .ast_nodes import (
     ExpectStatement,
     ExtractStatement,
     ForStatement,
+    ForCStyleStatement,
     FraudCheckStatement,
     FStringExpression,
     FunctionDeclaration,
@@ -55,6 +56,7 @@ from .ast_nodes import (
     LambdaExpression,
     LetDeclaration,
     ListDestructure,
+    ListDestructureAssignment,
     ListComprehension,
     DictComprehension,
     LogStatement,
@@ -235,6 +237,11 @@ class Parser:
     def parse(self) -> Program:
         body: list[Node] = []
         while not self._at_end():
+            # Skip statement-separator semicolons
+            while self._check(TokenType.SEMICOLON):
+                self._advance()
+            if self._at_end():
+                break
             stmt = self._parse_statement()
             if stmt is not None:
                 body.append(stmt)
@@ -501,6 +508,27 @@ class Parser:
                 # Accept as a synthetic param name "__destruct__" and store original names
                 param_names = self._parse_dict_destruct_param()
                 params.append(("__destruct__:" + ",".join(param_names), None))
+                if not self._match(TokenType.COMMA):
+                    break
+                continue
+            # Array destructuring param: [a, b, ...rest]
+            if self._check(TokenType.LBRACKET):
+                self._advance()  # consume '['
+                arr_names: list[str] = []
+                arr_rest: str | None = None
+                while not self._check(TokenType.RBRACKET) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        arr_rest = self._expect_ident().value
+                        break
+                    arr_names.append(self._expect_ident().value)
+                    if not self._match(TokenType.COMMA):
+                        break
+                self._expect(TokenType.RBRACKET)
+                synth = "__array_destruct__:" + ",".join(arr_names)
+                if arr_rest:
+                    synth += "..." + arr_rest
+                params.append((synth, None))
                 if not self._match(TokenType.COMMA):
                     break
                 continue
@@ -1024,9 +1052,9 @@ class Parser:
     # Loops
     # ------------------------------------------------------------------
 
-    def _parse_for(self) -> ForStatement:
+    def _parse_for(self) -> "ForStatement | ForCStyleStatement":
         tok = self._expect(TokenType.FOR)
-        # Support: for [a, b] in ... — list destructuring
+        # Support: for [a, b] in/of ... — list destructuring
         if self._check(TokenType.LBRACKET):
             self._advance()  # consume '['
             dest_vars: list[str] = []
@@ -1035,7 +1063,10 @@ class Parser:
                 if not self._match(TokenType.COMMA):
                     break
             self._expect(TokenType.RBRACKET)
-            self._expect(TokenType.IN)
+            if (self._check(TokenType.IDENTIFIER) and self._current().value == "of"):
+                self._advance()  # consume 'of'
+            else:
+                self._expect(TokenType.IN)
             iterable = self._parse_value_expression()
             body = self._parse_block()
             return ForStatement(
@@ -1044,6 +1075,25 @@ class Parser:
                 iterable=iterable, body=body,
                 line=tok.line, column=tok.column,
             )
+        # C-style: for var i = 0; i < 5; i++ { ... }
+        if self._check(TokenType.VAR, TokenType.LET):
+            # Peek ahead: if this is var/let IDENT = expr ; it's C-style
+            saved_pos = self.pos
+            try:
+                init_stmt = self._parse_statement()
+                if self._match(TokenType.SEMICOLON):
+                    condition = self._parse_value_expression()
+                    self._expect(TokenType.SEMICOLON)
+                    update = self._parse_expr_or_assignment()
+                    body = self._parse_block()
+                    return ForCStyleStatement(
+                        init=init_stmt, condition=condition, update=update, body=body,
+                        line=tok.line, column=tok.column,
+                    )
+                # Not C-style, restore and fall through
+                self.pos = saved_pos
+            except Exception:
+                self.pos = saved_pos
         var_tok = self._expect_ident()
         # Destructured: for i, v in enumerate(...)
         extra_vars: list[str] = []
@@ -1238,7 +1288,7 @@ class Parser:
                                 line=tok.line, column=tok.column)
 
     def _parse_class_body(self) -> Block:
-        """Parse a class body, recognising contextual `get`/`set` accessor keywords."""
+        """Parse a class body, recognising contextual `get`/`set`/`static` keywords."""
         tok = self._expect(TokenType.LBRACE)
         body: list[Node] = []
         while not self._check(TokenType.RBRACE) and not self._at_end():
@@ -1271,6 +1321,28 @@ class Parser:
                                               body=setter_body,
                                               line=cur.line, column=cur.column))
                 continue
+            # Contextual `static name = value` or `static fn name(...) { ... }`
+            if (cur.type == TokenType.IDENTIFIER and cur.value == "static"):
+                next_tok = self._peek(1)
+                if next_tok.type in self._IDENTIFIER_LIKE or next_tok.type == TokenType.FN:
+                    self._advance()  # consume 'static'
+                    if self._check(TokenType.FN):
+                        # static fn name(...) { ... }
+                        fn_node = self._parse_fn()
+                        body.append(fn_node)
+                        continue
+                    name_tok = self._expect_ident()
+                    value_node = None
+                    if self._match(TokenType.EQ):
+                        value_node = self._parse_expression()
+                    body.append(VarDeclaration(
+                        name=name_tok.value,
+                        type_annotation=None,
+                        value=value_node,
+                        line=cur.line,
+                        column=cur.column,
+                    ))
+                    continue
             stmt = self._parse_statement()
             if stmt is not None:
                 body.append(stmt)
@@ -1773,6 +1845,7 @@ class Parser:
             TokenType.RSHIFT_EQ: ">>",
             TokenType.AND_AND_EQ: "&&",
             TokenType.OR_OR_EQ: "||",
+            TokenType.STAR_STAR_EQ: "**",
         }
         if self._current().type in _compound_ops and isinstance(expr, Identifier):
             op = _compound_ops[self._current().type]
@@ -1800,6 +1873,28 @@ class Parser:
             return CompoundAssignment(
                 name=expr.name, op="??", value=value, line=expr.line, column=expr.column
             )
+
+        # Array destructuring assignment: [a, b] = expr
+        if self._check(TokenType.EQ) and isinstance(expr, ArrayLiteral):
+            # Validate that all elements are simple identifiers (or ...rest)
+            names: list[str] = []
+            rest_name: str | None = None
+            all_simple = True
+            for item in expr.items:
+                if isinstance(item, SpreadElement) and isinstance(item.expr, Identifier):
+                    rest_name = item.expr.name
+                elif isinstance(item, Identifier):
+                    names.append(item.name)
+                else:
+                    all_simple = False
+                    break
+            if all_simple:
+                self._advance()  # consume '='
+                value = self._parse_expression()
+                return ListDestructureAssignment(
+                    names=names, value=value, rest_name=rest_name,
+                    line=expr.line, column=expr.column,
+                )
 
         return expr
 
@@ -1985,13 +2080,13 @@ class Parser:
         return left
 
     def _parse_ternary(self) -> Node:
-        """condition ? then_expr : else_expr"""
+        """condition ? then_expr : else_expr (right-associative for nesting)"""
         condition = self._parse_or()
         if self._check(TokenType.QUESTION):
             op_tok = self._advance()
-            then_expr = self._parse_or()
+            then_expr = self._parse_ternary()
             self._expect(TokenType.COLON)
-            else_expr = self._parse_or()
+            else_expr = self._parse_ternary()
             return TernaryExpression(
                 condition=condition, then_expr=then_expr, else_expr=else_expr,
                 line=op_tok.line, column=op_tok.column,

@@ -572,6 +572,16 @@ class ForStatement(Node):
 
 
 @dataclass
+class ForCStyleStatement(Node):
+    """for <init>; <condition>; <update> { <body> }"""
+    init: "Node | None" = None
+    condition: "Node | None" = None
+    update: "Node | None" = None
+    body: "Block | None" = None
+    label: str | None = None
+
+
+@dataclass
 class WhileStatement(Node):
     """while <condition> { <body> }"""
     condition: Node | None = None
@@ -736,6 +746,14 @@ class ObjectDestructure(Node):
     value: Node | None = None
     mutable: bool = False
     defaults: dict[str, "Node"] = field(default_factory=dict)  # name/alias -> default expr
+
+
+@dataclass
+class ListDestructureAssignment(Node):
+    """[a, b] = expr — list destructuring assignment (without let/var)"""
+    names: list[str] = field(default_factory=list)
+    value: Node | None = None
+    rest_name: str | None = None  # ...rest element
 
 
 @dataclass

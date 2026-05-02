@@ -248,6 +248,7 @@ class TokenType(Enum):
     STAR_EQ = auto()      # *=
     SLASH_EQ = auto()     # /=
     STAR_STAR = auto()    # ** (power)
+    STAR_STAR_EQ = auto() # **= (power assign)
     QUESTION = auto()     # ? (ternary)
     QUESTION_QUESTION = auto()  # ?? (null coalescing)
     QUESTION_QUESTION_EQ = auto()  # ??= (null-coalescing assignment)
@@ -707,7 +708,11 @@ class Lexer:
             if ch == "*" and self._peek() == "*":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.STAR_STAR, "**", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.STAR_STAR_EQ, "**=", line, col)
+                else:
+                    yield Token(TokenType.STAR_STAR, "**", line, col)
                 continue
 
             if ch == "*" and self._peek() == "=":

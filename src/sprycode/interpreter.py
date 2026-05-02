@@ -48,6 +48,7 @@ from .ast_nodes import (
     ExpectStatement,
     ExtractStatement,
     ForStatement,
+    ForCStyleStatement,
     FraudCheckStatement,
     FStringExpression,
     FunctionDeclaration,
@@ -65,6 +66,7 @@ from .ast_nodes import (
     ListComprehension,
     DictComprehension,
     ListDestructure,
+    ListDestructureAssignment,
     LogStatement,
     MatchArm,
     MatchStatement,
@@ -409,8 +411,9 @@ class BoundMethod:
 class SpryRegex:
     """Runtime representation of a regex literal (compiled re pattern)."""
 
-    def __init__(self, pattern: "re.Pattern[str]") -> None:
+    def __init__(self, pattern: "re.Pattern[str]", global_flag: bool = False) -> None:
         self.pattern = pattern
+        self.global_flag = global_flag
 
     def test(self, text: str) -> bool:
         return bool(self.pattern.search(text))
@@ -425,7 +428,8 @@ class SpryRegex:
         return self.match(text)
 
     def replace(self, text: str, replacement: str, count: int = 1) -> str:
-        return self.pattern.sub(replacement, text, count=count)
+        actual_count = 0 if self.global_flag else count
+        return self.pattern.sub(replacement, text, count=actual_count)
 
     def split(self, text: str) -> list[str]:
         return self.pattern.split(text)
@@ -627,7 +631,7 @@ def _parse_regex_pattern(pattern: str) -> tuple[str, int]:
       - Plain string:   "\\d+"
       - JS-style:       "/\\d+/gi"
 
-    Returns (pattern, flags) where flags is a Python re flags integer.
+    Returns (pattern, flags, is_global) where flags is a Python re flags integer.
     """
     import re as _re
     if isinstance(pattern, str) and pattern.startswith("/"):
@@ -643,8 +647,9 @@ def _parse_regex_pattern(pattern: str) -> tuple[str, int]:
                 flags |= _re.MULTILINE
             if "s" in flag_str:
                 flags |= _re.DOTALL
-            return inner, flags
-    return pattern, 0
+            is_global = "g" in flag_str
+            return inner, flags, is_global
+    return pattern, 0, False
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +794,11 @@ class Interpreter:
 
         # Promise namespace
         env.define("Promise", _PromiseNamespace())
+
+        # Error types
+        for _ename in ("Error", "TypeError", "RangeError", "SyntaxError",
+                       "ReferenceError", "EvalError", "URIError"):
+            env.define(_ename, _ErrorNamespace(_ename))
 
         # Date namespace
         env.define("Date", _DateNamespace())
@@ -1184,6 +1194,8 @@ class Interpreter:
                 new_val = int(current) << int(rhs)
             elif node.op == ">>":
                 new_val = int(current) >> int(rhs)
+            elif node.op == "**":
+                new_val = current ** rhs
             else:
                 raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
             env.set(node.name, new_val)
@@ -1276,6 +1288,9 @@ class Interpreter:
 
         if isinstance(node, ForStatement):
             return self._exec_for(node, env)
+
+        if isinstance(node, ForCStyleStatement):
+            return self._exec_for_cstyle(node, env)
 
         if isinstance(node, WhileStatement):
             return self._exec_while(node, env)
@@ -1428,6 +1443,17 @@ class Interpreter:
 
         if isinstance(node, ListDestructure):
             return self._exec_list_destructure(node, env)
+
+        if isinstance(node, ListDestructureAssignment):
+            # [a, b] = expr — assigns to existing variables
+            rhs = self._eval(node.value, env)
+            items = list(rhs) if not isinstance(rhs, list) else rhs
+            for i, name in enumerate(node.names):
+                val = items[i] if i < len(items) else None
+                env.set(name, val)
+            if node.rest_name is not None:
+                env.set(node.rest_name, items[len(node.names):])
+            return None
 
         if isinstance(node, ObjectDestructure):
             return self._exec_object_destructure(node, env)
@@ -1619,10 +1645,11 @@ class Interpreter:
         if isinstance(node, RegexLiteral):
             flags_map = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
             re_flags = 0
+            is_global = "g" in node.flags
             for f in node.flags:
                 re_flags |= flags_map.get(f, 0)
             compiled = re.compile(node.pattern, re_flags)
-            return SpryRegex(compiled)
+            return SpryRegex(compiled, global_flag=is_global)
 
         if isinstance(node, AnonymousFunctionExpression):
             return SpryFunction(
@@ -1822,7 +1849,7 @@ class Interpreter:
         # Count required params: those with no default value and not dict-destructured
         required = [
             p for p, _ in fn.params
-            if p not in fn.defaults and not p.startswith("__destruct__")
+            if p not in fn.defaults and not p.startswith("__destruct__") and not p.startswith("__array_destruct__")
         ]
         total_positional = len(fn.params)
 
@@ -1848,6 +1875,19 @@ class Interpreter:
                     )
                 for fname in field_names:
                     child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+            # Array destructuring param: __array_destruct__:a,b...rest
+            elif pname.startswith("__array_destruct__:"):
+                raw = pname[len("__array_destruct__:"):]
+                arr_rest_name: str | None = None
+                if "..." in raw:
+                    raw, arr_rest_name = raw.split("...", 1)
+                arr_field_names = [f for f in raw.split(",") if f]
+                arg_val = args[i] if i < len(args) else []
+                items = list(arg_val) if not isinstance(arg_val, list) else arg_val
+                for _j, _fname in enumerate(arr_field_names):
+                    child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
+                if arr_rest_name:
+                    child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
             else:
                 if i < len(args):
                     child.define(pname, args[i], mutable=False)
@@ -2088,6 +2128,13 @@ class Interpreter:
                 return sorted(obj)
             if prop == "indexOf":
                 return lambda item: obj.index(item) if item in obj else -1
+            if prop == "lastIndexOf":
+                def _last_index_of(item: Any, _o: list = obj) -> int:
+                    for _i in range(len(_o) - 1, -1, -1):
+                        if _o[_i] == item:
+                            return _i
+                    return -1
+                return _last_index_of
             if prop == "find":
                 return lambda pred: next((x for x in obj if self._truthy(pred(x))), None)
             if prop == "filter":
@@ -2177,6 +2224,13 @@ class Interpreter:
                 return lambda fn: [item for x in obj for item in (fn(x) if isinstance(fn(x), list) else [fn(x)])]
             if prop == "sum":
                 return sum(obj)
+            if prop == "product":
+                result = 1
+                for _item in obj:
+                    result *= _item
+                return result
+            if prop in ("avg", "average", "mean"):
+                return sum(obj) / len(obj) if obj else None
             if prop == "min":
                 return min(obj) if obj else None
             if prop == "max":
@@ -2364,7 +2418,18 @@ class Interpreter:
             if prop == "trimEnd":
                 return obj.rstrip()
             if prop == "split":
-                return lambda sep=" ": obj.split(sep)
+                def _str_split(sep: Any = " ", limit: Any = None, _obj: str = obj) -> list:
+                    if isinstance(sep, SpryRegex):
+                        import re as _re
+                        result = _re.split(sep.pattern.pattern, _obj)
+                    elif isinstance(sep, str):
+                        result = _obj.split(sep)
+                    else:
+                        result = _obj.split(str(sep))
+                    if limit is not None:
+                        result = result[:int(limit)]
+                    return result
+                return _str_split
             if prop == "contains":
                 return lambda sub: sub in obj
             if prop == "includes":
@@ -2374,9 +2439,42 @@ class Interpreter:
             if prop == "endsWith":
                 return lambda suffix: obj.endswith(suffix)
             if prop == "replace":
-                return lambda old, new: obj.replace(old, new)
+                def _str_replace(old: Any, new: Any, _obj: str = obj) -> str:
+                    import re as _re
+                    if isinstance(old, SpryRegex):
+                        _count = 0 if old.global_flag else 1
+                        if callable(new):
+                            return old.pattern.sub(lambda m: str(new(m.group(0))), _obj, count=_count)
+                        return old.pattern.sub(str(new), _obj, count=_count)
+                    if callable(new):
+                        idx = _obj.find(str(old))
+                        if idx == -1:
+                            return _obj
+                        matched = _obj[idx:idx + len(str(old))]
+                        return _obj[:idx] + str(new(matched)) + _obj[idx + len(str(old)):]
+                    return _obj.replace(str(old), str(new), 1)
+                return _str_replace
             if prop == "replaceAll":
-                return lambda old, new: obj.replace(old, new)
+                def _str_replace_all(old: Any, new: Any, _obj: str = obj) -> str:
+                    import re as _re
+                    if isinstance(old, SpryRegex):
+                        if callable(new):
+                            return old.pattern.sub(lambda m: str(new(m.group(0))), _obj)
+                        return old.pattern.sub(str(new), _obj)
+                    if callable(new):
+                        result = ""
+                        remaining = _obj
+                        search = str(old)
+                        while True:
+                            idx = remaining.find(search)
+                            if idx == -1:
+                                result += remaining
+                                break
+                            result += remaining[:idx] + str(new(search))
+                            remaining = remaining[idx + len(search):]
+                        return result
+                    return _obj.replace(str(old), str(new))
+                return _str_replace_all
             if prop == "slice":
                 return lambda start, end=None: obj[start:end]
             if prop == "isEmpty":
@@ -2408,7 +2506,7 @@ class Interpreter:
                 def _str_match(pattern: Any, _obj: str = obj) -> Any:
                     if isinstance(pattern, SpryRegex):
                         return pattern.pattern.findall(_obj) or None
-                    pat, flags = _parse_regex_pattern(str(pattern))
+                    pat, flags, _g = _parse_regex_pattern(str(pattern))
                     return _re.findall(pat, _obj, flags) or None
                 return _str_match
             if prop == "matchAll":
@@ -2416,7 +2514,7 @@ class Interpreter:
                 def _str_matchall(pattern: Any, _obj: str = obj) -> list:
                     if isinstance(pattern, SpryRegex):
                         return [[m.group(), *m.groups()] for m in pattern.pattern.finditer(_obj)]
-                    pat, flags = _parse_regex_pattern(str(pattern))
+                    pat, flags, _g = _parse_regex_pattern(str(pattern))
                     return [[m.group(), *m.groups()] for m in _re.finditer(pat, _obj, flags)]
                 return _str_matchall
             if prop == "search":
@@ -2425,7 +2523,7 @@ class Interpreter:
                     if isinstance(pattern, SpryRegex):
                         m = pattern.pattern.search(_obj)
                         return m.start() if m else -1
-                    pat, flags = _parse_regex_pattern(str(pattern))
+                    pat, flags, _g = _parse_regex_pattern(str(pattern))
                     m = _re.search(pat, _obj, flags)
                     return m.start() if m else -1
                 return _str_search
@@ -2539,7 +2637,7 @@ class Interpreter:
                 def _replace_regex(pattern: Any, repl: str = "", _obj: str = obj) -> str:
                     if isinstance(pattern, SpryRegex):
                         return pattern.pattern.sub(str(repl), _obj)
-                    pat, flags = _parse_regex_pattern(str(pattern))
+                    pat, flags, _g = _parse_regex_pattern(str(pattern))
                     return re.sub(pat, str(repl), _obj, flags=flags)
                 return _replace_regex
 
@@ -2745,6 +2843,9 @@ class Interpreter:
             return obj._spry_get_prop(prop)
 
         if isinstance(obj, (SpryURL, SpryArrayBuffer, SpryTypedArray)):
+            return obj._spry_get_prop(prop)
+
+        if isinstance(obj, SpryErrorObject):
             return obj._spry_get_prop(prop)
 
         # Try attribute access
@@ -3114,7 +3215,7 @@ class Interpreter:
         """Execute a labeled statement, catching break/continue with matching label."""
         body = node.body
         # Propagate label to inner loop node via proper AST field (ForStatement, WhileStatement)
-        if isinstance(body, (ForStatement, WhileStatement)):
+        if isinstance(body, (ForStatement, ForCStyleStatement, WhileStatement)):
             body.label = node.label
         try:
             return self._exec(body, env)
@@ -3126,6 +3227,37 @@ class Interpreter:
             if cs.label == node.label:
                 return None  # consumed
             raise
+
+    def _exec_for_cstyle(self, node: ForCStyleStatement, env: Environment) -> Any:
+        """Execute C-style for loop: for var i = 0; i < n; i++ { ... }"""
+        child_env = env.child()
+        if node.init is not None:
+            self._exec(node.init, child_env)
+        max_iterations = 100_000
+        count = 0
+        while node.condition is None or self._truthy(self._eval(node.condition, child_env)):
+            if count >= max_iterations:
+                raise SpryRuntimeError("C-style for loop exceeded iteration limit", node)
+            count += 1
+            body_env = child_env.child()
+            try:
+                self._exec_block(node.body, body_env)
+            except BreakSignal as bs:
+                if bs.label is None or bs.label == node.label:
+                    break
+                raise
+            except ContinueSignal as cs:
+                if cs.label is None or cs.label == node.label:
+                    pass  # fall through to update
+                else:
+                    raise
+            # Sync vars back from body to child_env
+            for vname, vval in body_env._vars.items():
+                if vname in child_env._vars:
+                    child_env._vars[vname] = vval
+            if node.update is not None:
+                self._eval(node.update, child_env)
+        return None
 
     def _exec_while(self, node: WhileStatement, env: Environment) -> Any:
         max_iterations = 100_000  # safety limit
@@ -3640,21 +3772,34 @@ class Interpreter:
             raise SpryRuntimeError("'super.method' used outside of a class method", node)
         if not isinstance(self_val, SpryInstance):
             raise SpryRuntimeError("'super.method' used outside of a class instance", node)
-        parent = self_val.cls.superclass
+
+        # Determine which class we're currently executing in so we can find ITS parent.
+        try:
+            current_cls = env.get("__current_class__")
+        except SpryRuntimeError:
+            current_cls = self_val.cls
+
+        parent = current_cls.superclass if isinstance(current_cls, SpryClass) else None
         if parent is None:
             raise SpryRuntimeError(f"No superclass to access 'super.{prop}'", node)
-        # Find prop in parent body
-        for stmt in parent.body.body:  # type: ignore[union-attr]
-            if isinstance(stmt, FunctionDeclaration) and stmt.name == prop:
-                fn = SpryFunction(
-                    name=stmt.name,
-                    params=stmt.params,
-                    body=stmt.body,  # type: ignore
-                    closure=parent.closure.child(),
-                    defaults=stmt.defaults,
-                    rest_param=stmt.rest_param,
-                )
-                return BoundMethod(instance=self_val, fn=fn)
+
+        # Walk up the ancestor chain to find the method
+        search_cls: SpryClass | None = parent
+        while search_cls is not None:
+            for stmt in search_cls.body.body:  # type: ignore[union-attr]
+                if isinstance(stmt, FunctionDeclaration) and stmt.name == prop:
+                    fn = SpryFunction(
+                        name=stmt.name,
+                        params=stmt.params,
+                        body=stmt.body,  # type: ignore
+                        closure=search_cls.closure.child(),
+                        defaults=stmt.defaults,
+                        rest_param=stmt.rest_param,
+                    )
+                    bm = BoundMethod(instance=self_val, fn=fn)
+                    bm._defining_class = search_cls  # type: ignore[attr-defined]
+                    return bm
+            search_cls = search_cls.superclass
         raise SpryRuntimeError(f"Superclass has no method {prop!r}", node)
 
     def _construct_class(self, cls: SpryClass, args: list[Any], node: Node, _for_inheritance: bool = False) -> SpryInstance:
@@ -3786,6 +3931,13 @@ class Interpreter:
         child = fn.closure.child()
         # Bind self so methods can do self.field = val
         child.define("self", bm.instance, mutable=False)
+        # Track which class's method we're currently executing — needed for multi-level super.
+        # bm.fn.closure is the env where the method was defined (the class's instance_env child).
+        # We store the "defining class" so that super resolves to *its* parent, not the instance's class.
+        if hasattr(bm, "_defining_class") and bm._defining_class is not None:
+            child.define("__current_class__", bm._defining_class, mutable=False)
+        elif isinstance(bm.instance, SpryInstance):
+            child.define("__current_class__", bm.instance.cls, mutable=False)
         # Also expose instance fields as direct mutable vars (for count += 1 style),
         # recording their initial values so we can sync back only what changed directly.
         initial_field_values: dict[str, Any] = {}
@@ -3796,7 +3948,7 @@ class Interpreter:
 
         required = [
             p for p, _ in fn.params
-            if p not in fn.defaults and not p.startswith("__destruct__")
+            if p not in fn.defaults and not p.startswith("__destruct__") and not p.startswith("__array_destruct__")
         ]
         if len(args) < len(required):
             raise SpryRuntimeError(
@@ -3813,6 +3965,18 @@ class Interpreter:
                     )
                 for fname in field_names:
                     child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+            elif pname.startswith("__array_destruct__:"):
+                raw = pname[len("__array_destruct__:"):]
+                arr_rest_name: str | None = None
+                if "..." in raw:
+                    raw, arr_rest_name = raw.split("...", 1)
+                arr_field_names = [f for f in raw.split(",") if f]
+                arg_val = args[i] if i < len(args) else []
+                items = list(arg_val) if not isinstance(arg_val, list) else arg_val
+                for _j, _fname in enumerate(arr_field_names):
+                    child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
+                if arr_rest_name:
+                    child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
             else:
                 if i < len(args):
                     child.define(pname, args[i], mutable=False)
@@ -3835,7 +3999,12 @@ class Interpreter:
         # Sync back fields that were mutated directly (count += 1 style).
         # We only sync when the local var changed from its initial value — this
         # avoids overwriting mutations already applied via self.field = val.
+        # Skip fields that share a name with a parameter (params shadow fields
+        # and their value doesn't reflect the field mutation done via self.field = ...).
+        param_names = {p for p, _ in fn.params}
         for fname, initial in initial_field_values.items():
+            if fname in param_names:
+                continue  # don't let param value overwrite self.field = val
             try:
                 child_val = child.get(fname)
             except SpryRuntimeError:
@@ -4113,11 +4282,18 @@ class _HttpHelper:
 class _JsonNamespace:
     """JSON global namespace — JSON.stringify(), JSON.parse()."""
 
-    def stringify(self, value: Any, indent: int | None = None) -> str:
-        """Serialize a value to a JSON string."""
+    def stringify(self, value: Any, replacer: Any = None, indent: Any = None) -> str:
+        """Serialize a value to a JSON string. replacer is ignored (null/None accepted)."""
         import json as _json
+
+        def _default(o: Any) -> Any:
+            if hasattr(o, "__repr__"):
+                return repr(o)
+            return str(o)
+
+        indent_val = int(indent) if indent is not None else None
         try:
-            return _json.dumps(value, indent=indent, ensure_ascii=False)
+            return _json.dumps(value, indent=indent_val, ensure_ascii=False, default=_default)
         except (TypeError, ValueError) as e:
             raise ValueError(f"JSON.stringify error: {e}") from e
 
@@ -4220,6 +4396,28 @@ class _ObjectNamespace:
         if isinstance(obj, dict):
             return key in obj
         return False
+
+    def defineProperty(self, obj: Any, key: str, descriptor: Any) -> Any:
+        """Define/modify a property on an object. Mutates and returns obj."""
+        if isinstance(obj, dict) and isinstance(descriptor, dict):
+            if "value" in descriptor:
+                obj[str(key)] = descriptor["value"]
+            elif "get" in descriptor and callable(descriptor["get"]):
+                obj[str(key)] = descriptor["get"]()
+        return obj
+
+    def getOwnPropertyDescriptor(self, obj: Any, key: str) -> Any:
+        """Return a property descriptor dict."""
+        if isinstance(obj, dict) and str(key) in obj:
+            return {"value": obj[str(key)], "writable": True, "enumerable": True, "configurable": True}
+        return None
+
+    def defineProperties(self, obj: Any, props: Any) -> Any:
+        """Define multiple properties at once."""
+        if isinstance(obj, dict) and isinstance(props, dict):
+            for k, descriptor in props.items():
+                self.defineProperty(obj, k, descriptor)
+        return obj
 
     def pick(self, obj: Any, *keys: Any) -> dict:
         """Return a new object with only the specified keys."""
@@ -5166,10 +5364,11 @@ class _JsonHelper:
         except Exception as e:
             raise ValueError(f"JSON parse error: {e}") from e
 
-    def stringify(self, value: Any, indent: int | None = None) -> str:
+    def stringify(self, value: Any, replacer: Any = None, indent: Any = None) -> str:
         import json
+        indent_val = int(indent) if indent is not None else None
         try:
-            return json.dumps(value, indent=indent, default=str)
+            return json.dumps(value, indent=indent_val, default=str)
         except Exception as e:
             raise ValueError(f"JSON stringify error: {e}") from e
 
@@ -5577,6 +5776,9 @@ class _SymbolNamespace:
     _registry: dict[str, "SprySymbol"] = {}
 
     def __call__(self, description: str = "") -> SprySymbol:
+        return SprySymbol(str(description))
+
+    def new(self, description: str = "") -> SprySymbol:
         return SprySymbol(str(description))
 
     def for_(self, key: str) -> SprySymbol:
@@ -6875,3 +7077,49 @@ class _TypedArrayNamespace:
 
     def __repr__(self) -> str:
         return self._type_name
+
+
+# ---------------------------------------------------------------------------
+# Error types
+# ---------------------------------------------------------------------------
+
+class SpryErrorObject:
+    """A structured error object with message, name, and optional stack."""
+
+    def __init__(self, name: str, message: str) -> None:
+        self.name = name
+        self.message = str(message)
+        self.stack = f"{name}: {message}"
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "name":
+            return self.name
+        if prop == "message":
+            return self.message
+        if prop == "stack":
+            return self.stack
+        if prop == "toString":
+            return lambda: f"{self.name}: {self.message}"
+        raise SpryRuntimeError(f"Error has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"{self.name}: {self.message}"
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
+
+class _ErrorNamespace:
+    """Error global — Error.new(message), also callable as Error(message)."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __call__(self, message: Any = "") -> SpryErrorObject:
+        return SpryErrorObject(self._name, str(message))
+
+    def new(self, message: Any = "") -> SpryErrorObject:
+        return SpryErrorObject(self._name, str(message))
+
+    def __repr__(self) -> str:
+        return self._name

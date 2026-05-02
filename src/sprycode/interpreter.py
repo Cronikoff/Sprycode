@@ -1701,6 +1701,9 @@ class Interpreter:
         for i, name in enumerate(node.names):
             item = val[i] if i < len(val) else None
             env.define(name, item, mutable=node.mutable)
+        if node.rest_name is not None:
+            rest = list(val[len(node.names):])
+            env.define(node.rest_name, rest, mutable=node.mutable)
         return None
 
     def _exec_object_destructure(self, node: ObjectDestructure, env: Environment) -> Any:

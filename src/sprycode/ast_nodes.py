@@ -636,6 +636,7 @@ class ListDestructure(Node):
     names: list[str] = field(default_factory=list)
     value: Node | None = None
     mutable: bool = False
+    rest_name: str | None = None  # name of the ...rest element, if any
 
 
 @dataclass

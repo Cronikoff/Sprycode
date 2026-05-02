@@ -568,6 +568,7 @@ class ForStatement(Node):
     vars: list[str] = field(default_factory=list)  # for destructured: for i, v in ...
     iterable: Node | None = None
     body: Block | None = None
+    label: str | None = None  # set by LabeledStatement when wrapping this loop
 
 
 @dataclass
@@ -575,6 +576,7 @@ class WhileStatement(Node):
     """while <condition> { <body> }"""
     condition: Node | None = None
     body: Block | None = None
+    label: str | None = None  # set by LabeledStatement when wrapping this loop
 
 
 @dataclass

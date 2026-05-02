@@ -1,7 +1,6 @@
-"""Phase 12 feature tests — hex/binary/octal literals, template literals, labeled
-break/continue, array destructuring defaults, nested object destructuring, generator
-.next()/.return()/.throw() iterator protocol, Symbol, WeakRef, Map.groupBy,
-Array.from(src, mapFn), list.copyWithin."""
+"""Phase 12 feature tests — hex/binary/octal literals, labeled break/continue,
+array destructuring defaults, nested object destructuring, generator .next()/.return()/.throw()
+iterator protocol, Symbol, WeakRef, Map.groupBy, Array.from(src, mapFn), list.copyWithin."""
 
 import pytest
 from sprycode.lexer import Lexer

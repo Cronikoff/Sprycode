@@ -2844,11 +2844,11 @@ class Interpreter:
             try:
                 self._exec_block(node.body, child)
             except BreakSignal as bs:
-                if bs.label is None or bs.label == getattr(node, "_label", None):
+                if bs.label is None or bs.label == node.label:
                     break
                 raise
             except ContinueSignal as cs:
-                if cs.label is None or cs.label == getattr(node, "_label", None):
+                if cs.label is None or cs.label == node.label:
                     continue
                 raise
         return None
@@ -2856,14 +2856,9 @@ class Interpreter:
     def _exec_labeled(self, node: LabeledStatement, env: Environment) -> Any:
         """Execute a labeled statement, catching break/continue with matching label."""
         body = node.body
-        # Propagate label to inner loop so it can match it
-        if hasattr(body, "_label"):
-            pass
-        else:
-            try:
-                body._label = node.label  # type: ignore[union-attr]
-            except (AttributeError, TypeError):
-                pass
+        # Propagate label to inner loop node via proper AST field (ForStatement, WhileStatement)
+        if isinstance(body, (ForStatement, WhileStatement)):
+            body.label = node.label
         try:
             return self._exec(body, env)
         except BreakSignal as bs:
@@ -2883,11 +2878,11 @@ class Interpreter:
             try:
                 self._exec_block(node.body, child)
             except BreakSignal as bs:
-                if bs.label is None or bs.label == getattr(node, "_label", None):
+                if bs.label is None or bs.label == node.label:
                     break
                 raise
             except ContinueSignal as cs:
-                if cs.label is None or cs.label == getattr(node, "_label", None):
+                if cs.label is None or cs.label == node.label:
                     pass
                 else:
                     raise
@@ -5163,7 +5158,7 @@ class _MapNamespace:
         """Group a list's items by the key returned by key_fn: Map.groupBy([1,2,3], x => x%2)."""
         result = SpryMap()
         if not isinstance(lst, (list, tuple)):
-            raise SpryRuntimeError("Map.groupBy: first argument must be a list", None)  # type: ignore[arg-type]
+            raise TypeError("Map.groupBy: first argument must be a list")
         for item in lst:
             k = key_fn(item)
             if result.spry_has(k):

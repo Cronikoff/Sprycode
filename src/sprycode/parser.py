@@ -51,6 +51,7 @@ from .ast_nodes import (
     IndexExpression,
     InstanceofExpression,
     InterfaceDeclaration,
+    LabeledStatement,
     LambdaExpression,
     LetDeclaration,
     ListDestructure,
@@ -331,10 +332,18 @@ class Parser:
             return self._parse_while()
         if tok.type == TokenType.BREAK:
             self._advance()
-            return BreakStatement(line=tok.line, column=tok.column)
+            # Optional label: break outer
+            label = None
+            if self._check(TokenType.IDENTIFIER) and not self._at_end():
+                label = self._advance().value
+            return BreakStatement(label=label, line=tok.line, column=tok.column)
         if tok.type == TokenType.CONTINUE:
             self._advance()
-            return ContinueStatement(line=tok.line, column=tok.column)
+            # Optional label: continue outer
+            label = None
+            if self._check(TokenType.IDENTIFIER) and not self._at_end():
+                label = self._advance().value
+            return ContinueStatement(label=label, line=tok.line, column=tok.column)
         if tok.type == TokenType.CREATE:
             return self._parse_create()
         if tok.type == TokenType.COMPRESS:
@@ -381,6 +390,15 @@ class Parser:
             return self._parse_debit()
         if tok.type == TokenType.CREDIT:
             return self._parse_credit()
+
+        # Labeled statement: label: for/while/do {...}
+        # Detect: IDENTIFIER followed immediately by COLON
+        if tok.type == TokenType.IDENTIFIER and self._peek().type == TokenType.COLON:
+            label_tok = self._advance()  # consume identifier
+            self._advance()              # consume ':'
+            body_stmt = self._parse_statement()
+            return LabeledStatement(label=label_tok.value, body=body_stmt,
+                                    line=label_tok.line, column=label_tok.column)
 
         # Expression statement or assignment
         return self._parse_expr_or_assignment()
@@ -1426,10 +1444,11 @@ class Parser:
                                line=tok.line, column=tok.column)
 
     def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
-        """Parse let [a, b, c] = expr  or  let [a, ...rest] = expr"""
+        """Parse let [a, b = default, ...rest] = expr  — list destructuring with defaults"""
         self._expect(TokenType.LBRACKET)
         names: list[str] = []
         rest_name: str | None = None
+        defaults: dict[str, "Node"] = {}
         while not self._check(TokenType.RBRACKET) and not self._at_end():
             if self._check(TokenType.ELLIPSIS):
                 self._advance()
@@ -1440,34 +1459,67 @@ class Parser:
                         self._current(),
                     )
                 break  # rest must be last
-            names.append(self._expect_ident().value)
+            name = self._expect_ident().value
+            names.append(name)
+            # Default value: [a = expr, b]
+            if self._match(TokenType.EQ):
+                defaults[name] = self._parse_expression()
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACKET)
-        self._expect(TokenType.EQ)
-        value = self._parse_expression()
+        # Only consume = value at top-level (not nested inline patterns)
+        if self._check(TokenType.EQ):
+            self._advance()
+            value: "Node | None" = self._parse_expression()
+        else:
+            value = None
         return ListDestructure(names=names, value=value, mutable=mutable,
-                               rest_name=rest_name,
+                               rest_name=rest_name, defaults=defaults,
                                line=let_tok.line, column=let_tok.column)
 
     def _parse_object_destructure(self, let_tok: Token, mutable: bool) -> ObjectDestructure:
-        """Parse let {a, b} = expr  or  let {a: alias, b} = expr"""
+        """Parse let {a, b: alias, c = default, d: {e}} = expr"""
         self._expect(TokenType.LBRACE)
         names: list[str] = []
         aliases: dict[str, str] = {}
+        nested: dict[str, "Node"] = {}
+        defaults: dict[str, "Node"] = {}
         while not self._check(TokenType.RBRACE) and not self._at_end():
             name = self._expect_ident().value
             names.append(name)
             if self._match(TokenType.COLON):
-                # {original: alias}
-                alias = self._expect_ident().value
-                aliases[name] = alias
+                # {key: alias}  or  {key: {nested}}  or  {key: [nested]}
+                if self._check(TokenType.LBRACE):
+                    # Nested object destructuring: {a: {b, c}}
+                    inner = self._parse_object_destructure(let_tok, mutable)
+                    # inner has value=None; we'll fill it at runtime from obj[name]
+                    inner.value = None
+                    nested[name] = inner
+                elif self._check(TokenType.LBRACKET):
+                    # Nested array destructuring: {a: [b, c]}
+                    inner = self._parse_list_destructure(let_tok, mutable)
+                    inner.value = None
+                    nested[name] = inner
+                else:
+                    alias = self._expect_ident().value
+                    aliases[name] = alias
+                    # Default after alias: {key: alias = default}
+                    if self._match(TokenType.EQ):
+                        defaults[alias] = self._parse_expression()
+            elif self._match(TokenType.EQ):
+                # Default value: {key = default}
+                defaults[name] = self._parse_expression()
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACE)
-        self._expect(TokenType.EQ)
-        value = self._parse_expression()
-        return ObjectDestructure(names=names, aliases=aliases, value=value,
+        # Only consume = value if this is a top-level destructure (not nested inline)
+        if self._check(TokenType.EQ):
+            self._advance()
+            value: "Node | None" = self._parse_expression()
+        else:
+            value = None
+        return ObjectDestructure(names=names, aliases=aliases, nested=nested,
+                                 defaults=defaults, value=value,
                                  mutable=mutable, line=let_tok.line, column=let_tok.column)
 
     # ------------------------------------------------------------------

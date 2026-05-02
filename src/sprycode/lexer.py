@@ -972,6 +972,42 @@ class Lexer:
         yield Token(TokenType.FSTRING, value, line, col)
 
     def _scan_number(self, line: int, col: int) -> Iterator[Token]:
+        # Check for 0x, 0b, 0o prefix literals
+        if self._current() == "0" and self.pos + 1 < len(self.source):
+            next_ch = self.source[self.pos + 1].lower()
+            if next_ch == "x":
+                self._advance()  # consume '0'
+                self._advance()  # consume 'x'
+                hex_val = ""
+                while self.pos < len(self.source) and (self._current() in "0123456789abcdefABCDEF_"):
+                    if self._current() != "_":
+                        hex_val += self._advance()
+                    else:
+                        self._advance()
+                yield Token(TokenType.NUMBER, str(int(hex_val or "0", 16)), line, col)
+                return
+            if next_ch == "b":
+                self._advance()  # consume '0'
+                self._advance()  # consume 'b'
+                bin_val = ""
+                while self.pos < len(self.source) and self._current() in "01_":
+                    if self._current() != "_":
+                        bin_val += self._advance()
+                    else:
+                        self._advance()
+                yield Token(TokenType.NUMBER, str(int(bin_val or "0", 2)), line, col)
+                return
+            if next_ch == "o":
+                self._advance()  # consume '0'
+                self._advance()  # consume 'o'
+                oct_val = ""
+                while self.pos < len(self.source) and self._current() in "01234567_":
+                    if self._current() != "_":
+                        oct_val += self._advance()
+                    else:
+                        self._advance()
+                yield Token(TokenType.NUMBER, str(int(oct_val or "0", 8)), line, col)
+                return
         value = ""
         has_dot = False
         while self.pos < len(self.source):

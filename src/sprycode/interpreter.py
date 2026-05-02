@@ -59,6 +59,7 @@ from .ast_nodes import (
     IndexExpression,
     InstanceofExpression,
     InterfaceDeclaration,
+    LabeledStatement,
     LambdaExpression,
     LetDeclaration,
     ListComprehension,
@@ -167,11 +168,13 @@ class StopSignal(Exception):
 
 
 class BreakSignal(Exception):
-    pass
+    def __init__(self, label: str | None = None) -> None:
+        self.label = label
 
 
 class ContinueSignal(Exception):
-    pass
+    def __init__(self, label: str | None = None) -> None:
+        self.label = label
 
 
 class YieldSignal(Exception):
@@ -548,6 +551,25 @@ class SpryGenerator:
         self._materialise()
         return iter(self._values)
 
+    def next(self, send_val: Any = None) -> dict:
+        """JS-style iterator: returns {value, done}."""
+        self._materialise()
+        if self._index < len(self._values):
+            v = self._values[self._index]
+            self._index += 1
+            return {"value": v, "done": False}
+        return {"value": None, "done": True}
+
+    def spry_return(self, val: Any = None) -> dict:
+        """Force-complete the generator and return a done result."""
+        self._done = True
+        self._index = len(self._values)  # skip remaining
+        return {"value": val, "done": True}
+
+    def spry_throw(self, error: Any = None) -> None:
+        """Throw an error into the generator (immediately raises)."""
+        raise SpryRuntimeError(str(error) if error is not None else "Generator error")
+
     def __repr__(self) -> str:
         return f"<generator {self._fn.name}>"
 
@@ -709,6 +731,12 @@ class Interpreter:
         # Map global namespace
         _map_ns = _MapNamespace()
         env.define("Map", _map_ns)
+
+        # Symbol global
+        env.define("Symbol", _SymbolNamespace())
+
+        # WeakRef global
+        env.define("WeakRef", _WeakRefNamespace())
 
         # Set builtin — creates a deduplicated list
         def _builtin_set(lst: Any) -> list:
@@ -1102,10 +1130,13 @@ class Interpreter:
             return self._exec_while(node, env)
 
         if isinstance(node, BreakStatement):
-            raise BreakSignal()
+            raise BreakSignal(node.label)
 
         if isinstance(node, ContinueStatement):
-            raise ContinueSignal()
+            raise ContinueSignal(node.label)
+
+        if isinstance(node, LabeledStatement):
+            return self._exec_labeled(node, env)
 
         if isinstance(node, CreateStatement):
             return self._exec_create(node, env)
@@ -2138,6 +2169,20 @@ class Interpreter:
                         result_dw.pop(0)
                     return result_dw
                 return _drop_while
+            if prop == "copyWithin":
+                def _copy_within(target: int, start: int = 0, end: int | None = None, _obj: list = obj) -> list:
+                    result_cw = list(_obj)
+                    n = len(result_cw)
+                    t = int(target) % n if n else 0
+                    s = int(start) % n if n else 0
+                    e = int(end) % n if end is not None and n else n
+                    chunk = result_cw[s:e]
+                    for i, v in enumerate(chunk):
+                        if t + i >= n:
+                            break
+                        result_cw[t + i] = v
+                    return result_cw
+                return _copy_within
 
         if isinstance(obj, str):
             if prop == "length":
@@ -2436,6 +2481,18 @@ class Interpreter:
             if prop == "name":
                 return obj.name
             raise SpryRuntimeError(f"Struct {obj.name!r} has no property {prop!r}", node)
+
+        if isinstance(obj, SpryGenerator):
+            if prop == "next":
+                return obj.next
+            if prop == "return":
+                return obj.spry_return
+            if prop == "throw":
+                return obj.spry_throw
+            if prop == "done":
+                obj._materialise()
+                return obj._index >= len(obj._values)
+            raise SpryRuntimeError(f"Generator has no property {prop!r}", node)
 
         # Try attribute access
         try:
@@ -2786,11 +2843,37 @@ class Interpreter:
                 child.define(node.var, item, mutable=False)
             try:
                 self._exec_block(node.body, child)
-            except BreakSignal:
-                break
-            except ContinueSignal:
-                continue
+            except BreakSignal as bs:
+                if bs.label is None or bs.label == getattr(node, "_label", None):
+                    break
+                raise
+            except ContinueSignal as cs:
+                if cs.label is None or cs.label == getattr(node, "_label", None):
+                    continue
+                raise
         return None
+
+    def _exec_labeled(self, node: LabeledStatement, env: Environment) -> Any:
+        """Execute a labeled statement, catching break/continue with matching label."""
+        body = node.body
+        # Propagate label to inner loop so it can match it
+        if hasattr(body, "_label"):
+            pass
+        else:
+            try:
+                body._label = node.label  # type: ignore[union-attr]
+            except (AttributeError, TypeError):
+                pass
+        try:
+            return self._exec(body, env)
+        except BreakSignal as bs:
+            if bs.label == node.label:
+                return None  # consumed
+            raise
+        except ContinueSignal as cs:
+            if cs.label == node.label:
+                return None  # consumed
+            raise
 
     def _exec_while(self, node: WhileStatement, env: Environment) -> Any:
         max_iterations = 100_000  # safety limit
@@ -2799,10 +2882,15 @@ class Interpreter:
             child = env.child()
             try:
                 self._exec_block(node.body, child)
-            except BreakSignal:
-                break
-            except ContinueSignal:
-                pass
+            except BreakSignal as bs:
+                if bs.label is None or bs.label == getattr(node, "_label", None):
+                    break
+                raise
+            except ContinueSignal as cs:
+                if cs.label is None or cs.label == getattr(node, "_label", None):
+                    pass
+                else:
+                    raise
             count += 1
             if count >= max_iterations:
                 raise SpryRuntimeError("While loop exceeded maximum iteration limit (100,000)", node)
@@ -3132,29 +3220,64 @@ class Interpreter:
         return None
 
     def _exec_list_destructure(self, node: ListDestructure, env: Environment) -> Any:
-        val = self._eval(node.value, env)
+        return self._apply_list_destructure(node, None, env, node.mutable)
+
+    def _apply_list_destructure(self, node: ListDestructure, source_val: Any, env: Environment, mutable: bool) -> None:
+        """Bind names from source_val using the list destructure pattern node."""
+        if source_val is None:
+            val = self._eval(node.value, env) if node.value is not None else []
+        else:
+            val = source_val
         if not isinstance(val, (list, tuple)):
             raise SpryRuntimeError(
                 f"List destructuring requires a list, got {type(val).__name__}", node
             )
         for i, name in enumerate(node.names):
             item = val[i] if i < len(val) else None
-            env.define(name, item, mutable=node.mutable)
+            # Apply default if item is None/missing and a default is defined
+            if item is None and name in node.defaults:
+                item = self._eval(node.defaults[name], env)
+            env.define(name, item, mutable=mutable)
         if node.rest_name is not None:
             rest = list(val[len(node.names):])
-            env.define(node.rest_name, rest, mutable=node.mutable)
+            env.define(node.rest_name, rest, mutable=mutable)
         return None
 
     def _exec_object_destructure(self, node: ObjectDestructure, env: Environment) -> Any:
-        val = self._eval(node.value, env)
-        if not isinstance(val, dict):
+        return self._apply_object_destructure(node, None, env, node.mutable)
+
+    def _apply_object_destructure(self, node: ObjectDestructure, source_val: Any, env: Environment, mutable: bool) -> None:
+        """Bind names from source_val using the destructure pattern node."""
+        if source_val is None:
+            val = self._eval(node.value, env) if node.value is not None else {}
+        else:
+            val = source_val
+        if isinstance(val, SpryInstance):
+            obj: dict = val.fields
+        elif isinstance(val, dict):
+            obj = val
+        else:
             raise SpryRuntimeError(
                 f"Object destructuring requires an object, got {type(val).__name__}", node
             )
         for name in node.names:
-            alias = node.aliases.get(name, name)
-            item = val.get(name)
-            env.define(alias, item, mutable=node.mutable)
+            if name in node.nested:
+                # Recursively apply nested destructure pattern to the child value
+                inner_val = obj.get(name)
+                nested_node = node.nested[name]
+                if isinstance(nested_node, ObjectDestructure):
+                    self._apply_object_destructure(nested_node, inner_val, env, mutable)
+                elif isinstance(nested_node, ListDestructure):
+                    self._apply_list_destructure(nested_node, inner_val, env, mutable)
+            else:
+                alias = node.aliases.get(name, name)
+                item = obj.get(name)
+                # Apply default if item is None and a default is defined
+                if item is None and alias in node.defaults:
+                    item = self._eval(node.defaults[alias], env)
+                elif item is None and name in node.defaults:
+                    item = self._eval(node.defaults[name], env)
+                env.define(alias, item, mutable=mutable)
         return None
 
     # ------------------------------------------------------------------
@@ -3765,16 +3888,20 @@ class _ArrayNamespace:
         """Return True if the value is a list."""
         return isinstance(value, list)
 
-    def from_(self, iterable: Any) -> list:
-        """Create an array from an iterable (range, string, etc.)."""
+    def from_(self, iterable: Any, map_fn: Any = None) -> list:
+        """Create an array from an iterable (range, string, etc.) with optional map function."""
         if isinstance(iterable, range):
-            return list(iterable)
-        if isinstance(iterable, str):
-            return list(iterable)
-        try:
-            return list(iterable)
-        except TypeError:
-            return []
+            result = list(iterable)
+        elif isinstance(iterable, str):
+            result = list(iterable)
+        else:
+            try:
+                result = list(iterable)
+            except TypeError:
+                result = []
+        if map_fn is not None:
+            result = [map_fn(item) for item in result]
+        return result
 
     # Expose as 'from' attribute (Python reserved word workaround)
     def __getattr__(self, name: str) -> Any:
@@ -5032,6 +5159,19 @@ class _MapNamespace:
             result.spry_set(k, v)
         return result
 
+    def groupBy(self, lst: Any, key_fn: Any) -> SpryMap:
+        """Group a list's items by the key returned by key_fn: Map.groupBy([1,2,3], x => x%2)."""
+        result = SpryMap()
+        if not isinstance(lst, (list, tuple)):
+            raise SpryRuntimeError("Map.groupBy: first argument must be a list", None)  # type: ignore[arg-type]
+        for item in lst:
+            k = key_fn(item)
+            if result.spry_has(k):
+                result._data[k].append(item)
+            else:
+                result.spry_set(k, [item])
+        return result
+
     def __getattr__(self, prop: str) -> Any:
         if prop == "from":
             return self.from_
@@ -5090,3 +5230,85 @@ class _StringNamespace:
 
     def __repr__(self) -> str:
         return "String"
+
+
+# ---------------------------------------------------------------------------
+# Symbol global
+# ---------------------------------------------------------------------------
+
+_symbol_counter = 0
+
+
+class SprySymbol:
+    """Unique, immutable symbol value (like JS Symbol)."""
+
+    def __init__(self, description: str = "") -> None:
+        global _symbol_counter
+        _symbol_counter += 1
+        self._id = _symbol_counter
+        self.description = description
+
+    def __repr__(self) -> str:
+        return f"Symbol({self.description!r})" if self.description else "Symbol()"
+
+    def __eq__(self, other: object) -> bool:
+        return self is other  # symbols are unique
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+class _SymbolNamespace:
+    """Symbol() creates a new unique symbol. Symbol.for(key) returns a global symbol."""
+    _registry: dict[str, "SprySymbol"] = {}
+
+    def __call__(self, description: str = "") -> SprySymbol:
+        return SprySymbol(str(description))
+
+    def for_(self, key: str) -> SprySymbol:
+        k = str(key)
+        if k not in self._registry:
+            self._registry[k] = SprySymbol(k)
+        return self._registry[k]
+
+    def keyFor(self, sym: Any) -> Any:
+        for k, s in self._registry.items():
+            if s is sym:
+                return k
+        return None
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "for":
+            return self.for_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return "Symbol"
+
+
+# ---------------------------------------------------------------------------
+# WeakRef global
+# ---------------------------------------------------------------------------
+
+
+class SpryWeakRef:
+    """Simple reference wrapper (mirrors JS WeakRef semantics where practical)."""
+
+    def __init__(self, target: Any) -> None:
+        self._target = target
+
+    def deref(self) -> Any:
+        return self._target
+
+    def __repr__(self) -> str:
+        return f"WeakRef({self._target!r})"
+
+
+class _WeakRefNamespace:
+    """WeakRef.new(obj) creates a weak reference wrapper."""
+
+    def new(self, target: Any) -> SpryWeakRef:
+        return SpryWeakRef(target)
+
+    def __repr__(self) -> str:
+        return "WeakRef"

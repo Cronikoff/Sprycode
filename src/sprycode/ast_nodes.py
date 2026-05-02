@@ -579,14 +579,21 @@ class WhileStatement(Node):
 
 @dataclass
 class BreakStatement(Node):
-    """break"""
-    pass
+    """break [label]"""
+    label: str | None = None
 
 
 @dataclass
 class ContinueStatement(Node):
-    """continue"""
-    pass
+    """continue [label]"""
+    label: str | None = None
+
+
+@dataclass
+class LabeledStatement(Node):
+    """label: statement"""
+    label: str = ""
+    body: "Node | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +722,7 @@ class ListDestructure(Node):
     value: Node | None = None
     mutable: bool = False
     rest_name: str | None = None  # name of the ...rest element, if any
+    defaults: dict[str, "Node"] = field(default_factory=dict)  # name -> default expr
 
 
 @dataclass
@@ -722,8 +730,10 @@ class ObjectDestructure(Node):
     """let {a, b} = expr  — object destructuring"""
     names: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)  # {name: alias}
+    nested: dict[str, "Node"] = field(default_factory=dict)  # {name: nested destructure node}
     value: Node | None = None
     mutable: bool = False
+    defaults: dict[str, "Node"] = field(default_factory=dict)  # name/alias -> default expr
 
 
 @dataclass

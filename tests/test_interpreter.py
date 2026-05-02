@@ -132,8 +132,10 @@ class TestArithmetic:
         assert eval_expr("(2 + 3) * 4") == 20
 
     def test_division_by_zero(self):
-        with pytest.raises(SpryRuntimeError):
-            eval_expr("1 / 0")
+        # JS-like: 1/0 → Infinity (not an error)
+        import math
+        result = eval_expr("1 / 0")
+        assert math.isinf(result) and result > 0
 
 
 class TestComparisons:
@@ -303,7 +305,7 @@ class TestTryCatch:
         source = """
 var caught = false
 try {
-    let x = 1 / 0
+    throw "oops"
 } catch err {
     caught = true
 }

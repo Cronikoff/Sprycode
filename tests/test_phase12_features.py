@@ -265,7 +265,8 @@ let v = r.value
         assert val(i, "v") is True
 
     def test_generator_done_property(self):
-        i = run("fn* gen() { yield 1 }\nlet g = gen()\ng.next()\nlet v = g.done")
+        # done is True only after the exhausted next() call returns {done: true}
+        i = run("fn* gen() { yield 1 }\nlet g = gen()\ng.next()\nlet r = g.next()\nlet v = r.done")
         assert val(i, "v") is True
 
 

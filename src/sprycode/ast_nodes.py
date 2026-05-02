@@ -928,3 +928,10 @@ class ResultLiteral(Node):
     """result ok <value>  or  result fail <message>"""
     is_ok: bool = True
     value: Node | None = None
+
+
+@dataclass
+class TaggedTemplateExpression(Node):
+    """tag`template ${expr}` — a tagged template literal call"""
+    tag: "Node | None" = None       # the tag function expression
+    template: str = ""              # the raw template string (like FStringExpression.raw_template)

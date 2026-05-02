@@ -382,7 +382,7 @@ test "permission denied" {
         source = """
 test "rollback on error" {
     expect rollback {
-        let x = 1 / 0
+        throw "simulated error"
     }
 }
 """

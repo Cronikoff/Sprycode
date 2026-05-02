@@ -126,6 +126,7 @@ from .ast_nodes import (
     SuperExpression,
     GetterDeclaration,
     SetterDeclaration,
+    TaggedTemplateExpression,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -523,96 +524,117 @@ class SpryGenerator:
 
     Lazily executes the function body, pausing at each ``yield`` and resuming
     on the next ``next()`` / iteration call.
+
+    Supports the send protocol: ``next(value)`` passes a value back into the
+    generator which becomes the result of the ``yield`` expression.
     """
 
     def __init__(self, fn: "SpryFunction", args: list[Any], interp: "Interpreter") -> None:
+        import threading
+        import queue as _q
+
         self._fn = fn
         self._args = args
         self._interp = interp
-        self._values: list[Any] = []
         self._done = False
-        self._index = 0
-        self._materialised = False
 
-    def _materialise(self) -> None:
-        """Execute the generator body and collect all yielded values.
+        # Coroutine protocol using threads + queues
+        self._yield_q: "_q.Queue[tuple[str, Any]]" = _q.Queue()
+        self._send_q: "_q.Queue[Any]" = _q.Queue()
+        self._thread: "threading.Thread | None" = None
+        self._started = False
+        # Cache for list()-like materialisation (for-in iteration)
+        self._collected: list[Any] | None = None
 
-        The body is executed by walking the AST manually so that ``yield``
-        statements nested inside loops, conditionals, etc. are intercepted
-        correctly without recursion.
-        """
-        if self._materialised:
-            return
-        self._materialised = True
+    def _start_thread(self) -> None:
+        """Start the generator thread on first next() call."""
+        import threading
+        self._started = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-        child = self._fn.closure.child()
+    def _run(self) -> None:
+        """Body of the generator thread — runs in a dedicated thread."""
+        yield_q = self._yield_q
+        send_q = self._send_q
+        interp = self._interp
+
+        def _yield_hook(value: Any) -> Any:
+            yield_q.put(("yield", value))
+            sent = send_q.get()
+            return sent  # becomes the result of the yield expression
+
+        # Install thread-local hook so _eval intercepts yield in THIS thread only
+        interp._tl.yield_hook = _yield_hook  # type: ignore[attr-defined]
+
+        env = self._fn.closure.child()
         normal_params = [p for p in self._fn.params if not p[0].startswith("__destruct__:")]
         for i, (pname, _) in enumerate(normal_params):
-            child.define(pname, self._args[i] if i < len(self._args) else None, mutable=True)
+            env.define(pname, self._args[i] if i < len(self._args) else None, mutable=True)
 
         try:
-            self._run_gen_block(self._fn.body, child)
-        except ReturnSignal:
-            pass
-
-    def _run_gen_block(self, block: Any, env: Any) -> None:
-        for stmt in block.body:
-            self._run_gen_stmt(stmt, env)
-
-    def _run_gen_stmt(self, node: Any, env: Any) -> None:
-        """Execute one statement; intercept YieldStatement at any depth."""
-        if isinstance(node, YieldStatement):
-            v = self._interp._eval(node.value, env) if node.value is not None else None
-            self._values.append(v)
+            try:
+                interp._exec_block(self._fn.body, env)
+            except ReturnSignal:
+                pass
+        except Exception as exc:
+            yield_q.put(("error", exc))
             return
-        # For compound statements that have sub-blocks, recurse into them
-        # so nested yields are captured.  All other nodes delegate normally.
-        if isinstance(node, Block):
-            self._run_gen_block(node, env)
-            return
-
-        # Monkey-patch _exec temporarily so yields inside interpreter-
-        # dispatched code (while loops, for loops, if, etc.) are captured.
-        interp = self._interp
-        values = self._values
-        orig_exec = interp._exec
-
-        def _exec_with_yield(n: Any, e: Any) -> Any:
-            if isinstance(n, YieldStatement):
-                v = interp._eval(n.value, e) if n.value is not None else None
-                values.append(v)
-                return None
-            return orig_exec(n, e)
-
-        interp._exec = _exec_with_yield  # type: ignore[method-assign]
-        try:
-            orig_exec(node, env)
-        except ReturnSignal:
-            raise
         finally:
-            interp._exec = orig_exec  # type: ignore[method-assign]
-
-    def __iter__(self) -> "SpryGenerator":
-        self._materialise()
-        return iter(self._values)
+            interp._tl.yield_hook = None  # type: ignore[attr-defined]
+        yield_q.put(("done", None))
 
     def next(self, send_val: Any = None) -> dict:
         """JS-style iterator: returns {value, done}."""
-        self._materialise()
-        if self._index < len(self._values):
-            v = self._values[self._index]
-            self._index += 1
-            return {"value": v, "done": False}
+        if self._done:
+            return {"value": None, "done": True}
+
+        if not self._started:
+            self._start_thread()
+            # First call: wait for first yield without sending a value
+        else:
+            self._send_q.put(send_val)
+
+        try:
+            kind, val = self._yield_q.get(timeout=10)
+        except Exception:
+            self._done = True
+            return {"value": None, "done": True}
+
+        if kind == "yield":
+            return {"value": val, "done": False}
+        if kind in ("done", "return"):
+            self._done = True
+            return {"value": val if kind == "return" else None, "done": True}
+        if kind == "error":
+            self._done = True
+            raise val
+        self._done = True
         return {"value": None, "done": True}
 
+    def _materialise(self) -> list[Any]:
+        """Materialise all yielded values for for-in iteration."""
+        if self._collected is not None:
+            return self._collected
+        result: list[Any] = []
+        while True:
+            item = self.next()
+            if item["done"]:
+                break
+            result.append(item["value"])
+        self._collected = result
+        return result
+
+    def __iter__(self) -> "Any":
+        return iter(self._materialise())
+
     def spry_return(self, val: Any = None) -> dict:
-        """Force-complete the generator and return a done result."""
+        """Force-complete the generator."""
         self._done = True
-        self._index = len(self._values)  # skip remaining
         return {"value": val, "done": True}
 
     def spry_throw(self, error: Any = None) -> None:
-        """Throw an error into the generator (immediately raises)."""
+        """Throw an error into the generator."""
         raise SpryRuntimeError(str(error) if error is not None else "Generator error")
 
     def __repr__(self) -> str:
@@ -676,6 +698,9 @@ class Interpreter:
         self.globals = self._build_globals()
         self._app_name: str = ""
         self._app_version: str = ""
+        # Thread-local yield handler for generator coroutines
+        import threading
+        self._tl = threading.local()
 
     def _build_globals(self) -> Environment:
         env = Environment()
@@ -756,6 +781,9 @@ class Interpreter:
         env.define("true", True)
         env.define("false", False)
         env.define("null", None)
+        env.define("Infinity", float("inf"))
+        env.define("NaN", float("nan"))
+        env.define("undefined", None)  # JS-compat alias for null
 
         # Environment and formatting
         env.define("env", lambda key, default=None: os.environ.get(str(key), default))
@@ -931,6 +959,34 @@ class Interpreter:
             last = m.end()
         result += template[last:]
         return result
+
+    def _eval_tagged_template(self, node: "TaggedTemplateExpression", env: "Environment") -> Any:
+        """Evaluate a tagged template literal: tag`hello ${expr} world`.
+
+        Calls tag(strings, ...values) where strings is the list of raw string parts
+        and values are the evaluated expressions.
+        """
+        import re as _re
+        tag_fn = self._eval(node.tag, env)
+        template = node.template
+        strings: list[str] = []
+        values: list[Any] = []
+        last = 0
+        for m in _re.finditer(r"\{([^}]+)\}", template):
+            strings.append(template[last:m.start()])
+            expr_src = m.group(1)
+            try:
+                from .lexer import Lexer as _Lexer
+                from .parser import Parser as _Parser
+                _tokens = _Lexer(expr_src).tokenize()
+                _prog = _Parser(_tokens).parse()
+                val = self._eval(_prog.body[0], env)
+                values.append(val)
+            except Exception:
+                values.append(None)
+            last = m.end()
+        strings.append(template[last:])
+        return self._call_value(tag_fn, [strings, *values])
 
     @staticmethod
     def _builtin_str(value: Any) -> str:
@@ -1119,8 +1175,9 @@ class Interpreter:
                 new_val = current * rhs
             elif node.op == "/":
                 if rhs == 0:
-                    raise SpryRuntimeError("Division by zero", node)
-                new_val = current / rhs
+                    new_val = float("nan") if current == 0 else math.copysign(float("inf"), current)
+                else:
+                    new_val = current / rhs
             elif node.op == "&":
                 new_val = int(current) & int(rhs)
             elif node.op == "|":
@@ -1160,12 +1217,14 @@ class Interpreter:
                 new_val = current * rhs
             elif node.op == "/":
                 if rhs == 0:
-                    raise SpryRuntimeError("Division by zero", node)
-                new_val = current / rhs
+                    new_val = float("nan") if current == 0 else math.copysign(float("inf"), current)
+                else:
+                    new_val = current / rhs
             elif node.op == "%":
                 if rhs == 0:
-                    raise SpryRuntimeError("Division by zero in modulo", node)
-                new_val = current % rhs
+                    new_val = float("nan")
+                else:
+                    new_val = current % rhs
             elif node.op == "??":
                 # ??= : only assign if current value is null/None
                 if current is None:
@@ -1478,6 +1537,10 @@ class Interpreter:
 
         if isinstance(node, YieldStatement):
             value = self._eval(node.value, env) if node.value is not None else None
+            # Check for thread-local generator yield hook (used by coroutine generators)
+            yield_hook = getattr(self._tl, "yield_hook", None)
+            if yield_hook is not None:
+                return yield_hook(value)
             raise YieldSignal(value)
 
         if isinstance(node, ExportStatement):
@@ -1629,6 +1692,9 @@ class Interpreter:
         if isinstance(node, FStringExpression):
             return self._eval_fstring(node.raw_template, env)
 
+        if isinstance(node, TaggedTemplateExpression):
+            return self._eval_tagged_template(node, env)
+
         if isinstance(node, PipelineExpression):
             return self._eval_pipeline(node, env)
 
@@ -1736,9 +1802,15 @@ class Interpreter:
             return left * right
         if op == "/":
             if right == 0:
+                if isinstance(left, (int, float)):
+                    if left == 0:
+                        return float("nan")
+                    return math.copysign(float("inf"), left)
                 raise SpryRuntimeError("Division by zero", node)
             return left / right
         if op == "%":
+            if right == 0:
+                return float("nan")
             return left % right
         if op == "**":
             return left ** right
@@ -2138,9 +2210,20 @@ class Interpreter:
             if prop == "find":
                 return lambda pred: next((x for x in obj if self._truthy(pred(x))), None)
             if prop == "filter":
-                return lambda pred: [x for x in obj if self._truthy(pred(x))]
+                def _list_filter(pred: Any, _o: list = obj) -> list:
+                    multi = getattr(pred, "_spry_arity", 1) > 1
+                    if multi:
+                        return [_x for _i, _x in enumerate(_o) if self._truthy(pred(_x, _i, _o))]
+                    return [_x for _x in _o if self._truthy(pred(_x))]
+                return _list_filter
             if prop == "map":
-                return lambda fn: [fn(x) for x in obj]
+                def _list_map(fn: Any, _o: list = obj) -> list:
+                    multi = getattr(fn, "_spry_arity", 1) > 1
+                    results = []
+                    for _idx, _x in enumerate(_o):
+                        results.append(fn(_x, _idx, _o) if multi else fn(_x))
+                    return results
+                return _list_map
             if prop in ("every", "all"):
                 return lambda pred: all(self._truthy(pred(x)) for x in obj)
             if prop in ("some", "any"):
@@ -2403,6 +2486,12 @@ class Interpreter:
                         result_g[k].append(item)
                     return result_g
                 return _group
+            if prop == "forEach":
+                def _list_foreach(fn: Any, _o: list = obj) -> None:
+                    multi = getattr(fn, "_spry_arity", 1) > 1
+                    for _idx, _x in enumerate(_o):
+                        fn(_x, _idx, _o) if multi else fn(_x)
+                return _list_foreach
 
         if isinstance(obj, str):
             if prop == "length":
@@ -2786,48 +2875,47 @@ class Interpreter:
             if prop == "throw":
                 return obj.spry_throw
             if prop == "done":
-                obj._materialise()
-                return obj._index >= len(obj._values)
+                return obj._done
             if prop == "toArray":
                 obj._materialise()
-                return lambda: list(obj._values)
+                return lambda: list(obj._collected)
             if prop == "take":
                 def _gen_take(n: int, _g: SpryGenerator = obj) -> list:
                     _g._materialise()
-                    return list(_g._values[:int(n)])
+                    return list(_g._collected[:int(n)])  # type: ignore[index]
                 return _gen_take
             if prop == "drop":
                 def _gen_drop(n: int, _g: SpryGenerator = obj) -> list:
                     _g._materialise()
-                    return list(_g._values[int(n):])
+                    return list(_g._collected[int(n):])  # type: ignore[index]
                 return _gen_drop
             if prop == "map":
                 def _gen_map(fn: Any, _g: SpryGenerator = obj) -> list:
                     _g._materialise()
-                    return [fn(v) for v in _g._values]
+                    return [fn(v) for v in _g._collected]  # type: ignore[union-attr]
                 return _gen_map
             if prop == "filter":
                 def _gen_filter(fn: Any, _g: SpryGenerator = obj) -> list:
                     _g._materialise()
-                    return [v for v in _g._values if self._truthy(fn(v))]
+                    return [v for v in _g._collected if self._truthy(fn(v))]  # type: ignore[union-attr]
                 return _gen_filter
             if prop == "forEach":
                 def _gen_foreach(fn: Any, _g: SpryGenerator = obj) -> None:
                     _g._materialise()
-                    for v in _g._values:
+                    for v in _g._collected:  # type: ignore[union-attr]
                         fn(v)
                 return _gen_foreach
             if prop == "reduce":
                 def _gen_reduce(fn: Any, init: Any = None, _g: SpryGenerator = obj) -> Any:
                     _g._materialise()
                     acc = init
-                    for v in _g._values:
+                    for v in _g._collected:  # type: ignore[union-attr]
                         acc = fn(acc, v)
                     return acc
                 return _gen_reduce
             if prop == "length" or prop == "size":
                 obj._materialise()
-                return len(obj._values)
+                return len(obj._collected)  # type: ignore[arg-type]
             raise SpryRuntimeError(f"Generator has no property {prop!r}", node)
 
         if isinstance(obj, SpryIterator):
@@ -3019,15 +3107,26 @@ class Interpreter:
     def _to_py_callable(self, fn: Any, env: Environment) -> Any:
         """Wrap a SpryCode callable as a Python callable for use in method closures."""
         if isinstance(fn, SpryLambda):
-            return lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
+            w = lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
+            w._spry_arity = 1  # type: ignore[attr-defined]
+            return w
         if isinstance(fn, SpryMultiLambda):
-            return lambda *args: self._apply_multi_lambda(fn, list(args), env)
+            w = lambda *args: self._apply_multi_lambda(fn, list(args), env)
+            w._spry_arity = len(fn.params)  # type: ignore[attr-defined]
+            return w
         if isinstance(fn, LambdaExpression):
-            return lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
+            w = lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
+            w._spry_arity = 1  # type: ignore[attr-defined]
+            return w
         if isinstance(fn, MultiParamLambda):
-            return lambda *args: self._apply_multi_lambda(fn, list(args), env)
+            w = lambda *args: self._apply_multi_lambda(fn, list(args), env)
+            w._spry_arity = len(fn.params)  # type: ignore[attr-defined]
+            return w
         if isinstance(fn, SpryFunction):
-            return lambda *args: self._call_function(fn, list(args), fn)
+            arity = len(fn.params)
+            w = lambda *args: self._call_function(fn, list(args), fn)
+            w._spry_arity = arity  # type: ignore[attr-defined]
+            return w
         return fn
 
     # ------------------------------------------------------------------
@@ -3186,10 +3285,21 @@ class Interpreter:
         # Destructured loop: for i, v in enumerate(list)
         multi_vars = node.vars if node.vars else [node.var]
         destructured = len(multi_vars) > 1
+        # Object destructuring loop: for {x, y} of list
+        obj_destruct_vars: list[str] | None = None
+        if len(multi_vars) == 1 and multi_vars[0].startswith("__obj_destruct__:"):
+            field_names_str = multi_vars[0][len("__obj_destruct__:"):]
+            obj_destruct_vars = [f for f in field_names_str.split(",") if f]
+            destructured = False
 
         for item in iterable:
             child = env.child()
-            if destructured:
+            if obj_destruct_vars is not None:
+                # Bind object fields as loop variables
+                obj = item if isinstance(item, dict) else (item.fields if isinstance(item, SpryInstance) else {})
+                for fname in obj_destruct_vars:
+                    child.define(fname, obj.get(fname) if isinstance(obj, dict) else None, mutable=False)
+            elif destructured:
                 # item should be a list/tuple: [index, value]
                 if isinstance(item, (list, tuple)):
                     for idx, vname in enumerate(multi_vars):
@@ -3440,13 +3550,20 @@ class Interpreter:
         return ws_obj
 
     def _exec_with(self, node: WithStatement, env: Environment) -> Any:
-        """with <expr> as <name> { body } — resource management.
-        Calls __enter__-like open/connect, executes body, then closes.
+        """with <expr> [as <name>] { body } — resource management OR object binding.
+
+        When the expr is a dict and there is no alias, bind all its keys as local
+        variables in the body scope (like JS 'with').
+        Always calls close() on the resource when done.
         """
         resource = self._eval(node.expr, env)
         child = env.child()
         if node.alias:
             child.define(node.alias, resource, mutable=False)
+        elif isinstance(resource, dict):
+            # Bind all object keys as variables
+            for k, v in resource.items():
+                child.define(str(k), v, mutable=False)
         try:
             return self._exec_block(node.body, child)
         finally:
@@ -4373,12 +4490,17 @@ class _ObjectNamespace:
         return {}
 
     def assign(self, *objs: Any) -> dict:
-        """Merge objects left-to-right: Object.assign({a:1}, {b:2}) → {a:1, b:2}."""
-        result: dict = {}
-        for obj in objs:
+        """Mutate the first object by merging all subsequent objects into it.
+
+        Object.assign({a:1}, {b:2}, {c:3}) → mutates first arg, returns it.
+        """
+        if not objs:
+            return {}
+        target = objs[0] if isinstance(objs[0], dict) else {}
+        for obj in objs[1:]:
             if isinstance(obj, dict):
-                result.update(obj)
-        return result
+                target.update(obj)
+        return target
 
     def freeze(self, obj: Any) -> Any:
         """Return the object unchanged (SpryCode values are not mutable by default)."""
@@ -5741,6 +5863,22 @@ class _StringNamespace:
         """Concatenate multiple strings using SpryCode conventions."""
         return "".join(self._spry_str(p) for p in parts)
 
+    def raw(self, strings: Any, *values: Any) -> str:
+        """String.raw tagged template — return the raw template string without escape processing.
+
+        When used as a tagged template (String.raw`foo\\nbar`), `strings` is a list of
+        raw string parts and `values` are the substituted expressions.
+        """
+        if isinstance(strings, list):
+            result = strings[0] if strings else ""
+            for i, val in enumerate(values):
+                result += self._spry_str(val)
+                if i + 1 < len(strings):
+                    result += strings[i + 1]
+            return result
+        # Fallback: just return strings as-is
+        return self._spry_str(strings)
+
     def __repr__(self) -> str:
         return "String"
 
@@ -5971,8 +6109,7 @@ class _IteratorNamespace:
     def from_(self, iterable: Any) -> list:
         """Convert any iterable to a materialised array (iterator protocol stub)."""
         if isinstance(iterable, SpryGenerator):
-            iterable._materialise()
-            return list(iterable._values)
+            return iterable._materialise()
         if isinstance(iterable, SprySet):
             return list(iterable._data)
         if isinstance(iterable, SpryMap):

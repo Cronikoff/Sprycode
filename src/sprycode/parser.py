@@ -119,6 +119,7 @@ from .ast_nodes import (
     SuperExpression,
     GetterDeclaration,
     SetterDeclaration,
+    TaggedTemplateExpression,
 )
 from .lexer import Token, TokenType
 
@@ -182,6 +183,7 @@ class Parser:
     # they are keywords in other contexts.
     _IDENTIFIER_LIKE = frozenset({
         TokenType.IDENTIFIER,
+        TokenType.UNDERSCORE,    # _ used as ignored parameter name
         TokenType.FILE_TYPE,     # "file", "File"
         TokenType.FOLDER_TYPE,   # "folder", "Folder"
         TokenType.DATA,          # "data"
@@ -1075,6 +1077,28 @@ class Parser:
                 iterable=iterable, body=body,
                 line=tok.line, column=tok.column,
             )
+        # Support: for {x, y} in/of ... — object destructuring
+        if self._check(TokenType.LBRACE):
+            self._advance()  # consume '{'
+            obj_dest_vars: list[str] = []
+            while not self._check(TokenType.RBRACE) and not self._at_end():
+                obj_dest_vars.append(self._expect_ident().value)
+                if not self._match(TokenType.COMMA):
+                    break
+            self._expect(TokenType.RBRACE)
+            if (self._check(TokenType.IDENTIFIER) and self._current().value == "of"):
+                self._advance()  # consume 'of'
+            else:
+                self._expect(TokenType.IN)
+            iterable = self._parse_value_expression()
+            body = self._parse_block()
+            synth_var = "__obj_destruct__:" + ",".join(obj_dest_vars)
+            return ForStatement(
+                var=synth_var,
+                vars=[synth_var],
+                iterable=iterable, body=body,
+                line=tok.line, column=tok.column,
+            )
         # C-style: for var i = 0; i < 5; i++ { ... }
         if self._check(TokenType.VAR, TokenType.LET):
             # Peek ahead: if this is var/let IDENT = expr ; it's C-style
@@ -1321,7 +1345,32 @@ class Parser:
                                               body=setter_body,
                                               line=cur.line, column=cur.column))
                 continue
-            # Contextual `static name = value` or `static fn name(...) { ... }`
+            # `fn get propName() { ... }` or `fn set propName(v) { ... }` — JS-compatible getter/setter
+            if cur.type == TokenType.FN:
+                if (self._peek(1).type == TokenType.IDENTIFIER and self._peek(1).value in ("get", "set")
+                        and self._peek(2).type in self._IDENTIFIER_LIKE):
+                    self._advance()  # consume 'fn'
+                    accessor_tok = self._advance()  # consume 'get' or 'set'
+                    if accessor_tok.value == "get":
+                        name_tok = self._expect_ident()
+                        self._expect(TokenType.LPAREN)
+                        self._expect(TokenType.RPAREN)
+                        if self._check(TokenType.ARROW):
+                            self._advance()
+                            self._parse_type_name()
+                        getter_body = self._parse_block()
+                        body.append(GetterDeclaration(name=name_tok.value, body=getter_body,
+                                                      line=cur.line, column=cur.column))
+                    else:  # 'set'
+                        name_tok = self._expect_ident()
+                        self._expect(TokenType.LPAREN)
+                        param_tok = self._expect_ident()
+                        self._expect(TokenType.RPAREN)
+                        setter_body = self._parse_block()
+                        body.append(SetterDeclaration(name=name_tok.value, param=param_tok.value,
+                                                      body=setter_body,
+                                                      line=cur.line, column=cur.column))
+                    continue
             if (cur.type == TokenType.IDENTIFIER and cur.value == "static"):
                 next_tok = self._peek(1)
                 if next_tok.type in self._IDENTIFIER_LIKE or next_tok.type == TokenType.FN:
@@ -2330,6 +2379,15 @@ class Parser:
                     line=inst_tok.line,
                     column=inst_tok.column,
                 )
+            elif self._check(TokenType.FSTRING):
+                # Tagged template literal: tag`...`
+                tmpl_tok = self._advance()
+                expr = TaggedTemplateExpression(
+                    tag=expr,
+                    template=tmpl_tok.value,
+                    line=tmpl_tok.line,
+                    column=tmpl_tok.column,
+                )
             elif self._check(TokenType.AS):
                 # Type cast: expr as TypeName — only if next token is a known type name
                 # (avoids conflict with `with expr as alias` and `import "mod" as alias`)
@@ -2379,12 +2437,24 @@ class Parser:
         if tok.type == TokenType.MATCH:
             return self._parse_match()
 
+        # with as expression: let v = with {x:1} { x + 1 }
+        if tok.type == TokenType.WITH:
+            return self._parse_with()
+
+        # yield as expression: let r = yield 1
+        if tok.type == TokenType.YIELD:
+            return self._parse_yield()
+
         if tok.type == TokenType.STRING:
             self._advance()
             return StringLiteral(value=tok.value, line=tok.line, column=tok.column)
 
         if tok.type == TokenType.NUMBER:
             self._advance()
+            if tok.value.endswith("n"):
+                # BigInt literal: 42n → store as integer in NumberLiteral
+                val = float(int(tok.value[:-1]))
+                return NumberLiteral(value=val, raw=tok.value, line=tok.line, column=tok.column)
             val = float(tok.value)
             return NumberLiteral(value=val, raw=tok.value, line=tok.line, column=tok.column)
 
@@ -2469,7 +2539,7 @@ class Parser:
             try:
                 params: list[str] = []
                 # Zero-arg: immediately check ) =>
-                if self._check(TokenType.IDENTIFIER):
+                if self._current().type in self._IDENTIFIER_LIKE:
                     params.append(self._advance().value)
                     while self._match(TokenType.COMMA):
                         params.append(self._expect_ident().value)

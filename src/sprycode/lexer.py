@@ -1057,7 +1057,12 @@ class Lexer:
                 self._advance()
             else:
                 break
-        yield Token(TokenType.NUMBER, value, line, col)
+        # BigInt literal: 42n
+        if self.pos < len(self.source) and self._current() == "n" and not has_dot:
+            self._advance()  # consume 'n'
+            yield Token(TokenType.NUMBER, value + "n", line, col)
+        else:
+            yield Token(TokenType.NUMBER, value, line, col)
 
     def _scan_identifier(self, line: int, col: int) -> Iterator[Token]:
         value = ""

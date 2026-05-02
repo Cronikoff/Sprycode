@@ -1976,7 +1976,9 @@ class Interpreter:
                     groups: dict[Any, list] = {}
                     for item in value:
                         key = self._apply_lambda(stage, item, env)
-                        # Use str key for dict compatibility
+                        # Non-primitive keys (e.g. dicts, lists) are converted to their
+                        # string representation for dict compatibility.  Note: objects with
+                        # identical str() representations will be grouped together.
                         str_key = str(key) if not isinstance(key, (str, int, float, bool)) else key
                         if str_key not in groups:
                             groups[str_key] = []
@@ -3268,16 +3270,16 @@ class _MathHelper:
 
     def min(self, *args: Any) -> Any:
         if len(args) == 1:
-            # Single argument must be a numeric iterable (e.g. a list of numbers)
+            # Single argument must be an iterable (e.g. a list of numbers)
             if not hasattr(args[0], "__iter__") or isinstance(args[0], str):
-                raise TypeError(f"math.min() requires at least 2 arguments or a numeric iterable, got {type(args[0]).__name__}")
+                raise TypeError(f"math.min() requires at least 2 arguments or an iterable, got {type(args[0]).__name__}")
             return min(args[0])
         return min(*args)
 
     def max(self, *args: Any) -> Any:
         if len(args) == 1:
             if not hasattr(args[0], "__iter__") or isinstance(args[0], str):
-                raise TypeError(f"math.max() requires at least 2 arguments or a numeric iterable, got {type(args[0]).__name__}")
+                raise TypeError(f"math.max() requires at least 2 arguments or an iterable, got {type(args[0]).__name__}")
             return max(args[0])
         return max(*args)
 

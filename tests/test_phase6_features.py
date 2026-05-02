@@ -74,7 +74,10 @@ let v = c.count"""
         src = """class Point {
   var x = 0
   var y = 0
-  fn init(px, py) { x = px  y = py }
+  fn init(px, py) {
+    x = px
+    y = py
+  }
   fn sum() { return x + y }
 }
 let p = Point.new(3, 4)

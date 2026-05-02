@@ -119,6 +119,7 @@ from .ast_nodes import (
     WithStatement,
     WriteStatement,
     YieldStatement,
+    SuperExpression,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -452,6 +453,18 @@ class SpryWebSocket:
 
     def __repr__(self) -> str:
         return f"<WebSocket {self.url!r} connected={self.connected}>"
+
+
+class _CallableList(list):
+    """A list that is also callable — used for properties like `.flat` that work both
+    as `list.flat` (returns default result) and `list.flat(depth)` (parameterised)."""
+
+    def __init__(self, items: list, fn: Any) -> None:
+        super().__init__(items)
+        self._fn = fn
+
+    def __call__(self, *args: Any) -> Any:
+        return self._fn(*args)
 
 
 class SpryGenerator:
@@ -1401,6 +1414,9 @@ class Interpreter:
                 rest_param=node.rest_param,
             )
 
+        if isinstance(node, SuperExpression):
+            return self._eval_super(node, env)
+
         if isinstance(node, ListComprehension):
             iterable = self._eval(node.iterable, env)
             result_comp: list[Any] = []
@@ -1610,6 +1626,9 @@ class Interpreter:
             return None
 
     def _eval_member(self, node: MemberExpression, env: Environment) -> Any:
+        # Handle super.method — route to parent class method lookup
+        if isinstance(node.object, Identifier) and node.object.name == "super":
+            return self._eval_super_member(node.property, env, node)
         obj = self._eval(node.object, env)
         prop = node.property
 
@@ -1842,8 +1861,6 @@ class Interpreter:
                         obj[idx] = val
                     return obj
                 return _list_fill
-            if prop == "zip":
-                return lambda other: [[a, b] for a, b in zip(obj, other)]
             if prop == "chunk":
                 def _list_chunk(size: int) -> list:
                     n = int(size)
@@ -1865,8 +1882,6 @@ class Interpreter:
                 return _deep_flatten(obj)
             if prop in ("flatMap", "flat_map"):
                 return lambda fn: [item for x in obj for item in (fn(x) if isinstance(fn(x), list) else [fn(x)])]
-            if prop == "flat":
-                return [x for sublist in obj for x in (sublist if isinstance(sublist, list) else [sublist])]
             if prop == "sum":
                 return sum(obj)
             if prop == "min":
@@ -1882,6 +1897,98 @@ class Interpreter:
                 return list(obj)
             if prop == "toSet":
                 return list(dict.fromkeys(obj))
+            # --- Phase 9 array methods ---
+            if prop == "shift":
+                return obj.pop(0) if obj else None
+            if prop == "findLast":
+                return lambda pred: next((x for x in reversed(obj) if self._truthy(pred(x))), None)
+            if prop == "findLastIndex":
+                return lambda pred: next((i for i in range(len(obj) - 1, -1, -1)
+                                          if self._truthy(pred(obj[i]))), -1)
+            if prop in ("toReversed", "reversed"):
+                return list(reversed(obj))
+            if prop in ("toSorted", "sortedBy"):
+                def _to_sorted(key_fn: Any = None) -> list:
+                    if key_fn is None:
+                        return sorted(obj)
+                    return sorted(obj, key=lambda x: key_fn(x))
+                return _to_sorted
+            if prop == "toSpliced":
+                def _to_spliced(start: int, delete_count: int = 0, *items: Any) -> list:
+                    copy = list(obj)
+                    del copy[int(start):int(start) + int(delete_count)]
+                    for idx, it in enumerate(items):
+                        copy.insert(int(start) + idx, it)
+                    return copy
+                return _to_spliced
+            if prop == "with":
+                def _with_index(index: int, value: Any) -> list:
+                    copy = list(obj)
+                    copy[int(index)] = value
+                    return copy
+                return _with_index
+            if prop == "entries":
+                return [[i, v] for i, v in enumerate(obj)]
+            if prop == "keys":
+                return list(range(len(obj)))
+            if prop == "values":
+                return list(obj)
+            if prop == "flat":
+                def _do_flat(lst: list, d: int) -> list:
+                    result_f: list = []
+                    for item in lst:
+                        if isinstance(item, list) and d > 0:
+                            result_f.extend(_do_flat(item, d - 1))
+                        else:
+                            result_f.append(item)
+                    return result_f
+                # Return a _CallableList so `list.flat` works as a property (depth=1)
+                # AND `list.flat(depth)` works as a call
+                return _CallableList(
+                    _do_flat(obj, 1),
+                    lambda depth=1: _do_flat(obj, int(depth)),
+                )
+            if prop == "shuffle":
+                import random as _random
+                copy = list(obj)
+                _random.shuffle(copy)
+                return copy
+            if prop == "sample":
+                import random as _random
+                def _sample(n: int = 1) -> Any:
+                    k = min(int(n), len(obj))
+                    result_s = _random.sample(obj, k)
+                    return result_s[0] if int(n) == 1 and k > 0 else result_s
+                return _sample
+            if prop == "partition":
+                return lambda pred: [[x for x in obj if self._truthy(pred(x))],
+                                     [x for x in obj if not self._truthy(pred(x))]]
+            if prop == "groupBy":
+                def _group_by(key_fn: Any) -> dict:
+                    result_g: dict = {}
+                    for item in obj:
+                        key = key_fn(item)
+                        result_g.setdefault(key, []).append(item)
+                    return result_g
+                return _group_by
+            if prop == "tally":
+                tally_result: dict = {}
+                for item in obj:
+                    tally_result[item] = tally_result.get(item, 0) + 1
+                return tally_result
+            if prop == "zip":
+                # Already handled above for two-arg zip; make it also work as a method
+                def _zip_with(other: list, fn: Any = None) -> list:
+                    if fn is None:
+                        return [[a, b] for a, b in zip(obj, other)]
+                    return [fn(a, b) for a, b in zip(obj, other)]
+                return _zip_with
+            if prop == "intersect":
+                return lambda other: [x for x in obj if x in other]
+            if prop == "difference":
+                return lambda other: [x for x in obj if x not in other]
+            if prop == "union":
+                return lambda other: list(dict.fromkeys(obj + [x for x in other if x not in obj]))
 
         if isinstance(obj, str):
             if prop == "length":
@@ -1974,6 +2081,83 @@ class Interpreter:
                 return lambda form="NFC": unicodedata.normalize(form, obj)
             if prop == "byteLength":
                 return len(obj.encode("utf-8"))
+            # --- Phase 9 string methods ---
+            if prop in ("toCamelCase", "camelCase"):
+                import re as _re
+                words = _re.sub(r"[\s_\-]+", " ", obj).strip().split()
+                return words[0].lower() + "".join(w.capitalize() for w in words[1:]) if words else ""
+            if prop in ("toSnakeCase", "snakeCase"):
+                import re as _re
+                s = _re.sub(r"[\s\-]+", "_", obj)
+                s = _re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s)
+                s = _re.sub(r"([a-z\d])([A-Z])", r"\1_\2", s)
+                return s.lower()
+            if prop in ("toKebabCase", "kebabCase"):
+                import re as _re
+                s = _re.sub(r"[\s_]+", "-", obj)
+                s = _re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1-\2", s)
+                s = _re.sub(r"([a-z\d])([A-Z])", r"\1-\2", s)
+                return s.lower()
+            if prop in ("toPascalCase", "pascalCase"):
+                import re as _re
+                words = _re.sub(r"[\s_\-]+", " ", obj).strip().split()
+                return "".join(w.capitalize() for w in words)
+            if prop in ("toTitleCase", "titleCase"):
+                return obj.title()
+            if prop == "toBase64":
+                import base64 as _b64
+                return _b64.b64encode(obj.encode("utf-8")).decode("ascii")
+            if prop == "fromBase64":
+                import base64 as _b64
+                try:
+                    return _b64.b64decode(obj).decode("utf-8")
+                except Exception:
+                    return None
+            if prop == "levenshtein":
+                def _levenshtein(other: str, _s: str = obj) -> int:
+                    s1, s2 = _s, str(other)
+                    m, n = len(s1), len(s2)
+                    dp = list(range(n + 1))
+                    for i in range(1, m + 1):
+                        prev = dp[0]
+                        dp[0] = i
+                        for j in range(1, n + 1):
+                            temp = dp[j]
+                            dp[j] = (prev if s1[i-1] == s2[j-1]
+                                     else 1 + min(prev, dp[j], dp[j-1]))
+                            prev = temp
+                    return dp[n]
+                return _levenshtein
+            if prop == "count":
+                return lambda sub: obj.count(str(sub))
+            if prop == "truncate":
+                def _truncate(max_len: int, suffix: str = "...") -> str:
+                    n = int(max_len)
+                    return obj if len(obj) <= n else obj[:n - len(suffix)] + suffix
+                return _truncate
+            if prop == "wrap":
+                import textwrap as _textwrap
+                return lambda width: _textwrap.fill(obj, int(width))
+            if prop == "isNumeric":
+                try:
+                    float(obj)
+                    return True
+                except ValueError:
+                    return False
+            if prop == "isAlpha":
+                return obj.isalpha()
+            if prop in ("isAlphaNum", "isAlphanumeric"):
+                return obj.isalnum()
+            if prop == "isLower":
+                return obj.islower()
+            if prop == "isUpper":
+                return obj.isupper()
+            if prop == "center":
+                return lambda width, fill=" ": obj.center(int(width), fill)
+            if prop == "encode":
+                return lambda enc="utf-8": list(obj.encode(str(enc)))
+            if prop == "format":
+                return lambda *args, **kwargs: obj.format(*args, **kwargs)
 
         if isinstance(obj, (int, float)):
             if prop in ("toFixed", "toFixed"):
@@ -2012,13 +2196,25 @@ class Interpreter:
                 return math.ceil(obj)
             if prop in ("round",):
                 return round(obj)
+            if prop == "toExponential":
+                return lambda digits=6: f"{float(obj):.{int(digits)}e}"
+            if prop == "sign":
+                return 1 if obj > 0 else (-1 if obj < 0 else 0)
+            if prop == "trunc":
+                return math.trunc(obj)
+            if prop == "clamp":
+                return lambda lo, hi: max(lo, min(hi, obj))
+            if prop in ("toRadians", "rad"):
+                return math.radians(float(obj))
+            if prop in ("toDegrees", "deg"):
+                return math.degrees(float(obj))
 
         if isinstance(obj, SpryClass):
             if prop == "new":
                 return lambda *args: self._construct_class(obj, list(args), node)
             if prop == "name":
                 return obj.name
-            # Look up static methods: class body fn declarations (no instance needed)
+            # Look up static methods and properties from class body
             cls_env = obj.closure.child()
             for stmt in obj.body.body:  # type: ignore[union-attr]
                 if isinstance(stmt, FunctionDeclaration) and stmt.name == prop:
@@ -2030,7 +2226,11 @@ class Interpreter:
                         defaults=stmt.defaults,
                         rest_param=stmt.rest_param,
                     )
-            raise SpryRuntimeError(f"Property 'new' not found on SpryClass", node)
+                # Static let/var declarations
+                if isinstance(stmt, (LetDeclaration, VarDeclaration)) and stmt.name == prop:
+                    val = self._eval(stmt.value, cls_env) if stmt.value is not None else None
+                    return val
+            raise SpryRuntimeError(f"Class {obj.name!r} has no static member {prop!r}", node)
 
         if isinstance(obj, SpryStruct):
             if prop == "new":
@@ -2432,19 +2632,30 @@ class Interpreter:
         subject_val = self._eval(node.subject, env)
         for arm in node.arms:
             if arm.is_wildcard:
+                # wildcard: check guard if present
+                if arm.guard is not None:
+                    child = env.child()
+                    if not self._truthy(self._eval(arm.guard, child)):
+                        continue
                 child = env.child()
                 return self._exec_block(arm.body, child)
             pattern_val = self._eval(arm.pattern, env)
+            matched = False
             if arm.range_end is not None:
                 # Range arm: pattern_val..range_end_val (inclusive)
                 range_end_val = self._eval(arm.range_end, env)
                 try:
-                    if pattern_val <= subject_val <= range_end_val:
-                        child = env.child()
-                        return self._exec_block(arm.body, child)
+                    matched = pattern_val <= subject_val <= range_end_val
                 except TypeError:
-                    pass
-            elif subject_val == pattern_val:
+                    matched = False
+            else:
+                matched = subject_val == pattern_val
+            if matched:
+                # Check guard
+                if arm.guard is not None:
+                    child = env.child()
+                    if not self._truthy(self._eval(arm.guard, child)):
+                        continue
                 child = env.child()
                 return self._exec_block(arm.body, child)
         return None
@@ -2815,6 +3026,63 @@ class Interpreter:
         cls._mixins = mixin_classes  # type: ignore[attr-defined]
         env.define(node.name, cls, mutable=False)
         return None
+
+    def _eval_super(self, node: SuperExpression, env: Environment) -> Any:
+        """super(args) — call the parent class init() on the current instance."""
+        # Resolve current instance (self) and its class
+        try:
+            self_val = env.get("self")
+        except SpryRuntimeError:
+            raise SpryRuntimeError("'super' used outside of a class method", node)
+        if not isinstance(self_val, SpryInstance):
+            raise SpryRuntimeError("'super' used outside of a class instance", node)
+        parent = self_val.cls.superclass
+        if parent is None:
+            return None  # no superclass — silently ignore
+        # Find parent's init and call it with evaluated args
+        args_vals = [self._eval(a, env) for a in node.args]
+        # Look up init in parent
+        init_fn = None
+        for stmt in parent.body.body:  # type: ignore[union-attr]
+            if isinstance(stmt, FunctionDeclaration) and stmt.name == "init":
+                init_fn = SpryFunction(
+                    name="init",
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=self_val.fields.get("__instance_env__", parent.closure).child(),
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                break
+        if init_fn is None:
+            return None
+        bm = BoundMethod(instance=self_val, fn=init_fn)
+        return self._call_bound_method(bm, args_vals, node)
+
+    def _eval_super_member(self, prop: str, env: Environment, node: Node) -> Any:
+        """super.method — look up method in parent class and return it bound to current self."""
+        try:
+            self_val = env.get("self")
+        except SpryRuntimeError:
+            raise SpryRuntimeError("'super.method' used outside of a class method", node)
+        if not isinstance(self_val, SpryInstance):
+            raise SpryRuntimeError("'super.method' used outside of a class instance", node)
+        parent = self_val.cls.superclass
+        if parent is None:
+            raise SpryRuntimeError(f"No superclass to access 'super.{prop}'", node)
+        # Find prop in parent body
+        for stmt in parent.body.body:  # type: ignore[union-attr]
+            if isinstance(stmt, FunctionDeclaration) and stmt.name == prop:
+                fn = SpryFunction(
+                    name=stmt.name,
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=parent.closure.child(),
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                return BoundMethod(instance=self_val, fn=fn)
+        raise SpryRuntimeError(f"Superclass has no method {prop!r}", node)
 
     def _construct_class(self, cls: SpryClass, args: list[Any], node: Node, _for_inheritance: bool = False) -> SpryInstance:
         """Instantiate a SpryClass: set up fields from var declarations, run init if defined."""
@@ -3352,6 +3620,84 @@ class _ObjectNamespace:
             return key in obj
         return False
 
+    def pick(self, obj: Any, *keys: Any) -> dict:
+        """Return a new object with only the specified keys."""
+        if not isinstance(obj, dict):
+            return {}
+        # Accept either multiple positional args or a single list arg
+        if len(keys) == 1 and isinstance(keys[0], list):
+            keys = tuple(str(k) for k in keys[0])
+        return {k: obj[k] for k in keys if k in obj}
+
+    def omit(self, obj: Any, *keys: Any) -> dict:
+        """Return a new object without the specified keys."""
+        if not isinstance(obj, dict):
+            return {}
+        if len(keys) == 1 and isinstance(keys[0], list):
+            keys = tuple(str(k) for k in keys[0])
+        omit_set = set(keys)
+        return {k: v for k, v in obj.items() if k not in omit_set}
+
+    def mapKeys(self, obj: Any, fn: Any) -> dict:
+        """Return a new object with keys transformed by fn."""
+        if not isinstance(obj, dict):
+            return {}
+        return {fn(k): v for k, v in obj.items()}
+
+    def mapValues(self, obj: Any, fn: Any) -> dict:
+        """Return a new object with values transformed by fn."""
+        if not isinstance(obj, dict):
+            return {}
+        return {k: fn(v) for k, v in obj.items()}
+
+    def invert(self, obj: Any) -> dict:
+        """Return a new object with keys and values swapped."""
+        if not isinstance(obj, dict):
+            return {}
+        return {str(v): k for k, v in obj.items()}
+
+    def deepClone(self, obj: Any) -> Any:
+        """Return a deep copy of the value."""
+        import copy as _copy
+        return _copy.deepcopy(obj)
+
+    def deepMerge(self, base: Any, *overrides: Any) -> dict:
+        """Recursively merge objects. Later objects override earlier ones."""
+        import copy as _copy
+
+        def _merge(a: dict, b: dict) -> dict:
+            result = _copy.deepcopy(a)
+            for k, v in b.items():
+                if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                    result[k] = _merge(result[k], v)
+                else:
+                    result[k] = _copy.deepcopy(v)
+            return result
+
+        result = base if isinstance(base, dict) else {}
+        for override in overrides:
+            if isinstance(override, dict):
+                result = _merge(result, override)
+        return result
+
+    def seal(self, obj: Any) -> Any:
+        """Return the object unchanged (runtime seal is a no-op; prevents new keys conceptually)."""
+        return obj
+
+    def isFrozen(self, obj: Any) -> bool:
+        """Always returns False — SpryCode objects are mutable dicts."""
+        return False
+
+    def isSealed(self, obj: Any) -> bool:
+        """Always returns False — SpryCode objects are mutable."""
+        return False
+
+    def getOwnPropertyNames(self, obj: Any) -> list:
+        """Return a list of all own property names."""
+        if isinstance(obj, dict):
+            return list(obj.keys())
+        return []
+
     def __repr__(self) -> str:
         return "Object"
 
@@ -3413,6 +3759,25 @@ class _NumberNamespace:
     def toFixed(self, value: Any, digits: int = 0) -> str:
         """Format a number with a fixed number of decimal places."""
         return f"{float(value):.{int(digits)}f}"
+
+    def clamp(self, value: Any, lo: Any, hi: Any) -> Any:
+        """Clamp value between lo and hi."""
+        return max(lo, min(hi, value))
+
+    def lerp(self, a: Any, b: Any, t: Any) -> float:
+        """Linear interpolation between a and b at fraction t."""
+        return float(a) + (float(b) - float(a)) * float(t)
+
+    def random(self, lo: Any = 0, hi: Any = 1) -> float:
+        """Return a random float in [lo, hi)."""
+        import random as _random
+        return _random.uniform(float(lo), float(hi))
+
+    def range(self, start: Any, stop: Any = None, step: Any = 1) -> list:
+        """Return a list of numbers from start to stop (exclusive) with step."""
+        if stop is None:
+            start, stop = 0, start
+        return list(range(int(start), int(stop), int(step)))
 
     def __repr__(self) -> str:
         return "Number"

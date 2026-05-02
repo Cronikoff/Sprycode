@@ -112,6 +112,7 @@ from .ast_nodes import (
     WithStatement,
     WriteStatement,
     YieldStatement,
+    SuperExpression,
 )
 from .lexer import Token, TokenType
 
@@ -1067,9 +1068,14 @@ class Parser:
             # wildcard: _
             if self._check(TokenType.UNDERSCORE):
                 self._advance()
+                guard = None
+                if self._check(TokenType.WHEN):
+                    self._advance()
+                    guard = self._parse_expression()
                 self._expect(TokenType.FAT_ARROW)
                 body = self._parse_match_arm_body()
                 arms.append(MatchArm(pattern=None, is_wildcard=True, body=body,
+                                     guard=guard,
                                      line=arm_tok.line, column=arm_tok.column))
             else:
                 pattern = self._parse_expression()
@@ -1078,10 +1084,14 @@ class Parser:
                 if self._check(TokenType.DOTDOT):
                     self._advance()
                     range_end = self._parse_expression()
+                guard = None
+                if self._check(TokenType.WHEN):
+                    self._advance()
+                    guard = self._parse_expression()
                 self._expect(TokenType.FAT_ARROW)
                 body = self._parse_match_arm_body()
                 arms.append(MatchArm(pattern=pattern, is_wildcard=False,
-                                     range_end=range_end, body=body,
+                                     range_end=range_end, guard=guard, body=body,
                                      line=arm_tok.line, column=arm_tok.column))
         self._expect(TokenType.RBRACE)
         return MatchStatement(subject=subject, arms=arms, line=tok.line, column=tok.column)
@@ -2251,6 +2261,23 @@ class Parser:
         if tok.type == TokenType.SELF:
             self._advance()
             return Identifier(name="self", line=tok.line, column=tok.column)
+
+        # super keyword → SuperExpression
+        if tok.type == TokenType.SUPER:
+            self._advance()
+            if self._check(TokenType.DOT):
+                # super.method form → parse as member access on a special "super" identifier
+                return Identifier(name="super", line=tok.line, column=tok.column)
+            # super(args) form
+            args: list[Node] = []
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                while not self._check(TokenType.RPAREN) and not self._at_end():
+                    args.append(self._parse_expression())
+                    if not self._match(TokenType.COMMA):
+                        break
+                self._expect(TokenType.RPAREN)
+            return SuperExpression(args=args, line=tok.line, column=tok.column)
 
         # new ClassName(args) → CallExpression on ClassName
         if tok.type == TokenType.IDENTIFIER and tok.value == "new":

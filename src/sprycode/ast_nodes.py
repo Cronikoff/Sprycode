@@ -669,6 +669,14 @@ class MatchArm(Node):
     is_wildcard: bool = False      # _ arm
     range_end: Node | None = None  # if set, this is a range arm: pattern..range_end
     body: Block | None = None
+    guard: Node | None = None      # optional `when condition` guard clause
+
+
+@dataclass
+class SuperExpression(Node):
+    """super(args) or super.method(args)"""
+    args: list = field(default_factory=list)       # for super(args) — constructor call
+    method: str | None = None                       # for super.method — method name
 
 
 @dataclass

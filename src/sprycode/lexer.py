@@ -188,6 +188,8 @@ class TokenType(Enum):
     YIELD = auto()
     FN_STAR = auto()  # fn* generator function
     MIXIN = auto()    # mixin keyword for class mixins
+    WHEN = auto()     # match guard: case pattern when condition =>
+    SUPER = auto()    # super() constructor/method call
 
     # Types
     TEXT = auto()
@@ -405,6 +407,8 @@ KEYWORDS: dict[str, TokenType] = {
     "credit": TokenType.CREDIT,
     "yield": TokenType.YIELD,
     "mixin": TokenType.MIXIN,
+    "when": TokenType.WHEN,
+    "super": TokenType.SUPER,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,
     "Number": TokenType.NUMBER_TYPE,

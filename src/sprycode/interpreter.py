@@ -62,6 +62,7 @@ from .ast_nodes import (
     LambdaExpression,
     LetDeclaration,
     ListComprehension,
+    DictComprehension,
     ListDestructure,
     LogStatement,
     MatchArm,
@@ -943,6 +944,16 @@ class Interpreter:
                 if rhs == 0:
                     raise SpryRuntimeError("Division by zero", node)
                 new_val = current / rhs
+            elif node.op == "&":
+                new_val = int(current) & int(rhs)
+            elif node.op == "|":
+                new_val = int(current) | int(rhs)
+            elif node.op == "^":
+                new_val = int(current) ^ int(rhs)
+            elif node.op == "<<":
+                new_val = int(current) << int(rhs)
+            elif node.op == ">>":
+                new_val = int(current) >> int(rhs)
             else:
                 raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
             if isinstance(obj, SpryInstance):
@@ -984,6 +995,16 @@ class Interpreter:
                     new_val = rhs
                 else:
                     return None  # no-op
+            elif node.op == "&":
+                new_val = int(current) & int(rhs)
+            elif node.op == "|":
+                new_val = int(current) | int(rhs)
+            elif node.op == "^":
+                new_val = int(current) ^ int(rhs)
+            elif node.op == "<<":
+                new_val = int(current) << int(rhs)
+            elif node.op == ">>":
+                new_val = int(current) >> int(rhs)
             else:
                 raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
             env.set(node.name, new_val)
@@ -1445,6 +1466,19 @@ class Interpreter:
                 result_comp.append(self._eval(node.expr, child))
             return result_comp
 
+        if isinstance(node, DictComprehension):
+            iterable = self._eval(node.iterable, env)
+            result_dict: dict = {}
+            for item_val in self._iter(iterable, node):
+                child = env.child()
+                child.define(node.var, item_val, mutable=False)
+                if node.condition is not None and not self._truthy(self._eval(node.condition, child)):
+                    continue
+                k = self._eval(node.key_expr, child)
+                v = self._eval(node.val_expr, child)
+                result_dict[k] = v
+            return result_dict
+
         if isinstance(node, PostfixExpression):
             return self._eval_postfix(node, env)
 
@@ -1515,6 +1549,17 @@ class Interpreter:
             return self._truthy(left) and self._truthy(right)
         if op == "||":
             return self._truthy(left) or self._truthy(right)
+        # Bitwise operators
+        if op == "&":
+            return int(left) & int(right)
+        if op == "|":
+            return int(left) | int(right)
+        if op == "^":
+            return int(left) ^ int(right)
+        if op == "<<":
+            return int(left) << int(right)
+        if op == ">>":
+            return int(left) >> int(right)
         raise SpryRuntimeError(f"Unknown operator: {op!r}", node)
 
     def _eval_unary(self, node: UnaryExpression, env: Environment) -> Any:
@@ -1523,6 +1568,8 @@ class Interpreter:
             return not self._truthy(operand)
         if node.op == "-":
             return -operand
+        if node.op == "~":
+            return ~int(operand)
         raise SpryRuntimeError(f"Unknown unary operator: {node.op!r}", node)
 
     def _eval_call(self, node: CallExpression, env: Environment) -> Any:
@@ -1676,10 +1723,18 @@ class Interpreter:
                 return obj.spry_values
             if prop == "entries":
                 return obj.spry_entries
+            if prop == "toEntries":
+                return obj.spry_toEntries
             if prop == "forEach":
                 return obj.spry_forEach
             if prop == "toObject":
                 return obj.spry_toObject
+            if prop == "filter":
+                return obj.spry_filter
+            if prop == "map":
+                return obj.spry_map
+            if prop == "clone":
+                return obj.spry_clone
             if prop == "isEmpty":
                 return len(obj._data) == 0
             raise SpryRuntimeError(f"Map has no property {prop!r}", node)
@@ -2040,6 +2095,49 @@ class Interpreter:
                 return lambda other: [x for x in obj if x not in other]
             if prop == "union":
                 return lambda other: list(dict.fromkeys(obj + [x for x in other if x not in obj]))
+            # --- Phase 11 list methods ---
+            if prop == "compact":
+                return [x for x in obj if x is not None and x is not False and x != 0 and x != "" and x != []]
+            if prop == "countBy":
+                def _count_by(key_fn: Any) -> dict:
+                    result_cb: dict = {}
+                    for item in obj:
+                        k = key_fn(item)
+                        result_cb[k] = result_cb.get(k, 0) + 1
+                    return result_cb
+                return _count_by
+            if prop == "minBy":
+                def _min_by(key_fn: Any) -> Any:
+                    if not obj:
+                        return None
+                    return min(obj, key=key_fn)
+                return _min_by
+            if prop == "maxBy":
+                def _max_by(key_fn: Any) -> Any:
+                    if not obj:
+                        return None
+                    return max(obj, key=key_fn)
+                return _max_by
+            if prop == "sumBy":
+                def _sum_by(key_fn: Any) -> Any:
+                    return sum(key_fn(x) for x in obj)
+                return _sum_by
+            if prop == "takeWhile":
+                def _take_while(pred: Any) -> list:
+                    result_tw: list = []
+                    for item in obj:
+                        if not self._truthy(pred(item)):
+                            break
+                        result_tw.append(item)
+                    return result_tw
+                return _take_while
+            if prop == "dropWhile":
+                def _drop_while(pred: Any) -> list:
+                    result_dw = list(obj)
+                    while result_dw and self._truthy(pred(result_dw[0])):
+                        result_dw.pop(0)
+                    return result_dw
+                return _drop_while
 
         if isinstance(obj, str):
             if prop == "length":
@@ -2209,6 +2307,19 @@ class Interpreter:
                 return lambda enc="utf-8": list(obj.encode(str(enc)))
             if prop == "format":
                 return lambda *args, **kwargs: obj.format(*args, **kwargs)
+            # --- Phase 11 string methods ---
+            if prop == "charCodeAt":
+                return lambda n=0, _obj=obj: ord(_obj[int(n)]) if 0 <= int(n) < len(_obj) else None
+            if prop == "codePointAt":
+                return lambda n=0, _obj=obj: ord(_obj[int(n)]) if 0 <= int(n) < len(_obj) else None
+            if prop == "replaceRegex":
+                import re as _re
+                def _replace_regex(pattern: Any, repl: str = "", _obj: str = obj) -> str:
+                    if isinstance(pattern, SpryRegex):
+                        return pattern.pattern.sub(str(repl), _obj)
+                    pat, flags = _parse_regex_pattern(str(pattern))
+                    return _re.sub(pat, str(repl), _obj, flags=flags)
+                return _replace_regex
 
         if isinstance(obj, (int, float)):
             if prop in ("toFixed", "toFixed"):
@@ -2273,6 +2384,29 @@ class Interpreter:
                 def _to_currency(symbol: str = "$", decimals: int = 2, _obj: Any = obj) -> str:
                     return f"{symbol}{float(_obj):,.{int(decimals)}f}"
                 return _to_currency
+            # --- Phase 11 number methods ---
+            if prop == "toHex":
+                return lambda prefix=True, _obj=obj: (
+                    ("0x" if prefix else "") + format(int(_obj), "x")
+                )
+            if prop == "toBinary":
+                return lambda prefix=True, _obj=obj: (
+                    ("0b" if prefix else "") + format(int(_obj), "b")
+                )
+            if prop == "toOctal":
+                return lambda prefix=True, _obj=obj: (
+                    ("0o" if prefix else "") + format(int(_obj), "o")
+                )
+            if prop == "toOrdinal":
+                def _to_ordinal(_obj: Any = obj) -> str:
+                    n = int(_obj)
+                    abs_n = abs(n)
+                    if 11 <= abs_n % 100 <= 13:
+                        suffix = "th"
+                    else:
+                        suffix = {1: "st", 2: "nd", 3: "rd"}.get(abs_n % 10, "th")
+                    return f"{n}{suffix}"
+                return _to_ordinal
 
         if isinstance(obj, SpryClass):
             if prop == "new":
@@ -4829,6 +4963,27 @@ class SpryMap:
     def spry_toObject(self) -> dict:
         return dict(self._data)
 
+    def spry_filter(self, fn: Any) -> "SpryMap":
+        result = SpryMap()
+        for k, v in self._data.items():
+            if fn(v, k):
+                result.spry_set(k, v)
+        return result
+
+    def spry_map(self, fn: Any) -> "SpryMap":
+        result = SpryMap()
+        for k, v in self._data.items():
+            result.spry_set(k, fn(v, k))
+        return result
+
+    def spry_toEntries(self) -> list:
+        return [[k, v] for k, v in self._data.items()]
+
+    def spry_clone(self) -> "SpryMap":
+        result = SpryMap()
+        result._data = dict(self._data)
+        return result
+
     def __repr__(self) -> str:
         return f"Map({self._data!r})"
 
@@ -4853,6 +5008,30 @@ class _MapNamespace:
             for k, v in entries.items():
                 m.spry_set(k, v)
         return m
+
+    def merge(self, *maps: Any) -> SpryMap:
+        """Merge multiple SpryMaps into a new Map. Later maps override earlier ones."""
+        result = SpryMap()
+        for m in maps:
+            if isinstance(m, SpryMap):
+                for k, v in m._data.items():
+                    result.spry_set(k, v)
+            elif isinstance(m, dict):
+                for k, v in m.items():
+                    result.spry_set(k, v)
+        return result
+
+    def of(self, *args: Any) -> SpryMap:
+        """Create a Map from flat alternating key, value args: Map.of('a', 1, 'b', 2)."""
+        result = SpryMap()
+        it = iter(args)
+        for k in it:
+            try:
+                v = next(it)
+            except StopIteration:
+                v = None
+            result.spry_set(k, v)
+        return result
 
     def __getattr__(self, prop: str) -> Any:
         if prop == "from":

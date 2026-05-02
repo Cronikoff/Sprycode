@@ -255,6 +255,19 @@ class TokenType(Enum):
     PERCENT_EQ = auto()   # %=
     REGEX = auto()        # /pattern/flags
 
+    # Bitwise operators
+    AMP = auto()          # &  (bitwise AND)
+    PIPE = auto()         # |  (bitwise OR)
+    CARET = auto()        # ^  (bitwise XOR)
+    TILDE = auto()        # ~  (bitwise NOT)
+    LSHIFT = auto()       # << (left shift)
+    RSHIFT = auto()       # >> (right shift)
+    AMP_EQ = auto()       # &= (bitwise AND assign)
+    PIPE_EQ = auto()      # |= (bitwise OR assign)
+    CARET_EQ = auto()     # ^= (bitwise XOR assign)
+    LSHIFT_EQ = auto()    # <<= (left shift assign)
+    RSHIFT_EQ = auto()    # >>= (right shift assign)
+
     # Delimiters
     LPAREN = auto()
     RPAREN = auto()
@@ -702,6 +715,65 @@ class Lexer:
             if ch == "?":
                 self._advance()
                 yield Token(TokenType.QUESTION, "?", line, col)
+                continue
+
+            # Bitwise operators (multi-char must come before single-char)
+            if ch == "&" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.AMP_EQ, "&=", line, col)
+                continue
+
+            if ch == "|" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.PIPE_EQ, "|=", line, col)
+                continue
+
+            if ch == "^" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.CARET_EQ, "^=", line, col)
+                continue
+
+            if ch == "<" and self._peek() == "<":
+                self._advance()
+                self._advance()
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.LSHIFT_EQ, "<<=", line, col)
+                else:
+                    yield Token(TokenType.LSHIFT, "<<", line, col)
+                continue
+
+            if ch == ">" and self._peek() == ">":
+                self._advance()
+                self._advance()
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.RSHIFT_EQ, ">>=", line, col)
+                else:
+                    yield Token(TokenType.RSHIFT, ">>", line, col)
+                continue
+
+            if ch == "&":
+                self._advance()
+                yield Token(TokenType.AMP, "&", line, col)
+                continue
+
+            if ch == "|":
+                self._advance()
+                yield Token(TokenType.PIPE, "|", line, col)
+                continue
+
+            if ch == "^":
+                self._advance()
+                yield Token(TokenType.CARET, "^", line, col)
+                continue
+
+            if ch == "~":
+                self._advance()
+                yield Token(TokenType.TILDE, "~", line, col)
                 continue
 
             if ch == "." and self._peek() == "." and self.pos + 2 < len(self.source) and self.source[self.pos + 2] == ".":

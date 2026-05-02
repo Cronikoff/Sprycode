@@ -55,6 +55,7 @@ from .ast_nodes import (
     LetDeclaration,
     ListDestructure,
     ListComprehension,
+    DictComprehension,
     LogStatement,
     MatchArm,
     MatchStatement,
@@ -1024,7 +1025,11 @@ class Parser:
             extra_vars.append(self._expect_ident().value)
             while self._match(TokenType.COMMA):
                 extra_vars.append(self._expect_ident().value)
-        self._expect(TokenType.IN)
+        # Support both `for x in ...` and `for x of ...` (of is a contextual keyword)
+        if (self._check(TokenType.IDENTIFIER) and self._current().value == "of"):
+            self._advance()  # consume 'of'
+        else:
+            self._expect(TokenType.IN)
         iterable = self._parse_value_expression()
         # Range shorthand: for i in 0..5  (iterable is the start of a range expression)
         if self._check(TokenType.DOTDOT):
@@ -1701,6 +1706,11 @@ class Parser:
             TokenType.STAR_EQ: "*",
             TokenType.SLASH_EQ: "/",
             TokenType.PERCENT_EQ: "%",
+            TokenType.AMP_EQ: "&",
+            TokenType.PIPE_EQ: "|",
+            TokenType.CARET_EQ: "^",
+            TokenType.LSHIFT_EQ: "<<",
+            TokenType.RSHIFT_EQ: ">>",
         }
         if self._current().type in _compound_ops and isinstance(expr, Identifier):
             op = _compound_ops[self._current().type]
@@ -1935,11 +1945,43 @@ class Parser:
         return left
 
     def _parse_and(self) -> Node:
-        left = self._parse_equality()
+        left = self._parse_bitwise_or()
         while self._check(TokenType.AND_AND):
             op_tok = self._advance()
-            right = self._parse_equality()
+            right = self._parse_bitwise_or()
             left = BinaryExpression(left=left, op="&&", right=right, line=op_tok.line, column=op_tok.column)
+        return left
+
+    def _parse_bitwise_or(self) -> Node:
+        left = self._parse_bitwise_xor()
+        while self._check(TokenType.PIPE):
+            op_tok = self._advance()
+            right = self._parse_bitwise_xor()
+            left = BinaryExpression(left=left, op="|", right=right, line=op_tok.line, column=op_tok.column)
+        return left
+
+    def _parse_bitwise_xor(self) -> Node:
+        left = self._parse_bitwise_and()
+        while self._check(TokenType.CARET):
+            op_tok = self._advance()
+            right = self._parse_bitwise_and()
+            left = BinaryExpression(left=left, op="^", right=right, line=op_tok.line, column=op_tok.column)
+        return left
+
+    def _parse_bitwise_and(self) -> Node:
+        left = self._parse_shift()
+        while self._check(TokenType.AMP):
+            op_tok = self._advance()
+            right = self._parse_shift()
+            left = BinaryExpression(left=left, op="&", right=right, line=op_tok.line, column=op_tok.column)
+        return left
+
+    def _parse_shift(self) -> Node:
+        left = self._parse_equality()
+        while self._check(TokenType.LSHIFT, TokenType.RSHIFT):
+            op_tok = self._advance()
+            right = self._parse_equality()
+            left = BinaryExpression(left=left, op=op_tok.value, right=right, line=op_tok.line, column=op_tok.column)
         return left
 
     def _parse_equality(self) -> Node:
@@ -2027,6 +2069,10 @@ class Parser:
             op_tok = self._advance()
             operand = self._parse_unary()
             return UnaryExpression(op="!", operand=operand, line=op_tok.line, column=op_tok.column)
+        if self._check(TokenType.TILDE):
+            op_tok = self._advance()
+            operand = self._parse_unary()
+            return UnaryExpression(op="~", operand=operand, line=op_tok.line, column=op_tok.column)
         # Prefix ++ / --
         if self._check(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
             op_tok = self._advance()
@@ -2414,12 +2460,56 @@ class Parser:
 
         raise ParseError(f"Unexpected token in expression", tok)
 
-    def _parse_object_literal(self) -> ObjectLiteral:
+    def _parse_object_literal(self) -> "ObjectLiteral | DictComprehension":
         tok = self._expect(TokenType.LBRACE)
         pairs: dict[str, Node] = {}
         entries: list = []
         has_spread = False
         has_computed = False
+        # Empty object
+        if self._check(TokenType.RBRACE):
+            self._advance()
+            return ObjectLiteral(pairs={}, line=tok.line, column=tok.column)
+        # Check for dict comprehension: {key_expr: val_expr for var in iterable [if cond]}
+        # We speculatively parse the first key, then check for FOR
+        if not self._check(TokenType.ELLIPSIS) and not self._check(TokenType.LBRACKET):
+            saved_pos = self.pos
+            try:
+                key_tok = self._current()
+                key_expr_node = self._parse_expression()
+                if self._match(TokenType.COLON):
+                    val_expr_node = self._parse_expression()
+                    if self._check(TokenType.FOR):
+                        # Dict comprehension: {k: v for x in ...}
+                        self._advance()  # consume 'for'
+                        comp_var_tok = self._expect_ident()
+                        in_kw = self._current()
+                        if in_kw.type == TokenType.IN or (in_kw.type == TokenType.IDENTIFIER and in_kw.value == "in"):
+                            self._advance()
+                        else:
+                            raise ParseError("Expected 'in' in dict comprehension", in_kw)
+                        comp_iterable = self._parse_expression()
+                        comp_condition: Node | None = None
+                        if self._check(TokenType.IF):
+                            self._advance()
+                            comp_condition = self._parse_expression()
+                        self._expect(TokenType.RBRACE)
+                        return DictComprehension(
+                            key_expr=key_expr_node,
+                            val_expr=val_expr_node,
+                            var=comp_var_tok.value,
+                            iterable=comp_iterable,
+                            condition=comp_condition,
+                            line=tok.line, column=tok.column,
+                        )
+                    # Not a comprehension; restore and fall through
+                    # to regular object parsing with first pair already parsed
+                    # Reset and re-parse (simpler than threading through)
+                    self.pos = saved_pos
+                else:
+                    self.pos = saved_pos
+            except ParseError:
+                self.pos = saved_pos
         while not self._check(TokenType.RBRACE) and not self._at_end():
             if self._check(TokenType.ELLIPSIS):
                 has_spread = True

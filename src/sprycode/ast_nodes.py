@@ -768,6 +768,16 @@ class ListComprehension(Node):
 
 
 @dataclass
+class DictComprehension(Node):
+    """{<key_expr>: <val_expr> for <var> in <iterable> [if <cond>]}"""
+    key_expr: Node | None = None
+    val_expr: Node | None = None
+    var: str = ""
+    iterable: Node | None = None
+    condition: Node | None = None  # optional filter
+
+
+@dataclass
 class RegexLiteral(Node):
     """/<pattern>/<flags>  — regular expression literal"""
     pattern: str = ""

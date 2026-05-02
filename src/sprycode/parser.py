@@ -36,6 +36,7 @@ from .ast_nodes import (
     DenyStatement,
     DoWhileStatement,
     EnumDeclaration,
+    ExportStatement,
     ExpectStatement,
     ExtractStatement,
     ForStatement,
@@ -108,6 +109,7 @@ from .ast_nodes import (
     WhileStatement,
     WithStatement,
     WriteStatement,
+    YieldStatement,
 )
 from .lexer import Token, TokenType
 
@@ -236,6 +238,12 @@ class Parser:
             return self._parse_var()
         if tok.type == TokenType.FN:
             return self._parse_fn()
+        if tok.type == TokenType.FN_STAR:
+            return self._parse_fn(is_generator=True)
+        if tok.type == TokenType.YIELD:
+            return self._parse_yield()
+        if tok.type == TokenType.EXPORT:
+            return self._parse_export()
         if tok.type == TokenType.ASYNC:
             # async fn — same as fn, just skip the async keyword
             self._advance()
@@ -428,8 +436,11 @@ class Parser:
             column=tok.column,
         )
 
-    def _parse_fn(self) -> FunctionDeclaration:
-        tok = self._expect(TokenType.FN)
+    def _parse_fn(self, is_generator: bool = False) -> FunctionDeclaration:
+        if is_generator:
+            tok = self._expect(TokenType.FN_STAR)
+        else:
+            tok = self._expect(TokenType.FN)
         name_tok = self._expect_ident()
         self._expect(TokenType.LPAREN)
         params: list[tuple[str, str | None]] = []
@@ -481,6 +492,7 @@ class Parser:
                 short_form=True,
                 defaults=defaults,
                 rest_param=rest_param,
+                is_generator=is_generator,
                 line=tok.line,
                 column=tok.column,
             )
@@ -493,9 +505,23 @@ class Parser:
             body=body,
             defaults=defaults,
             rest_param=rest_param,
+            is_generator=is_generator,
             line=tok.line,
             column=tok.column,
         )
+
+    def _parse_yield(self) -> YieldStatement:
+        tok = self._expect(TokenType.YIELD)
+        value: Node | None = None
+        if not self._check(TokenType.NEWLINE, TokenType.RBRACE, TokenType.EOF, TokenType.SEMICOLON):
+            value = self._parse_expression()
+        return YieldStatement(value=value, line=tok.line, column=tok.column)
+
+    def _parse_export(self) -> ExportStatement:
+        tok = self._expect(TokenType.EXPORT)
+        # export fn, export let, export var, export class, export enum, etc.
+        inner = self._parse_statement()
+        return ExportStatement(declaration=inner, line=tok.line, column=tok.column)
 
     def _parse_dict_destruct_param(self) -> list[str]:
         """Parse {a, b, c} destructuring pattern in function params."""
@@ -1689,6 +1715,39 @@ class Parser:
             return self._parse_write()
         if tok.type == TokenType.READ:
             return self._parse_read()
+        if tok.type == TokenType.TAKE:
+            self._advance()
+            count = self._parse_null_coalesce()  # use limited parse to not eat |> pipeline
+            # Wrap as a TakeStage node — use an Identifier with metadata
+            stage = Identifier(name="__take__", line=tok.line, column=tok.column)
+            stage._take_count = count  # type: ignore[attr-defined]
+            return stage
+        if tok.type == TokenType.SKIP:
+            self._advance()
+            count = self._parse_null_coalesce()  # use limited parse to not eat |> pipeline
+            stage = Identifier(name="__skip__", line=tok.line, column=tok.column)
+            stage._skip_count = count  # type: ignore[attr-defined]
+            return stage
+        if tok.type == TokenType.GROUPBY:
+            self._advance()
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
+            lam.operation = "groupBy"  # type: ignore[attr-defined]
+            return lam
+        if tok.type == TokenType.SORT_BY:
+            self._advance()
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
+            lam.operation = "sortBy"  # type: ignore[attr-defined]
+            return lam
 
         return self._parse_null_coalesce()
 
@@ -1978,6 +2037,10 @@ class Parser:
         if tok.type == TokenType.CREDIT:
             stmt = self._parse_credit()
             return stmt  # CreditStatement also acts as expression (returns dict)
+
+        # match as expression: let v = match x { ... }
+        if tok.type == TokenType.MATCH:
+            return self._parse_match()
 
         if tok.type == TokenType.STRING:
             self._advance()

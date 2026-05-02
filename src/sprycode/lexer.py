@@ -102,6 +102,10 @@ class TokenType(Enum):
     LAST = auto()
     OK = auto()
     FAIL = auto()
+    TAKE = auto()
+    SKIP = auto()
+    GROUPBY = auto()
+    SORT_BY = auto()
 
     # Keywords — logging
     LOG = auto()
@@ -180,6 +184,8 @@ class TokenType(Enum):
     SPAWN = auto()
     DEBIT = auto()
     CREDIT = auto()
+    YIELD = auto()
+    FN_STAR = auto()  # fn* generator function
 
     # Types
     TEXT = auto()
@@ -335,6 +341,10 @@ KEYWORDS: dict[str, TokenType] = {
     "last": TokenType.LAST,
     "ok": TokenType.OK,
     "fail": TokenType.FAIL,
+    "take": TokenType.TAKE,
+    "skip": TokenType.SKIP,
+    "groupBy": TokenType.GROUPBY,
+    "sortBy": TokenType.SORT_BY,
     "log": TokenType.LOG,
     "info": TokenType.INFO,
     "warn": TokenType.WARN,
@@ -389,6 +399,7 @@ KEYWORDS: dict[str, TokenType] = {
     "spawn": TokenType.SPAWN,
     "debit": TokenType.DEBIT,
     "credit": TokenType.CREDIT,
+    "yield": TokenType.YIELD,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,
     "Number": TokenType.NUMBER_TYPE,
@@ -902,4 +913,9 @@ class Lexer:
                 break
         # Check if it's a keyword
         ttype = KEYWORDS.get(value, TokenType.IDENTIFIER)
-        yield Token(ttype, value, line, col)
+        # Special case: fn* is a generator function keyword
+        if ttype == TokenType.FN and self.pos < len(self.source) and self._current() == "*":
+            self._advance()  # consume '*'
+            yield Token(TokenType.FN_STAR, "fn*", line, col)
+        else:
+            yield Token(ttype, value, line, col)

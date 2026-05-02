@@ -44,6 +44,7 @@ from .ast_nodes import (
     DenyStatement,
     DoWhileStatement,
     EnumDeclaration,
+    ExportStatement,
     ExpectStatement,
     ExtractStatement,
     ForStatement,
@@ -115,6 +116,7 @@ from .ast_nodes import (
     WhileStatement,
     WithStatement,
     WriteStatement,
+    YieldStatement,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -164,6 +166,12 @@ class BreakSignal(Exception):
 
 class ContinueSignal(Exception):
     pass
+
+
+class YieldSignal(Exception):
+    """Raised by a `yield` statement inside a generator function."""
+    def __init__(self, value: Any) -> None:
+        self.value = value
 
 
 class SpryUserError(Exception):
@@ -251,6 +259,7 @@ class SpryFunction:
         closure: Environment,
         defaults: "dict | None" = None,
         rest_param: "str | None" = None,
+        is_generator: bool = False,
     ) -> None:
         self.name = name
         self.params = params
@@ -258,9 +267,10 @@ class SpryFunction:
         self.closure = closure
         self.defaults: dict = defaults or {}
         self.rest_param: str | None = rest_param
+        self.is_generator: bool = is_generator
 
     def __repr__(self) -> str:
-        return f"<fn {self.name}>"
+        return f"<fn{'*' if self.is_generator else ''} {self.name}>"
 
 
 class SpryTask:
@@ -440,6 +450,88 @@ class SpryWebSocket:
 
     def __repr__(self) -> str:
         return f"<WebSocket {self.url!r} connected={self.connected}>"
+
+
+class SpryGenerator:
+    """Runtime generator object produced by calling a generator function (fn*).
+
+    Lazily executes the function body, pausing at each ``yield`` and resuming
+    on the next ``next()`` / iteration call.
+    """
+
+    def __init__(self, fn: "SpryFunction", args: list[Any], interp: "Interpreter") -> None:
+        self._fn = fn
+        self._args = args
+        self._interp = interp
+        self._values: list[Any] = []
+        self._done = False
+        self._index = 0
+        self._materialised = False
+
+    def _materialise(self) -> None:
+        """Execute the generator body and collect all yielded values.
+
+        The body is executed by walking the AST manually so that ``yield``
+        statements nested inside loops, conditionals, etc. are intercepted
+        correctly without recursion.
+        """
+        if self._materialised:
+            return
+        self._materialised = True
+
+        child = self._fn.closure.child()
+        normal_params = [p for p in self._fn.params if not p[0].startswith("__destruct__:")]
+        for i, (pname, _) in enumerate(normal_params):
+            child.define(pname, self._args[i] if i < len(self._args) else None, mutable=True)
+
+        try:
+            self._run_gen_block(self._fn.body, child)
+        except ReturnSignal:
+            pass
+
+    def _run_gen_block(self, block: Any, env: Any) -> None:
+        for stmt in block.body:
+            self._run_gen_stmt(stmt, env)
+
+    def _run_gen_stmt(self, node: Any, env: Any) -> None:
+        """Execute one statement; intercept YieldStatement at any depth."""
+        if isinstance(node, YieldStatement):
+            v = self._interp._eval(node.value, env) if node.value is not None else None
+            self._values.append(v)
+            return
+        # For compound statements that have sub-blocks, recurse into them
+        # so nested yields are captured.  All other nodes delegate normally.
+        if isinstance(node, Block):
+            self._run_gen_block(node, env)
+            return
+
+        # Monkey-patch _exec temporarily so yields inside interpreter-
+        # dispatched code (while loops, for loops, if, etc.) are captured.
+        interp = self._interp
+        values = self._values
+        orig_exec = interp._exec
+
+        def _exec_with_yield(n: Any, e: Any) -> Any:
+            if isinstance(n, YieldStatement):
+                v = interp._eval(n.value, e) if n.value is not None else None
+                values.append(v)
+                return None
+            return orig_exec(n, e)
+
+        interp._exec = _exec_with_yield  # type: ignore[method-assign]
+        try:
+            orig_exec(node, env)
+        except ReturnSignal:
+            raise
+        finally:
+            interp._exec = orig_exec  # type: ignore[method-assign]
+
+    def __iter__(self) -> "SpryGenerator":
+        self._materialise()
+        return iter(self._values)
+
+    def __repr__(self) -> str:
+        return f"<generator {self._fn.name}>"
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +885,7 @@ class Interpreter:
                 closure=env,
                 defaults=node.defaults,
                 rest_param=node.rest_param,
+                is_generator=node.is_generator,
             )
             env.define(node.name, fn, mutable=False)
             return None
@@ -1041,6 +1134,17 @@ class Interpreter:
 
         if isinstance(node, CreditStatement):
             return self._exec_credit(node, env)
+
+        if isinstance(node, YieldStatement):
+            value = self._eval(node.value, env) if node.value is not None else None
+            raise YieldSignal(value)
+
+        if isinstance(node, ExportStatement):
+            # Execute the wrapped declaration normally; exports are treated
+            # the same as regular declarations at runtime.
+            if node.declaration is not None:
+                return self._exec(node.declaration, env)
+            return None
 
         # Expression as statement
         return self._eval(node, env)
@@ -1344,6 +1448,10 @@ class Interpreter:
         )
 
     def _call_function(self, fn: SpryFunction, args: list[Any], node: Node) -> Any:
+        # Generator functions return a SpryGenerator object immediately
+        if fn.is_generator:
+            return SpryGenerator(fn, args, self)
+
         # fn.params contains positional params (rest_param is stored separately, never in fn.params)
         # Count required params: those with no default value and not dict-destructured
         required = [
@@ -1509,6 +1617,8 @@ class Interpreter:
             if prop == "isEmpty":
                 return len(obj) == 0
             if prop == "has":
+                return lambda key: key in obj
+            if prop in ("containsKey", "hasKey", "hasOwnProperty"):
                 return lambda key: key in obj
             if prop == "get":
                 return lambda key, default=None: obj.get(key, default)
@@ -1749,7 +1859,25 @@ class Interpreter:
 
         if isinstance(obj, (int, float)):
             if prop in ("toFixed", "toFixed"):
-                return lambda digits=2: f"{obj:.{digits}f}"
+                return lambda digits=2: f"{obj:.{int(digits)}f}"
+            if prop == "toPrecision":
+                def _to_precision(digits: int = 6, _obj: Any = obj) -> str:
+                    d = int(digits)
+                    # Use Python's f-string with precision, then trim trailing zeros
+                    # to match JS toPrecision: preserves trailing zeros
+                    result = f"{float(_obj):.{d}g}"
+                    # If the result has no decimal, add zeros for the requested precision
+                    if "e" not in result and "E" not in result and "." not in result:
+                        if d > len(result.lstrip("-")):
+                            result = result + "." + "0" * (d - len(result.lstrip("-")))
+                    elif "e" not in result and "E" not in result:
+                        int_part, frac_part = result.split(".")
+                        int_digits = len(int_part.lstrip("-"))
+                        needed_frac = d - int_digits
+                        if needed_frac > len(frac_part):
+                            result = result + "0" * (needed_frac - len(frac_part))
+                    return result
+                return _to_precision
             if prop in ("toStr", "toString"):
                 return str(int(obj)) if isinstance(obj, float) and obj == int(obj) else str(obj)
             if prop in ("toInt", "floor"):
@@ -1762,6 +1890,36 @@ class Interpreter:
                 return isinstance(obj, float) and (obj != obj)
             if prop == "isFinite":
                 return not (isinstance(obj, float) and (obj != obj or obj == float("inf") or obj == float("-inf")))
+            if prop in ("ceil",):
+                return math.ceil(obj)
+            if prop in ("round",):
+                return round(obj)
+
+        if isinstance(obj, SpryClass):
+            if prop == "new":
+                return lambda *args: self._construct_class(obj, list(args), node)
+            if prop == "name":
+                return obj.name
+            # Look up static methods: class body fn declarations (no instance needed)
+            cls_env = obj.closure.child()
+            for stmt in obj.body.body:  # type: ignore[union-attr]
+                if isinstance(stmt, FunctionDeclaration) and stmt.name == prop:
+                    return SpryFunction(
+                        name=stmt.name,
+                        params=stmt.params,
+                        body=stmt.body,  # type: ignore
+                        closure=cls_env,
+                        defaults=stmt.defaults,
+                        rest_param=stmt.rest_param,
+                    )
+            raise SpryRuntimeError(f"Property 'new' not found on SpryClass", node)
+
+        if isinstance(obj, SpryStruct):
+            if prop == "new":
+                return lambda *args: obj.create(list(args))
+            if prop == "name":
+                return obj.name
+            raise SpryRuntimeError(f"Struct {obj.name!r} has no property {prop!r}", node)
 
         # Try attribute access
         try:
@@ -1797,7 +1955,7 @@ class Interpreter:
                     value = acc
                 continue
 
-            # Single-param lambda stages (filter, map, each)
+            # Single-param lambda stages (filter, map, each, groupBy, sortBy)
             if isinstance(stage, (LambdaExpression, SpryLambda)):
                 operation = getattr(stage, "operation", "map")
                 if operation == "filter":
@@ -1812,6 +1970,21 @@ class Interpreter:
                     else:
                         self._apply_lambda(stage, value, env)
                     # "each" is side-effect only — value passes through unchanged
+                elif operation == "groupBy":
+                    if not isinstance(value, list):
+                        raise SpryRuntimeError("'groupBy' requires a list", stage)
+                    groups: dict[Any, list] = {}
+                    for item in value:
+                        key = self._apply_lambda(stage, item, env)
+                        # Use str key for dict compatibility
+                        str_key = str(key) if not isinstance(key, (str, int, float, bool)) else key
+                        if str_key not in groups:
+                            groups[str_key] = []
+                        groups[str_key].append(item)
+                    value = groups
+                elif operation == "sortBy":
+                    if isinstance(value, list):
+                        value = sorted(value, key=lambda item: self._apply_lambda(stage, item, env))
                 else:  # "map"
                     if isinstance(value, list):
                         value = [self._apply_lambda(stage, item, env) for item in value]
@@ -1821,6 +1994,14 @@ class Interpreter:
 
             if isinstance(stage, Identifier):
                 # Named function/operation call
+                if stage.name == "__take__":
+                    n = int(self._eval(stage._take_count, env))  # type: ignore[attr-defined]
+                    value = value[:n] if isinstance(value, list) else value
+                    continue
+                if stage.name == "__skip__":
+                    n = int(self._eval(stage._skip_count, env))  # type: ignore[attr-defined]
+                    value = value[n:] if isinstance(value, list) else value
+                    continue
                 fn = env.get(stage.name)
                 if isinstance(fn, SpryFunction):
                     value = self._call_function(fn, [value], stage)
@@ -2048,6 +2229,8 @@ class Interpreter:
         # Allow iterating over dict keys
         if isinstance(iterable, dict):
             iterable = list(iterable.keys())
+        if isinstance(iterable, SpryGenerator):
+            iterable = list(iterable)  # materialise generator
         if not isinstance(iterable, (list, tuple, str, range)):
             raise SpryRuntimeError(
                 f"'for' loop requires a list or object, got {type(iterable).__name__}", node
@@ -2185,6 +2368,8 @@ class Interpreter:
 
     def _iter(self, value: Any, node: Node) -> Any:
         """Return an iterable from a SpryCode value."""
+        if isinstance(value, SpryGenerator):
+            return value  # SpryGenerator is iterable
         if isinstance(value, (list, tuple, str)):
             return value
         if isinstance(value, dict):
@@ -2289,6 +2474,8 @@ class Interpreter:
             return "List"
         if isinstance(val, dict):
             return "Object"
+        if isinstance(val, SpryGenerator):
+            return "Generator"
         if isinstance(val, SpryFunction):
             return "Function"
         if isinstance(val, (SpryLambda, SpryMultiLambda)):
@@ -2527,7 +2714,7 @@ class Interpreter:
         # recording their initial values so we can sync back only what changed directly.
         initial_field_values: dict[str, Any] = {}
         for fname, fval in bm.instance.fields.items():
-            if not child.has(fname):
+            if fname not in child._vars:
                 child.define(fname, fval, mutable=True)
                 initial_field_values[fname] = fval
 
@@ -2864,6 +3051,18 @@ class _MathHelper:
     LOG2E: float = math.log2(math.e)
     LOG10E: float = math.log10(math.e)
     EPSILON: float = 2.220446049250313e-16        # machine epsilon (float64)
+
+    # Lowercase aliases (SpryCode convention)
+    pi: float = math.pi
+    e: float = math.e
+    tau: float = math.tau
+    inf: float = float("inf")
+    infinity: float = float("inf")
+    nan: float = float("nan")
+    sqrt2: float = math.sqrt(2)
+    phi: float = (1 + math.sqrt(5)) / 2
+    ln2: float = math.log(2)
+    ln10: float = math.log(10)
 
     # ── Basic arithmetic ─────────────────────────────────────────────────────
 

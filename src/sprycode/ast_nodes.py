@@ -94,6 +94,19 @@ class FunctionDeclaration(Node):
     short_form: bool = False   # fn double(x) => x * 2
     defaults: dict[str, "Node"] = field(default_factory=dict)  # param -> default expr
     rest_param: str | None = None  # name of the ...rest parameter
+    is_generator: bool = False     # fn* generator function
+
+
+@dataclass
+class YieldStatement(Node):
+    """yield [<value>]"""
+    value: "Node | None" = None
+
+
+@dataclass
+class ExportStatement(Node):
+    """export <declaration>  — marks a declaration as exported"""
+    declaration: "Node | None" = None
 
 
 @dataclass

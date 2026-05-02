@@ -466,3 +466,122 @@ class SecretManager:
     def set(self, key: str, value: str) -> None:
         """Set a secret in the in-memory vault (for testing)."""
         self._vault[key] = value
+
+
+# ---------------------------------------------------------------------------
+# SQL Adapter (sqlite3-based)
+# ---------------------------------------------------------------------------
+
+
+class SqlAdapter:
+    """
+    SpryCode SQL adapter backed by sqlite3.
+
+    Usage in SpryCode:
+        use adapter sql
+        let db = sql.connect ":memory:"
+        sql.execute db "CREATE TABLE users (id INTEGER, name TEXT)"
+        let rows = sql.query db "SELECT * FROM users"
+    """
+
+    def connect(self, path: str) -> Any:
+        """Open (or create) an SQLite database. Returns a connection handle dict."""
+        try:
+            import sqlite3
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            return {"__sql_conn__": conn, "path": path}
+        except Exception as e:
+            return SpryResult(ok=False, error=str(e))
+
+    def execute(self, conn_handle: Any, sql: str, params: list | None = None) -> SpryResult:
+        """Execute a non-SELECT SQL statement (INSERT, UPDATE, DELETE, CREATE, …)."""
+        try:
+            conn = self._unwrap(conn_handle)
+            cursor = conn.execute(sql, params or [])
+            conn.commit()
+            return SpryResult(ok=True, value={"rowcount": cursor.rowcount})
+        except Exception as e:
+            return SpryResult(ok=False, error=str(e))
+
+    def query(self, conn_handle: Any, sql: str, params: list | None = None) -> Any:
+        """Execute a SELECT statement and return a list of row dicts."""
+        try:
+            conn = self._unwrap(conn_handle)
+            cursor = conn.execute(sql, params or [])
+            rows = [dict(row) for row in cursor.fetchall()]
+            return rows
+        except Exception as e:
+            return SpryResult(ok=False, error=str(e))
+
+    def close(self, conn_handle: Any) -> SpryResult:
+        """Close the database connection."""
+        try:
+            conn = self._unwrap(conn_handle)
+            conn.close()
+            return SpryResult(ok=True)
+        except Exception as e:
+            return SpryResult(ok=False, error=str(e))
+
+    @staticmethod
+    def _unwrap(conn_handle: Any):
+        """Extract the raw sqlite3 connection from a handle dict."""
+        if isinstance(conn_handle, dict) and "__sql_conn__" in conn_handle:
+            return conn_handle["__sql_conn__"]
+        raise ValueError(f"Not a valid SQL connection handle: {conn_handle!r}")
+
+
+# ---------------------------------------------------------------------------
+# Audit Logger
+# ---------------------------------------------------------------------------
+
+
+class AuditLogger:
+    """
+    Structured audit logger for SpryCode.
+
+    Records who did what to which resource and whether it succeeded.
+    Each entry has: timestamp, actor, action, resource, outcome, detail.
+    """
+
+    def __init__(self, output: list | None = None) -> None:
+        self._entries: list[dict] = []
+        self._output = output  # Optional external list to mirror entries into
+
+    def log(
+        self,
+        action: str,
+        resource: str = "",
+        actor: str = "system",
+        outcome: str = "success",
+        detail: str = "",
+    ) -> dict:
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "actor": actor,
+            "action": action,
+            "resource": resource,
+            "outcome": outcome,
+            "detail": detail,
+        }
+        self._entries.append(entry)
+        if self._output is not None:
+            self._output.append(entry)
+        return entry
+
+    def entries(self) -> list[dict]:
+        return list(self._entries)
+
+    def filter(self, action: str | None = None, actor: str | None = None, outcome: str | None = None) -> list[dict]:
+        result = self._entries
+        if action is not None:
+            result = [e for e in result if e["action"] == action]
+        if actor is not None:
+            result = [e for e in result if e["actor"] == actor]
+        if outcome is not None:
+            result = [e for e in result if e["outcome"] == outcome]
+        return list(result)
+
+    def export_json(self) -> str:
+        return json.dumps(self._entries, indent=2, default=str)
+

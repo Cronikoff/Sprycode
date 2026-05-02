@@ -102,6 +102,7 @@ from .ast_nodes import (
 from .permissions import PermissionSet
 from .runtime.stdlib import (
     SPRY_OK,
+    AuditLogger,
     FilesystemOps,
     SecretManager,
     SpryFile,
@@ -110,6 +111,7 @@ from .runtime.stdlib import (
     SpryMoney,
     SpryResult,
     SprySecret,
+    SqlAdapter,
     _builtin_checksum,
     _builtin_decode_base64,
     _builtin_encode_base64,
@@ -230,11 +232,15 @@ class SpryFunction:
         params: list[tuple[str, str | None]],
         body: "Block",
         closure: Environment,
+        defaults: "dict | None" = None,
+        rest_param: "str | None" = None,
     ) -> None:
         self.name = name
         self.params = params
         self.body = body
         self.closure = closure
+        self.defaults: dict = defaults or {}
+        self.rest_param: str | None = rest_param
 
     def __repr__(self) -> str:
         return f"<fn {self.name}>"
@@ -360,11 +366,14 @@ class Interpreter:
         logger: SpryLogger | None = None,
         permissions: PermissionSet | None = None,
         secret_manager: SecretManager | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> None:
         self.logger = logger or SpryLogger()
         self.permissions = permissions or PermissionSet()
         self.secrets = secret_manager or SecretManager()
+        self.audit = audit_logger or AuditLogger()
         self.fs = FilesystemOps(self.permissions)
+        self._sql = SqlAdapter()
         self.globals = self._build_globals()
         self._app_name: str = ""
         self._app_version: str = ""
@@ -428,6 +437,12 @@ class Interpreter:
 
         # HTTP helper
         env.define("http", _HttpHelper(self.permissions))
+
+        # SQL adapter
+        env.define("sql", self._sql)
+
+        # Audit logger
+        env.define("audit", self.audit)
 
         return env
 
@@ -613,6 +628,8 @@ class Interpreter:
                 params=node.params,
                 body=node.body,  # type: ignore
                 closure=env,
+                defaults=node.defaults,
+                rest_param=node.rest_param,
             )
             env.define(node.name, fn, mutable=False)
             return None
@@ -775,7 +792,10 @@ class Interpreter:
             return self._redact(data, node.fields)
 
         if isinstance(node, UseStatement):
-            # Adapter loading — log but don't fail
+            # Adapter loading
+            alias = node.alias or node.name
+            if node.name == "sql":
+                env.define(alias, self._sql, mutable=False)
             self.logger.info(f"Adapter '{node.name}' registered")
             return None
 
@@ -1062,13 +1082,49 @@ class Interpreter:
         )
 
     def _call_function(self, fn: SpryFunction, args: list[Any], node: Node) -> Any:
-        if len(args) != len(fn.params):
+        # fn.params contains positional params (rest_param is stored separately, never in fn.params)
+        # Count required params: those with no default value and not dict-destructured
+        required = [
+            p for p, _ in fn.params
+            if p not in fn.defaults and not p.startswith("__destruct__")
+        ]
+        total_positional = len(fn.params)
+
+        if len(args) < len(required):
             raise SpryRuntimeError(
-                f"Function {fn.name!r} expects {len(fn.params)} args, got {len(args)}", node
+                f"Function {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
             )
+        if fn.rest_param is None and len(args) > total_positional:
+            raise SpryRuntimeError(
+                f"Function {fn.name!r} expects at most {total_positional} args, got {len(args)}", node
+            )
+
         child = fn.closure.child()
-        for (pname, _ptype), arg in zip(fn.params, args):
-            child.define(pname, arg, mutable=False)
+
+        for i, (pname, _ptype) in enumerate(fn.params):
+            # Dict destructuring param: __destruct__:a,b
+            if pname.startswith("__destruct__:"):
+                field_names = pname[len("__destruct__:"):].split(",")
+                arg_val = args[i] if i < len(args) else {}
+                if not isinstance(arg_val, dict):
+                    raise SpryRuntimeError(
+                        f"Function {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
+                    )
+                for fname in field_names:
+                    child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+            else:
+                if i < len(args):
+                    child.define(pname, args[i], mutable=False)
+                elif pname in fn.defaults:
+                    default_val = self._eval(fn.defaults[pname], fn.closure)
+                    child.define(pname, default_val, mutable=False)
+                else:
+                    child.define(pname, None, mutable=False)
+
+        if fn.rest_param is not None:
+            rest_vals = args[len(fn.params):]
+            child.define(fn.rest_param, list(rest_vals), mutable=False)
+
         try:
             self._exec_block(fn.body, child)
         except ReturnSignal as r:
@@ -1646,7 +1702,16 @@ class Interpreter:
                 child = env.child()
                 return self._exec_block(arm.body, child)
             pattern_val = self._eval(arm.pattern, env)
-            if subject_val == pattern_val:
+            if arm.range_end is not None:
+                # Range arm: pattern_val..range_end_val (inclusive)
+                range_end_val = self._eval(arm.range_end, env)
+                try:
+                    if pattern_val <= subject_val <= range_end_val:
+                        child = env.child()
+                        return self._exec_block(arm.body, child)
+                except TypeError:
+                    pass
+            elif subject_val == pattern_val:
                 child = env.child()
                 return self._exec_block(arm.body, child)
         return None
@@ -1915,31 +1980,58 @@ class _MoneyHelper:
 
 
 class _HttpHelper:
-    """Stub HTTP client."""
+    """HTTP client with GET, POST, PUT, PATCH, DELETE, HEAD support."""
 
     def __init__(self, permissions: PermissionSet) -> None:
         self._perms = permissions
 
-    def get(self, url: str) -> SpryResult:
-        self._perms.check("network.request", url)
-        try:
-            import urllib.request
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                body = resp.read().decode("utf-8")
-                return SpryResult(ok=True, value={"status": resp.status, "body": body})
-        except Exception as e:
-            return SpryResult(ok=False, error=str(e))
-
-    def post(self, url: str, body: Any = None) -> SpryResult:
+    def _request(self, method: str, url: str, body: Any = None, headers: dict | None = None) -> SpryResult:
         self._perms.check("network.request", url)
         try:
             import json as _json
             import urllib.request
-            data = _json.dumps(body).encode("utf-8") if body is not None else b""
-            req = urllib.request.Request(url, data=data, method="POST")
-            req.add_header("Content-Type", "application/json")
+            data: bytes | None = None
+            if body is not None:
+                if isinstance(body, (dict, list)):
+                    data = _json.dumps(body).encode("utf-8")
+                else:
+                    data = str(body).encode("utf-8")
+            req = urllib.request.Request(url, data=data, method=method.upper())
+            if data is not None:
+                req.add_header("Content-Type", "application/json")
+            if headers:
+                for k, v in headers.items():
+                    req.add_header(k, v)
             with urllib.request.urlopen(req, timeout=30) as resp:
                 resp_body = resp.read().decode("utf-8")
                 return SpryResult(ok=True, value={"status": resp.status, "body": resp_body})
+        except Exception as e:
+            return SpryResult(ok=False, error=str(e))
+
+    def get(self, url: str, headers: dict | None = None) -> SpryResult:
+        return self._request("GET", url, headers=headers)
+
+    def post(self, url: str, body: Any = None, headers: dict | None = None) -> SpryResult:
+        return self._request("POST", url, body=body, headers=headers)
+
+    def put(self, url: str, body: Any = None, headers: dict | None = None) -> SpryResult:
+        return self._request("PUT", url, body=body, headers=headers)
+
+    def patch(self, url: str, body: Any = None, headers: dict | None = None) -> SpryResult:
+        return self._request("PATCH", url, body=body, headers=headers)
+
+    def delete(self, url: str, headers: dict | None = None) -> SpryResult:
+        return self._request("DELETE", url, headers=headers)
+
+    def head(self, url: str, headers: dict | None = None) -> SpryResult:
+        self._perms.check("network.request", url)
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, method="HEAD")
+            if headers:
+                for k, v in headers.items():
+                    req.add_header(k, v)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return SpryResult(ok=True, value={"status": resp.status, "body": ""})
         except Exception as e:
             return SpryResult(ok=False, error=str(e))

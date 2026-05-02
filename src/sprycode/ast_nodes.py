@@ -94,6 +94,19 @@ class FunctionDeclaration(Node):
     short_form: bool = False   # fn double(x) => x * 2
     defaults: dict[str, "Node"] = field(default_factory=dict)  # param -> default expr
     rest_param: str | None = None  # name of the ...rest parameter
+    is_generator: bool = False     # fn* generator function
+
+
+@dataclass
+class YieldStatement(Node):
+    """yield [<value>]"""
+    value: "Node | None" = None
+
+
+@dataclass
+class ExportStatement(Node):
+    """export <declaration>  — marks a declaration as exported"""
+    declaration: "Node | None" = None
 
 
 @dataclass
@@ -125,10 +138,67 @@ class IfStatement(Node):
 
 @dataclass
 class TryCatchStatement(Node):
-    """try { <body> } catch <err_name> { <handler> }"""
+    """try { <body> } catch <err_name> { <handler> } [finally { <finally_block> }]"""
     body: Block | None = None
     error_name: str = ""
     handler: Block | None = None
+    finally_block: "Block | None" = None
+
+
+@dataclass
+class DoWhileStatement(Node):
+    """do { <body> } while <condition>"""
+    body: Block | None = None
+    condition: "Node | None" = None
+
+
+@dataclass
+class TypeofExpression(Node):
+    """typeof <expr>  — returns a string describing the type"""
+    operand: "Node | None" = None
+
+
+@dataclass
+class InstanceofExpression(Node):
+    """<expr> instanceof <TypeName>  — returns bool"""
+    operand: "Node | None" = None
+    type_name: str = ""
+
+
+@dataclass
+class SpawnStatement(Node):
+    """spawn <call_expr>  — fire-and-forget async execution"""
+    call: "Node | None" = None
+
+
+@dataclass
+class DebitStatement(Node):
+    """debit account <name> amount <expr>"""
+    account: "Node | None" = None
+    amount: "Node | None" = None
+
+
+@dataclass
+class CreditStatement(Node):
+    """credit account <name> amount <expr>"""
+    account: "Node | None" = None
+    amount: "Node | None" = None
+
+
+@dataclass
+class WebSocketStatement(Node):
+    """websocket <name> <url> { <body> }"""
+    name: str = ""
+    url: "Node | None" = None
+    body: "Block | None" = None
+
+
+@dataclass
+class WithStatement(Node):
+    """with <expr> as <name> { <body> }"""
+    expr: "Node | None" = None
+    alias: str = ""
+    body: "Block | None" = None
 
 
 @dataclass
@@ -491,11 +561,11 @@ class SecretLiteral(Node):
 # Loops
 # ---------------------------------------------------------------------------
 
-
 @dataclass
 class ForStatement(Node):
-    """for <var> in <iterable> { <body> }"""
+    """for <var> [, <var2>] in <iterable> { <body> }"""
     var: str = ""
+    vars: list[str] = field(default_factory=list)  # for destructured: for i, v in ...
     iterable: Node | None = None
     body: Block | None = None
 
@@ -599,6 +669,14 @@ class MatchArm(Node):
     is_wildcard: bool = False      # _ arm
     range_end: Node | None = None  # if set, this is a range arm: pattern..range_end
     body: Block | None = None
+    guard: Node | None = None      # optional `when condition` guard clause
+
+
+@dataclass
+class SuperExpression(Node):
+    """super(args) or super.method(args)"""
+    args: list = field(default_factory=list)       # for super(args) — constructor call
+    method: str | None = None                       # for super.method — method name
 
 
 @dataclass
@@ -655,6 +733,54 @@ class MultiParamLambda(Node):
     body: Node | None = None
 
 
+@dataclass
+class SwitchStatement(Node):
+    """switch <expr> { case <val>: <body> ... default: <body> }"""
+    subject: Node | None = None
+    cases: list["SwitchCase"] = field(default_factory=list)
+    default_body: "Block | None" = None
+
+
+@dataclass
+class SwitchCase(Node):
+    """case <value>: <body>"""
+    value: Node | None = None
+    body: "Block | None" = None
+
+
+@dataclass
+class AnonymousFunctionExpression(Node):
+    """fn(<params>) { <body> }  — anonymous function used as a value"""
+    params: list[tuple[str, str | None]] = field(default_factory=list)
+    return_type: str | None = None
+    body: "Block | None" = None
+    defaults: dict[str, "Node"] = field(default_factory=dict)
+    rest_param: str | None = None
+
+
+@dataclass
+class ListComprehension(Node):
+    """[<expr> for <var> in <iterable> [if <cond>]]"""
+    expr: Node | None = None
+    var: str = ""
+    iterable: Node | None = None
+    condition: Node | None = None  # optional filter
+
+
+@dataclass
+class RegexLiteral(Node):
+    """/<pattern>/<flags>  — regular expression literal"""
+    pattern: str = ""
+    flags: str = ""
+
+
+@dataclass
+class PostfixExpression(Node):
+    """<expr>++  or  <expr>--"""
+    operand: Node | None = None
+    op: str = ""   # "++" or "--"
+
+
 # ---------------------------------------------------------------------------
 # Round 5: throw, enum, struct, class, optional chaining, default/rest params
 # ---------------------------------------------------------------------------
@@ -693,6 +819,7 @@ class ClassDeclaration(Node):
     name: str = ""
     superclass: str | None = None
     interfaces: list[str] = field(default_factory=list)
+    mixins: list[str] = field(default_factory=list)
     body: "Block | None" = None
 
 
@@ -701,3 +828,48 @@ class InterfaceDeclaration(Node):
     """interface Printable { fn print() }"""
     name: str = ""
     body: "Block | None" = None
+
+
+# ---------------------------------------------------------------------------
+# Assignment to member / index paths
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MemberAssignment(Node):
+    """obj.prop = value  (or self.prop = value)"""
+    object: Node | None = None
+    property: str = ""
+    value: Node | None = None
+
+
+@dataclass
+class CompoundMemberAssignment(Node):
+    """obj.prop += | -= | *= | /= value"""
+    object: Node | None = None
+    property: str = ""
+    op: str = ""   # "+", "-", "*", "/"
+    value: Node | None = None
+
+
+@dataclass
+class IndexAssignment(Node):
+    """obj[index] = value"""
+    object: Node | None = None
+    index: Node | None = None
+    value: Node | None = None
+
+
+
+@dataclass
+class TypeCastExpression(Node):
+    """expr as TypeName — cast an expression to a named type"""
+    operand: Node | None = None
+    type_name: str = ""
+
+
+@dataclass
+class ResultLiteral(Node):
+    """result ok <value>  or  result fail <message>"""
+    is_ok: bool = True
+    value: Node | None = None

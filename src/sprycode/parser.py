@@ -24,14 +24,19 @@ from .ast_nodes import (
     ClassDeclaration,
     CompensateStatement,
     CompoundAssignment,
+    CompoundMemberAssignment,
     CompressStatement,
     ConnectorDeclaration,
     ContinueStatement,
     CopyStatement,
     CreateStatement,
+    CreditStatement,
+    DebitStatement,
     DeleteStatement,
     DenyStatement,
+    DoWhileStatement,
     EnumDeclaration,
+    ExportStatement,
     ExpectStatement,
     ExtractStatement,
     ForStatement,
@@ -41,15 +46,19 @@ from .ast_nodes import (
     Identifier,
     IfStatement,
     ImportStatement,
+    IndexAssignment,
     InExpression,
     IndexExpression,
+    InstanceofExpression,
     InterfaceDeclaration,
     LambdaExpression,
     LetDeclaration,
     ListDestructure,
+    ListComprehension,
     LogStatement,
     MatchArm,
     MatchStatement,
+    MemberAssignment,
     MemberExpression,
     MoveStatement,
     MultiParamLambda,
@@ -62,35 +71,48 @@ from .ast_nodes import (
     OptionalMemberExpression,
     ParseStatement,
     PipelineExpression,
+    PostfixExpression,
     PrivateDataDeclaration,
     Program,
     ReadStatement,
     RedactStatement,
+    RegexLiteral,
     RepeatUntilStatement,
+    ResultLiteral,
     ReturnStatement,
     ScheduleStatement,
     SecretLiteral,
     SensitiveDataDeclaration,
     SleepStatement,
+    SpawnStatement,
     SpreadElement,
     StopStatement,
     StreamStatement,
     StringLiteral,
     StructDeclaration,
+    SwitchCase,
+    SwitchStatement,
     SyncStatement,
+    AnonymousFunctionExpression,
     TaskDeclaration,
     TernaryExpression,
     TestBlock,
     ThrowStatement,
     TransactionStatement,
     TryCatchStatement,
+    TypeCastExpression,
+    TypeofExpression,
     UnaryExpression,
     UseStatement,
     ValidateStatement,
     VarDeclaration,
     WatchStatement,
+    WebSocketStatement,
     WhileStatement,
+    WithStatement,
     WriteStatement,
+    YieldStatement,
+    SuperExpression,
 )
 from .lexer import Token, TokenType
 
@@ -166,6 +188,7 @@ class Parser:
         TokenType.RESULT_TYPE,   # "Result"
         TokenType.OK,            # "ok"
         TokenType.FAIL,
+        TokenType.RESULT,        # "result"
         TokenType.TEST,          # "test" usable as identifier in some contexts
         TokenType.EXISTS,
         # Built-in function names that are also keywords
@@ -182,6 +205,15 @@ class Parser:
         TokenType.VERIFY,        # verify(...)
         TokenType.OUTPUT,        # output(...)
         TokenType.TRANSLATE,     # translate(...)
+        # Type names used as global namespace identifiers (e.g. Number.isInteger, Array.isArray)
+        TokenType.NUMBER_TYPE,   # "Number"
+        TokenType.TEXT,          # "Text"
+        TokenType.BOOL_TYPE,     # "Bool"
+        TokenType.INT_TYPE,      # "Int"
+        TokenType.FLOAT_TYPE,    # "Float"
+        TokenType.DATE_TYPE,     # "Date"
+        TokenType.TIME_TYPE,     # "Time"
+        TokenType.DATETIME_TYPE, # "DateTime"
     })
 
     def _expect_ident(self) -> Token:
@@ -219,6 +251,12 @@ class Parser:
             return self._parse_var()
         if tok.type == TokenType.FN:
             return self._parse_fn()
+        if tok.type == TokenType.FN_STAR:
+            return self._parse_fn(is_generator=True)
+        if tok.type == TokenType.YIELD:
+            return self._parse_yield()
+        if tok.type == TokenType.EXPORT:
+            return self._parse_export()
         if tok.type == TokenType.ASYNC:
             # async fn — same as fn, just skip the async keyword
             self._advance()
@@ -325,6 +363,20 @@ class Parser:
             return self._parse_struct()
         if tok.type == TokenType.INTERFACE:
             return self._parse_interface()
+        if tok.type == TokenType.SWITCH:
+            return self._parse_switch()
+        if tok.type == TokenType.DO:
+            return self._parse_do_while()
+        if tok.type == TokenType.SPAWN:
+            return self._parse_spawn()
+        if tok.type == TokenType.WEBSOCKET:
+            return self._parse_websocket()
+        if tok.type == TokenType.WITH:
+            return self._parse_with()
+        if tok.type == TokenType.DEBIT:
+            return self._parse_debit()
+        if tok.type == TokenType.CREDIT:
+            return self._parse_credit()
 
         # Expression statement or assignment
         return self._parse_expr_or_assignment()
@@ -397,8 +449,11 @@ class Parser:
             column=tok.column,
         )
 
-    def _parse_fn(self) -> FunctionDeclaration:
-        tok = self._expect(TokenType.FN)
+    def _parse_fn(self, is_generator: bool = False) -> FunctionDeclaration:
+        if is_generator:
+            tok = self._expect(TokenType.FN_STAR)
+        else:
+            tok = self._expect(TokenType.FN)
         name_tok = self._expect_ident()
         self._expect(TokenType.LPAREN)
         params: list[tuple[str, str | None]] = []
@@ -450,6 +505,7 @@ class Parser:
                 short_form=True,
                 defaults=defaults,
                 rest_param=rest_param,
+                is_generator=is_generator,
                 line=tok.line,
                 column=tok.column,
             )
@@ -462,9 +518,23 @@ class Parser:
             body=body,
             defaults=defaults,
             rest_param=rest_param,
+            is_generator=is_generator,
             line=tok.line,
             column=tok.column,
         )
+
+    def _parse_yield(self) -> YieldStatement:
+        tok = self._expect(TokenType.YIELD)
+        value: Node | None = None
+        if not self._check(TokenType.NEWLINE, TokenType.RBRACE, TokenType.EOF, TokenType.SEMICOLON):
+            value = self._parse_expression()
+        return YieldStatement(value=value, line=tok.line, column=tok.column)
+
+    def _parse_export(self) -> ExportStatement:
+        tok = self._expect(TokenType.EXPORT)
+        # export fn, export let, export var, export class, export enum, etc.
+        inner = self._parse_statement()
+        return ExportStatement(declaration=inner, line=tok.line, column=tok.column)
 
     def _parse_dict_destruct_param(self) -> list[str]:
         """Parse {a, b, c} destructuring pattern in function params."""
@@ -567,11 +637,25 @@ class Parser:
     def _parse_try(self) -> TryCatchStatement:
         tok = self._expect(TokenType.TRY)
         body = self._parse_block()
-        self._expect(TokenType.CATCH)
-        err_name = self._expect(TokenType.IDENTIFIER).value
-        handler = self._parse_block()
+        # catch is optional if finally is present
+        err_name = ""
+        handler: Block | None = None
+        if self._check(TokenType.CATCH):
+            self._advance()
+            err_name = self._expect_ident().value
+            handler = self._parse_block()
+        # optional finally block
+        finally_block: Block | None = None
+        if self._check(TokenType.FINALLY):
+            self._advance()
+            finally_block = self._parse_block()
         return TryCatchStatement(
-            body=body, error_name=err_name, handler=handler, line=tok.line, column=tok.column
+            body=body,
+            error_name=err_name,
+            handler=handler,
+            finally_block=finally_block,
+            line=tok.line,
+            column=tok.column,
         )
 
     def _parse_atomic(self) -> AtomicStatement:
@@ -912,12 +996,46 @@ class Parser:
 
     def _parse_for(self) -> ForStatement:
         tok = self._expect(TokenType.FOR)
+        # Support: for [a, b] in ... — list destructuring
+        if self._check(TokenType.LBRACKET):
+            self._advance()  # consume '['
+            dest_vars: list[str] = []
+            while not self._check(TokenType.RBRACKET) and not self._at_end():
+                dest_vars.append(self._expect_ident().value)
+                if not self._match(TokenType.COMMA):
+                    break
+            self._expect(TokenType.RBRACKET)
+            self._expect(TokenType.IN)
+            iterable = self._parse_value_expression()
+            body = self._parse_block()
+            return ForStatement(
+                var=dest_vars[0] if dest_vars else "_",
+                vars=dest_vars,
+                iterable=iterable, body=body,
+                line=tok.line, column=tok.column,
+            )
         var_tok = self._expect_ident()
+        # Destructured: for i, v in enumerate(...)
+        extra_vars: list[str] = []
+        if self._match(TokenType.COMMA):
+            extra_vars.append(self._expect_ident().value)
+            while self._match(TokenType.COMMA):
+                extra_vars.append(self._expect_ident().value)
         self._expect(TokenType.IN)
         iterable = self._parse_value_expression()
+        # Range shorthand: for i in 0..5  (iterable is the start of a range expression)
+        if self._check(TokenType.DOTDOT):
+            self._advance()
+            end_expr = self._parse_value_expression()
+            from .ast_nodes import BinaryExpression
+            iterable = BinaryExpression(op="..", left=iterable, right=end_expr,
+                                        line=iterable.line, column=iterable.column)
         body = self._parse_block()
+        all_vars = [var_tok.value] + extra_vars
         return ForStatement(
-            var=var_tok.value, iterable=iterable, body=body,
+            var=var_tok.value,
+            vars=all_vars,
+            iterable=iterable, body=body,
             line=tok.line, column=tok.column,
         )
 
@@ -950,9 +1068,14 @@ class Parser:
             # wildcard: _
             if self._check(TokenType.UNDERSCORE):
                 self._advance()
+                guard = None
+                if self._check(TokenType.WHEN):
+                    self._advance()
+                    guard = self._parse_expression()
                 self._expect(TokenType.FAT_ARROW)
                 body = self._parse_match_arm_body()
                 arms.append(MatchArm(pattern=None, is_wildcard=True, body=body,
+                                     guard=guard,
                                      line=arm_tok.line, column=arm_tok.column))
             else:
                 pattern = self._parse_expression()
@@ -961,10 +1084,14 @@ class Parser:
                 if self._check(TokenType.DOTDOT):
                     self._advance()
                     range_end = self._parse_expression()
+                guard = None
+                if self._check(TokenType.WHEN):
+                    self._advance()
+                    guard = self._parse_expression()
                 self._expect(TokenType.FAT_ARROW)
                 body = self._parse_match_arm_body()
                 arms.append(MatchArm(pattern=pattern, is_wildcard=False,
-                                     range_end=range_end, body=body,
+                                     range_end=range_end, guard=guard, body=body,
                                      line=arm_tok.line, column=arm_tok.column))
         self._expect(TokenType.RBRACE)
         return MatchStatement(subject=subject, arms=arms, line=tok.line, column=tok.column)
@@ -1011,7 +1138,7 @@ class Parser:
         else:
             module = self._expect_ident().value
         alias = None
-        if self._check(TokenType.IDENTIFIER) and self._current().value == "as":
+        if self._check(TokenType.AS) or (self._check(TokenType.IDENTIFIER) and self._current().value == "as"):
             self._advance()
             alias = self._expect_ident().value
         return ImportStatement(module=module, alias=alias,
@@ -1057,9 +1184,15 @@ class Parser:
         name_tok = self._expect_ident()
         superclass = None
         interfaces: list[str] = []
+        mixins: list[str] = []
         if self._check(TokenType.EXTENDS):
             self._advance()
             superclass = self._expect_ident().value
+        if self._check(TokenType.MIXIN):
+            self._advance()
+            mixins.append(self._expect_ident().value)
+            while self._match(TokenType.COMMA):
+                mixins.append(self._expect_ident().value)
         if self._check(TokenType.IMPLEMENTS):
             self._advance()
             interfaces.append(self._expect_ident().value)
@@ -1067,15 +1200,182 @@ class Parser:
                 interfaces.append(self._expect_ident().value)
         body = self._parse_block()
         return ClassDeclaration(name=name_tok.value, superclass=superclass,
-                                interfaces=interfaces, body=body,
+                                interfaces=interfaces, mixins=mixins, body=body,
                                 line=tok.line, column=tok.column)
 
     def _parse_interface(self) -> InterfaceDeclaration:
         tok = self._expect(TokenType.INTERFACE)
         name_tok = self._expect_ident()
-        body = self._parse_block()
+        # Interface body: method signatures (fn without body) and full methods
+        tok2 = self._expect(TokenType.LBRACE)
+        body_stmts: list[Node] = []
+        while not self._check(TokenType.RBRACE) and not self._at_end():
+            if self._check(TokenType.FN):
+                # fn name(params) [-> ReturnType]  — body is optional in interface
+                fn = self._parse_fn_signature_or_full()
+                body_stmts.append(fn)
+            else:
+                stmt = self._parse_statement()
+                if stmt is not None:
+                    body_stmts.append(stmt)
+        self._expect(TokenType.RBRACE)
+        body = Block(body=body_stmts, line=tok2.line, column=tok2.column)
         return InterfaceDeclaration(name=name_tok.value, body=body,
                                     line=tok.line, column=tok.column)
+
+    def _parse_fn_signature_or_full(self) -> FunctionDeclaration:
+        """Parse a fn declaration; body is optional (for interface signatures)."""
+        tok = self._expect(TokenType.FN)
+        name_tok = self._expect_ident()
+        self._expect(TokenType.LPAREN)
+        params: list[tuple[str, str | None]] = []
+        defaults: dict[str, Node] = {}
+        rest_param: str | None = None
+        while not self._check(TokenType.RPAREN) and not self._at_end():
+            if self._check(TokenType.ELLIPSIS):
+                self._advance()
+                rest_tok = self._expect_ident()
+                rest_param = rest_tok.value
+                break
+            pname = self._expect_ident()
+            ptype = None
+            if self._match(TokenType.COLON):
+                ptype = self._parse_type_name()
+            if not self._match(TokenType.COMMA):
+                break
+            params.append((pname.value, ptype))
+        self._expect(TokenType.RPAREN)
+        return_type = None
+        if self._match(TokenType.ARROW):
+            return_type = self._parse_type_name()
+        # Body is optional — if not present, create an empty block (signature only)
+        if self._check(TokenType.LBRACE):
+            body = self._parse_block()
+        elif self._check(TokenType.FAT_ARROW):
+            self._advance()
+            expr = self._parse_expression()
+            body = Block(body=[ReturnStatement(value=expr, line=tok.line, column=tok.column)])
+        else:
+            body = Block(body=[], line=tok.line, column=tok.column)
+        return FunctionDeclaration(
+            name=name_tok.value,
+            params=params,
+            return_type=return_type,
+            body=body,
+            defaults=defaults,
+            rest_param=rest_param,
+            line=tok.line,
+            column=tok.column,
+        )
+
+    def _parse_switch(self) -> SwitchStatement:
+        """switch <expr> { case <val>: <body> ... default: <body> }"""
+        tok = self._expect(TokenType.SWITCH)
+        subject = self._parse_expression()
+        self._expect(TokenType.LBRACE)
+        cases: list[SwitchCase] = []
+        default_body: Block | None = None
+        while not self._check(TokenType.RBRACE) and not self._at_end():
+            if self._check(TokenType.CASE):
+                case_tok = self._advance()
+                value = self._parse_expression()
+                self._expect(TokenType.COLON)
+                stmts: list[Node] = []
+                while (not self._check(TokenType.CASE)
+                       and not self._check(TokenType.DEFAULT)
+                       and not self._check(TokenType.RBRACE)
+                       and not self._at_end()):
+                    # Optionally allow a bare expression as the body of a case
+                    stmt = self._parse_statement()
+                    if stmt is not None:
+                        stmts.append(stmt)
+                case_body = Block(body=stmts, line=case_tok.line, column=case_tok.column)
+                cases.append(SwitchCase(value=value, body=case_body,
+                                        line=case_tok.line, column=case_tok.column))
+            elif self._check(TokenType.DEFAULT):
+                def_tok = self._advance()
+                self._expect(TokenType.COLON)
+                stmts2: list[Node] = []
+                while (not self._check(TokenType.CASE)
+                       and not self._check(TokenType.RBRACE)
+                       and not self._at_end()):
+                    stmt = self._parse_statement()
+                    if stmt is not None:
+                        stmts2.append(stmt)
+                default_body = Block(body=stmts2, line=def_tok.line, column=def_tok.column)
+            else:
+                break
+        self._expect(TokenType.RBRACE)
+        return SwitchStatement(subject=subject, cases=cases, default_body=default_body,
+                               line=tok.line, column=tok.column)
+
+    def _parse_do_while(self) -> DoWhileStatement:
+        """do { <body> } while <condition>"""
+        tok = self._expect(TokenType.DO)
+        body = self._parse_block()
+        self._expect(TokenType.WHILE)
+        condition = self._parse_expression()
+        return DoWhileStatement(body=body, condition=condition,
+                                line=tok.line, column=tok.column)
+
+    def _parse_spawn(self) -> SpawnStatement:
+        """spawn <call_expr>"""
+        tok = self._expect(TokenType.SPAWN)
+        call = self._parse_expression()
+        return SpawnStatement(call=call, line=tok.line, column=tok.column)
+
+    def _parse_websocket(self) -> WebSocketStatement:
+        """websocket <name> <url_expr> { <body> }"""
+        tok = self._expect(TokenType.WEBSOCKET)
+        name_tok = self._expect_ident()
+        url = self._parse_expression()
+        body = self._parse_block()
+        return WebSocketStatement(name=name_tok.value, url=url, body=body,
+                                  line=tok.line, column=tok.column)
+
+    def _parse_with(self) -> WithStatement:
+        """with <expr> as <name> { <body> }"""
+        tok = self._expect(TokenType.WITH)
+        expr = self._parse_expression()
+        alias = ""
+        # Check for 'as name'
+        if self._check(TokenType.AS):
+            self._advance()  # consume 'as'
+            alias = self._expect_ident().value
+        elif self._check(TokenType.IDENTIFIER) and self._current().value == "as":
+            self._advance()  # consume 'as' identifier
+            alias = self._expect_ident().value
+        body = self._parse_block()
+        return WithStatement(expr=expr, alias=alias, body=body,
+                             line=tok.line, column=tok.column)
+
+    def _parse_debit(self) -> DebitStatement:
+        """debit account <account_expr> amount <amount_expr>"""
+        tok = self._expect(TokenType.DEBIT)
+        # optional 'account' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "account":
+            self._advance()
+        account = self._parse_expression()
+        # optional 'amount' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "amount":
+            self._advance()
+        amount = self._parse_expression()
+        return DebitStatement(account=account, amount=amount,
+                              line=tok.line, column=tok.column)
+
+    def _parse_credit(self) -> CreditStatement:
+        """credit account <account_expr> amount <amount_expr>"""
+        tok = self._expect(TokenType.CREDIT)
+        # optional 'account' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "account":
+            self._advance()
+        account = self._parse_expression()
+        # optional 'amount' keyword
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "amount":
+            self._advance()
+        amount = self._parse_expression()
+        return CreditStatement(account=account, amount=amount,
+                               line=tok.line, column=tok.column)
 
     def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
         """Parse let [a, b, c] = expr  or  let [a, ...rest] = expr"""
@@ -1333,12 +1633,31 @@ class Parser:
                 name=expr.name, value=value, line=expr.line, column=expr.column
             )
 
-        # Compound assignments: name += value, name -= value, name *= value, name /= value
+        # Member assignment: obj.prop = value  (incl. self.prop = value)
+        if self._check(TokenType.EQ) and isinstance(expr, MemberExpression):
+            self._advance()
+            value = self._parse_expression()
+            return MemberAssignment(
+                object=expr.object, property=expr.property, value=value,
+                line=expr.line, column=expr.column,
+            )
+
+        # Index assignment: arr[i] = value
+        if self._check(TokenType.EQ) and isinstance(expr, IndexExpression):
+            self._advance()
+            value = self._parse_expression()
+            return IndexAssignment(
+                object=expr.object, index=expr.index, value=value,
+                line=expr.line, column=expr.column,
+            )
+
+        # Compound assignments: name += value, name -= value, name *= value, name /= value, name %= value
         _compound_ops = {
             TokenType.PLUS_EQ: "+",
             TokenType.MINUS_EQ: "-",
             TokenType.STAR_EQ: "*",
             TokenType.SLASH_EQ: "/",
+            TokenType.PERCENT_EQ: "%",
         }
         if self._current().type in _compound_ops and isinstance(expr, Identifier):
             op = _compound_ops[self._current().type]
@@ -1346,6 +1665,25 @@ class Parser:
             value = self._parse_expression()
             return CompoundAssignment(
                 name=expr.name, op=op, value=value, line=expr.line, column=expr.column
+            )
+
+        # Compound member assignments: obj.prop += value
+        if self._current().type in _compound_ops and isinstance(expr, MemberExpression):
+            op = _compound_ops[self._current().type]
+            self._advance()
+            value = self._parse_expression()
+            return CompoundMemberAssignment(
+                object=expr.object, property=expr.property, op=op, value=value,
+                line=expr.line, column=expr.column,
+            )
+
+        # Null-coalescing assignment: name ??= value
+        if self._current().type == TokenType.QUESTION_QUESTION_EQ and isinstance(expr, Identifier):
+            self._advance()
+            value = self._parse_expression()
+            # Desugar: x ??= v  →  if x == null { x = v }
+            return CompoundAssignment(
+                name=expr.name, op="??", value=value, line=expr.line, column=expr.column
             )
 
         return expr
@@ -1377,17 +1715,34 @@ class Parser:
 
         if tok.type == TokenType.FILTER:
             self._advance()
-            lam = self._parse_lambda()
+            # Support both: `filter x => expr`  and  `filter(x => expr)`
+            if self._check(TokenType.LPAREN):
+                self._advance()  # consume '('
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
             lam.operation = "filter"
             return lam
         if tok.type == TokenType.MAP:
             self._advance()
-            lam = self._parse_lambda()
+            # Support both: `map x => expr`  and  `map(x => expr)`
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
             lam.operation = "map"
             return lam
         if tok.type == TokenType.EACH:
             self._advance()
-            lam = self._parse_lambda()
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
             lam.operation = "each"
             return lam
         if tok.type == TokenType.REDUCE:
@@ -1415,6 +1770,39 @@ class Parser:
             return self._parse_write()
         if tok.type == TokenType.READ:
             return self._parse_read()
+        if tok.type == TokenType.TAKE:
+            self._advance()
+            count = self._parse_null_coalesce()  # use limited parse to not eat |> pipeline
+            # Wrap as a TakeStage node — use an Identifier with metadata
+            stage = Identifier(name="__take__", line=tok.line, column=tok.column)
+            stage._take_count = count  # type: ignore[attr-defined]
+            return stage
+        if tok.type == TokenType.SKIP:
+            self._advance()
+            count = self._parse_null_coalesce()  # use limited parse to not eat |> pipeline
+            stage = Identifier(name="__skip__", line=tok.line, column=tok.column)
+            stage._skip_count = count  # type: ignore[attr-defined]
+            return stage
+        if tok.type == TokenType.GROUPBY:
+            self._advance()
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
+            lam.operation = "groupBy"  # type: ignore[attr-defined]
+            return lam
+        if tok.type == TokenType.SORT_BY:
+            self._advance()
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                lam = self._parse_lambda()
+                self._expect(TokenType.RPAREN)
+            else:
+                lam = self._parse_lambda()
+            lam.operation = "sortBy"  # type: ignore[attr-defined]
+            return lam
 
         return self._parse_null_coalesce()
 
@@ -1454,15 +1842,22 @@ class Parser:
                 params.append(self._expect_ident().value)
         self._expect(TokenType.RPAREN)
         self._expect(TokenType.FAT_ARROW)
-        body = self._parse_null_coalesce()
+        if self._check(TokenType.LBRACE):
+            body: Node = self._parse_block()
+        else:
+            body = self._parse_null_coalesce()
         return MultiParamLambda(params=params, body=body, line=tok.line, column=tok.column)
 
     def _parse_lambda(self) -> LambdaExpression:
         tok = self._current()
         param = self._expect_ident().value
         self._expect(TokenType.FAT_ARROW)
-        # Lambda body must NOT consume pipeline operators (|>) at this level.
-        body = self._parse_null_coalesce()
+        # Lambda body: if '{' follows, parse as block; otherwise expression
+        if self._check(TokenType.LBRACE):
+            body: Node = self._parse_block()
+        else:
+            # Lambda body must NOT consume pipeline operators (|>) at this level.
+            body = self._parse_null_coalesce()
         return LambdaExpression(param=param, body=body, line=tok.line, column=tok.column)
 
     def _parse_null_coalesce(self) -> Node:
@@ -1589,6 +1984,17 @@ class Parser:
             op_tok = self._advance()
             operand = self._parse_unary()
             return UnaryExpression(op="!", operand=operand, line=op_tok.line, column=op_tok.column)
+        # Prefix ++ / --
+        if self._check(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
+            op_tok = self._advance()
+            operand = self._parse_postfix()
+            # prefix: treat as PostfixExpression with a "pre" flag encoded in op
+            return PostfixExpression(
+                operand=operand,
+                op="pre" + op_tok.value,
+                line=op_tok.line,
+                column=op_tok.column,
+            )
         return self._parse_postfix()
 
     def _parse_postfix(self) -> Node:
@@ -1653,12 +2059,74 @@ class Parser:
                     line=self._current().line,
                     column=self._current().column,
                 )
+            elif self._check(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
+                # Only apply postfix ++/-- to lvalues (Identifier or MemberExpression)
+                if not isinstance(expr, (Identifier, MemberExpression)):
+                    break
+                op_tok = self._advance()
+                expr = PostfixExpression(
+                    operand=expr,
+                    op=op_tok.value,
+                    line=op_tok.line,
+                    column=op_tok.column,
+                )
+            elif self._check(TokenType.INSTANCEOF):
+                inst_tok = self._advance()
+                type_tok = self._advance()  # consume the type name token
+                expr = InstanceofExpression(
+                    operand=expr,
+                    type_name=type_tok.value,
+                    line=inst_tok.line,
+                    column=inst_tok.column,
+                )
+            elif self._check(TokenType.AS):
+                # Type cast: expr as TypeName — only if next token is a known type name
+                # (avoids conflict with `with expr as alias` and `import "mod" as alias`)
+                _type_tokens = {
+                    TokenType.NUMBER_TYPE, TokenType.INT_TYPE, TokenType.FLOAT_TYPE,
+                    TokenType.BOOL_TYPE, TokenType.TEXT, TokenType.RESULT_TYPE,
+                    TokenType.LIST_TYPE,
+                }
+                next_tok = self._peek()  # token after 'as'
+                if (
+                    next_tok.type in _type_tokens
+                    or (next_tok.type == TokenType.IDENTIFIER and next_tok.value[0].isupper())
+                ):
+                    as_tok = self._advance()  # consume 'as'
+                    type_tok = self._current()
+                    self._advance()  # consume the type name
+                    expr = TypeCastExpression(
+                        operand=expr,
+                        type_name=type_tok.value,
+                        line=as_tok.line,
+                        column=as_tok.column,
+                    )
+                else:
+                    break
             else:
                 break
         return expr
 
     def _parse_primary(self) -> Node:
         tok = self._current()
+
+        # typeof <expr>
+        if tok.type == TokenType.TYPEOF:
+            self._advance()
+            operand = self._parse_postfix()  # allow chaining: typeof items[0]
+            return TypeofExpression(operand=operand, line=tok.line, column=tok.column)
+
+        # debit / credit as expressions (inside transactions or let/var)
+        if tok.type == TokenType.DEBIT:
+            stmt = self._parse_debit()
+            return stmt  # DebitStatement also acts as expression (returns dict)
+        if tok.type == TokenType.CREDIT:
+            stmt = self._parse_credit()
+            return stmt  # CreditStatement also acts as expression (returns dict)
+
+        # match as expression: let v = match x { ... }
+        if tok.type == TokenType.MATCH:
+            return self._parse_match()
 
         if tok.type == TokenType.STRING:
             self._advance()
@@ -1678,6 +2146,71 @@ class Parser:
             key = self._expect(TokenType.STRING).value
             return SecretLiteral(key=key, line=tok.line, column=tok.column)
 
+        # Regex literal: /pattern/flags
+        if tok.type == TokenType.REGEX:
+            self._advance()
+            raw = tok.value
+            sep = raw.find("\x00")
+            if sep >= 0:
+                pattern = raw[:sep]
+                flags = raw[sep + 1:]
+            else:
+                pattern = raw
+                flags = ""
+            return RegexLiteral(pattern=pattern, flags=flags, line=tok.line, column=tok.column)
+
+        # Anonymous function expression: fn(params) { body } or fn(params) => expr
+        if tok.type == TokenType.FN:
+            # Only parse as expression if NOT followed by a named identifier
+            # (named functions are statements; anonymous ones are expressions)
+            if self._peek().type != TokenType.LPAREN:
+                # It's a named function statement — shouldn't be here, fall through
+                raise ParseError("Unexpected token in expression", tok)
+            self._advance()  # consume fn
+            self._expect(TokenType.LPAREN)
+            params: list[tuple[str, str | None]] = []
+            defaults: dict[str, Node] = {}
+            rest_param: str | None = None
+            while not self._check(TokenType.RPAREN) and not self._at_end():
+                if self._check(TokenType.ELLIPSIS):
+                    self._advance()
+                    rest_tok = self._expect_ident()
+                    rest_param = rest_tok.value
+                    break
+                if self._check(TokenType.LBRACE):
+                    param_names = self._parse_dict_destruct_param()
+                    params.append(("__destruct__:" + ",".join(param_names), None))
+                    if not self._match(TokenType.COMMA):
+                        break
+                    continue
+                pname = self._expect_ident()
+                ptype = None
+                if self._match(TokenType.COLON):
+                    ptype = self._parse_type_name()
+                default_expr = None
+                if self._match(TokenType.EQ):
+                    default_expr = self._parse_null_coalesce()
+                params.append((pname.value, ptype))
+                if default_expr is not None:
+                    defaults[pname.value] = default_expr
+                if not self._match(TokenType.COMMA):
+                    break
+            self._expect(TokenType.RPAREN)
+            return_type = None
+            if self._match(TokenType.ARROW):
+                return_type = self._parse_type_name()
+            if self._check(TokenType.FAT_ARROW):
+                self._advance()
+                expr = self._parse_expression()
+                fn_body = Block(body=[ReturnStatement(value=expr, line=tok.line, column=tok.column)])
+            else:
+                fn_body = self._parse_block()
+            return AnonymousFunctionExpression(
+                params=params, return_type=return_type, body=fn_body,
+                defaults=defaults, rest_param=rest_param,
+                line=tok.line, column=tok.column,
+            )
+
         if tok.type == TokenType.LPAREN:
             self._advance()
             # Check for lambda: (x) => expr or (a, b, c) => expr
@@ -1693,7 +2226,10 @@ class Parser:
                     self._advance()  # )
                     if self._check(TokenType.FAT_ARROW):
                         self._advance()  # =>
-                        body = self._parse_null_coalesce()
+                        if self._check(TokenType.LBRACE):
+                            body: Node = self._parse_block()
+                        else:
+                            body = self._parse_null_coalesce()
                         if len(params) == 1:
                             return LambdaExpression(param=params[0], body=body,
                                                     line=tok.line, column=tok.column)
@@ -1725,6 +2261,30 @@ class Parser:
         if tok.type == TokenType.SELF:
             self._advance()
             return Identifier(name="self", line=tok.line, column=tok.column)
+
+        # super keyword → SuperExpression
+        if tok.type == TokenType.SUPER:
+            self._advance()
+            if self._check(TokenType.DOT):
+                # super.method form → parse as member access on a special "super" identifier
+                return Identifier(name="super", line=tok.line, column=tok.column)
+            # super(args) form
+            args: list[Node] = []
+            if self._check(TokenType.LPAREN):
+                self._advance()
+                while not self._check(TokenType.RPAREN) and not self._at_end():
+                    args.append(self._parse_expression())
+                    if not self._match(TokenType.COMMA):
+                        break
+                self._expect(TokenType.RPAREN)
+            return SuperExpression(args=args, line=tok.line, column=tok.column)
+
+        # new ClassName(args) → CallExpression on ClassName
+        if tok.type == TokenType.IDENTIFIER and tok.value == "new":
+            self._advance()   # consume 'new'
+            # next token is the class name identifier
+            name_tok = self._expect_ident()
+            return Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)
 
         # null keyword → NullLiteral
         if tok.type == TokenType.IDENTIFIER and tok.value == "null":
@@ -1780,13 +2340,32 @@ class Parser:
             self._advance()
             return self._parse_postfix()
 
+        # result ok <expr>  or  result fail <expr>
+        if tok.type == TokenType.RESULT:
+            self._advance()  # consume 'result'
+            if self._check(TokenType.OK):
+                self._advance()  # consume 'ok'
+                value_node = self._parse_null_coalesce()
+                return ResultLiteral(is_ok=True, value=value_node,
+                                     line=tok.line, column=tok.column)
+            if self._check(TokenType.FAIL):
+                self._advance()  # consume 'fail'
+                value_node = self._parse_null_coalesce()
+                return ResultLiteral(is_ok=False, value=value_node,
+                                     line=tok.line, column=tok.column)
+            # Bare 'result' — treat as identifier
+            return Identifier(name="result", line=tok.line, column=tok.column)
+
         # Allow identifiers and type-keywords used as identifiers
         if tok.type in self._IDENTIFIER_LIKE:
             self._advance()
-            # Check for lambda: ident => expr
+            # Check for lambda: ident => expr  or  ident => { block }
             if self._check(TokenType.FAT_ARROW):
                 self._advance()
-                body = self._parse_expression()
+                if self._check(TokenType.LBRACE):
+                    body: Node = self._parse_block()
+                else:
+                    body = self._parse_expression()
                 return LambdaExpression(param=tok.value, body=body, line=tok.line, column=tok.column)
             return Identifier(name=tok.value, line=tok.line, column=tok.column)
 
@@ -1797,6 +2376,7 @@ class Parser:
         pairs: dict[str, Node] = {}
         entries: list = []
         has_spread = False
+        has_computed = False
         while not self._check(TokenType.RBRACE) and not self._at_end():
             if self._check(TokenType.ELLIPSIS):
                 has_spread = True
@@ -1804,24 +2384,73 @@ class Parser:
                 expr = self._parse_expression()
                 spread = SpreadElement(expr=expr, line=spread_tok.line, column=spread_tok.column)
                 entries.append((None, spread))
+            elif self._check(TokenType.LBRACKET):
+                # Computed key: { [expr]: value }
+                has_computed = True
+                self._advance()  # consume '['
+                key_expr = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                self._expect(TokenType.COLON)
+                value = self._parse_expression()
+                # Use a placeholder key in pairs; runtime will evaluate key_expr
+                placeholder = f"__computed_{len(entries)}__"
+                entries.append(("__computed__", (key_expr, value)))
             else:
                 key_tok = self._current()
                 key = self._advance().value
-                self._expect(TokenType.COLON)
-                value = self._parse_expression()
+                if self._match(TokenType.COLON):
+                    value = self._parse_expression()
+                else:
+                    # Shorthand: { name } → { name: name }
+                    value = Identifier(name=key, line=key_tok.line, column=key_tok.column)
                 pairs[key] = value
                 entries.append((key, value))
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACE)
         result = ObjectLiteral(pairs=pairs, line=tok.line, column=tok.column)
-        if has_spread:
+        if has_spread or has_computed:
             result.entries = entries
         return result
 
-    def _parse_array_literal(self) -> ArrayLiteral:
+    def _parse_array_literal(self) -> ArrayLiteral | ListComprehension:
         tok = self._expect(TokenType.LBRACKET)
         items: list[Node] = []
+        if self._check(TokenType.RBRACKET):
+            self._advance()
+            return ArrayLiteral(items=[], line=tok.line, column=tok.column)
+        # Parse first expression — may begin a comprehension
+        if self._check(TokenType.ELLIPSIS):
+            spread_tok = self._advance()
+            first_expr = self._parse_expression()
+            first: Node = SpreadElement(expr=first_expr, line=spread_tok.line, column=spread_tok.column)
+        else:
+            first = self._parse_expression()
+        # List comprehension: [expr for var in iterable [if cond]]
+        if self._check(TokenType.FOR):
+            self._advance()  # consume 'for'
+            var_tok = self._expect_ident()
+            # Expect 'in'
+            in_kw = self._current()
+            if in_kw.type == TokenType.IN or (in_kw.type == TokenType.IDENTIFIER and in_kw.value == "in"):
+                self._advance()
+            else:
+                raise ParseError("Expected 'in' in list comprehension", in_kw)
+            iterable = self._parse_expression()
+            condition: Node | None = None
+            if self._check(TokenType.IF):
+                self._advance()
+                condition = self._parse_expression()
+            self._expect(TokenType.RBRACKET)
+            return ListComprehension(
+                expr=first, var=var_tok.value, iterable=iterable,
+                condition=condition, line=tok.line, column=tok.column,
+            )
+        # Regular array literal
+        items.append(first)
+        if not self._match(TokenType.COMMA):
+            self._expect(TokenType.RBRACKET)
+            return ArrayLiteral(items=items, line=tok.line, column=tok.column)
         while not self._check(TokenType.RBRACKET) and not self._at_end():
             if self._check(TokenType.ELLIPSIS):
                 spread_tok = self._advance()

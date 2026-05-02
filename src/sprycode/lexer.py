@@ -102,6 +102,11 @@ class TokenType(Enum):
     LAST = auto()
     OK = auto()
     FAIL = auto()
+    RESULT = auto()
+    TAKE = auto()
+    SKIP = auto()
+    GROUPBY = auto()
+    SORT_BY = auto()
 
     # Keywords — logging
     LOG = auto()
@@ -132,6 +137,12 @@ class TokenType(Enum):
     CONTINUE = auto()
     REPEAT = auto()
     UNTIL = auto()
+    DO = auto()
+    FINALLY = auto()
+
+    # Keywords — switch / case
+    SWITCH = auto()
+    DEFAULT = auto()
 
     # Keywords — match / pattern matching
     MATCH = auto()
@@ -169,6 +180,16 @@ class TokenType(Enum):
     ASYNC = auto()
     AWAIT = auto()
     SELF = auto()
+    TYPEOF = auto()
+    INSTANCEOF = auto()
+    SPAWN = auto()
+    DEBIT = auto()
+    CREDIT = auto()
+    YIELD = auto()
+    FN_STAR = auto()  # fn* generator function
+    MIXIN = auto()    # mixin keyword for class mixins
+    WHEN = auto()     # match guard: case pattern when condition =>
+    SUPER = auto()    # super() constructor/method call
 
     # Types
     TEXT = auto()
@@ -225,9 +246,14 @@ class TokenType(Enum):
     STAR_STAR = auto()    # ** (power)
     QUESTION = auto()     # ? (ternary)
     QUESTION_QUESTION = auto()  # ?? (null coalescing)
+    QUESTION_QUESTION_EQ = auto()  # ??= (null-coalescing assignment)
     QUESTION_DOT = auto()  # ?. (optional chaining)
     ELLIPSIS = auto()     # ... (spread)
     DOTDOT = auto()       # .. (range)
+    PLUS_PLUS = auto()    # ++ (increment)
+    MINUS_MINUS = auto()  # -- (decrement)
+    PERCENT_EQ = auto()   # %=
+    REGEX = auto()        # /pattern/flags
 
     # Delimiters
     LPAREN = auto()
@@ -320,6 +346,11 @@ KEYWORDS: dict[str, TokenType] = {
     "last": TokenType.LAST,
     "ok": TokenType.OK,
     "fail": TokenType.FAIL,
+    "result": TokenType.RESULT,
+    "take": TokenType.TAKE,
+    "skip": TokenType.SKIP,
+    "groupBy": TokenType.GROUPBY,
+    "sortBy": TokenType.SORT_BY,
     "log": TokenType.LOG,
     "info": TokenType.INFO,
     "warn": TokenType.WARN,
@@ -344,6 +375,10 @@ KEYWORDS: dict[str, TokenType] = {
     "continue": TokenType.CONTINUE,
     "repeat": TokenType.REPEAT,
     "until": TokenType.UNTIL,
+    "do": TokenType.DO,
+    "finally": TokenType.FINALLY,
+    "switch": TokenType.SWITCH,
+    "default": TokenType.DEFAULT,
     "match": TokenType.MATCH,
     "assert": TokenType.ASSERT,
     "reduce": TokenType.REDUCE,
@@ -365,6 +400,15 @@ KEYWORDS: dict[str, TokenType] = {
     "async": TokenType.ASYNC,
     "await": TokenType.AWAIT,
     "self": TokenType.SELF,
+    "typeof": TokenType.TYPEOF,
+    "instanceof": TokenType.INSTANCEOF,
+    "spawn": TokenType.SPAWN,
+    "debit": TokenType.DEBIT,
+    "credit": TokenType.CREDIT,
+    "yield": TokenType.YIELD,
+    "mixin": TokenType.MIXIN,
+    "when": TokenType.WHEN,
+    "super": TokenType.SUPER,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,
     "Number": TokenType.NUMBER_TYPE,
@@ -426,6 +470,7 @@ class Lexer:
         self.line = 1
         self.column = 1
         self._tokens: list[Token] = []
+        self._last_scan_token: Token | None = None
 
     def _current(self) -> str:
         if self.pos >= len(self.source):
@@ -454,10 +499,25 @@ class Lexer:
     def tokenize(self) -> list[Token]:
         """Tokenize all source and return list of tokens."""
         tokens = []
+        self._last_scan_token = None
         for tok in self._scan():
             if tok.type != TokenType.COMMENT:
                 tokens.append(tok)
+                if tok.type not in (TokenType.NEWLINE, TokenType.COMMENT):
+                    self._last_scan_token = tok
         return tokens
+
+    def _is_regex_start(self, last_token: "Token | None") -> bool:
+        """Return True if '/' should be scanned as a regex literal rather than division."""
+        if last_token is None:
+            return True
+        # After a value-producing token, '/' is division
+        value_tokens = {
+            TokenType.NUMBER, TokenType.STRING, TokenType.FSTRING, TokenType.REGEX,
+            TokenType.IDENTIFIER, TokenType.BOOL,
+            TokenType.RPAREN, TokenType.RBRACKET,
+        }
+        return last_token.type not in value_tokens
 
     def _scan(self) -> Iterator[Token]:
         while self.pos < len(self.source):
@@ -575,6 +635,18 @@ class Lexer:
                 continue
 
             # Compound assignment operators
+            if ch == "+" and self._peek() == "+":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.PLUS_PLUS, "++", line, col)
+                continue
+
+            if ch == "-" and self._peek() == "-":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.MINUS_MINUS, "--", line, col)
+                continue
+
             if ch == "+" and self._peek() == "=":
                 self._advance()
                 self._advance()
@@ -585,6 +657,12 @@ class Lexer:
                 self._advance()
                 self._advance()
                 yield Token(TokenType.MINUS_EQ, "-=", line, col)
+                continue
+
+            if ch == "%" and self._peek() == "=":
+                self._advance()
+                self._advance()
+                yield Token(TokenType.PERCENT_EQ, "%=", line, col)
                 continue
 
             if ch == "*" and self._peek() == "*":
@@ -608,7 +686,11 @@ class Lexer:
             if ch == "?" and self._peek() == "?":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.QUESTION_QUESTION, "??", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.QUESTION_QUESTION_EQ, "??=", line, col)
+                else:
+                    yield Token(TokenType.QUESTION_QUESTION, "??", line, col)
                 continue
 
             if ch == "?" and self._peek() == ".":
@@ -633,6 +715,40 @@ class Lexer:
                 self._advance()
                 self._advance()
                 yield Token(TokenType.DOTDOT, "..", line, col)
+                continue
+
+            # Regex literal: /pattern/flags  — only when '/' cannot be division.
+            # Heuristic: if the last emitted meaningful token was a value (number,
+            # string, ident, ), ]), then '/' is division; otherwise it's a regex.
+            if ch == "/" and self._is_regex_start(self._last_scan_token):
+                self._advance()  # consume opening /
+                pattern = ""
+                in_class = False
+                while self.pos < len(self.source):
+                    rc = self._current()
+                    if rc == "\n":
+                        raise LexerError("Unterminated regex literal", line, col)
+                    if rc == "\\" and self.pos + 1 < len(self.source):
+                        pattern += self._advance()  # backslash
+                        pattern += self._advance()  # next char
+                        continue
+                    if rc == "[":
+                        in_class = True
+                    elif rc == "]":
+                        in_class = False
+                    elif rc == "/" and not in_class:
+                        self._advance()  # consume closing /
+                        break
+                    pattern += self._advance()
+                else:
+                    raise LexerError("Unterminated regex literal", line, col)
+                # consume optional flags (g, i, m, s, u, y)
+                flags = ""
+                while self.pos < len(self.source) and self._current() in "gimsuy":
+                    flags += self._advance()
+                regex_value = f"{pattern}\x00{flags}"  # embed flags after NUL separator
+                self._last_scan_token = Token(TokenType.REGEX, regex_value, line, col)
+                yield self._last_scan_token
                 continue
 
             # Single-char operators and delimiters
@@ -810,4 +926,9 @@ class Lexer:
                 break
         # Check if it's a keyword
         ttype = KEYWORDS.get(value, TokenType.IDENTIFIER)
-        yield Token(ttype, value, line, col)
+        # Special case: fn* is a generator function keyword
+        if ttype == TokenType.FN and self.pos < len(self.source) and self._current() == "*":
+            self._advance()  # consume '*'
+            yield Token(TokenType.FN_STAR, "fn*", line, col)
+        else:
+            yield Token(ttype, value, line, col)

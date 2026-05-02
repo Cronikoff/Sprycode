@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Interpreters",
 ]
 dependencies = [
-    "tomllib; python_version < '3.11'",
+    "tomli; python_version < '3.11'",
     "click>=8.0",
 ]
 

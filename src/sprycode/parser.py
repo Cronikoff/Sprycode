@@ -1076,6 +1076,8 @@ class Parser:
         body = self._parse_block()
         return InterfaceDeclaration(name=name_tok.value, body=body,
                                     line=tok.line, column=tok.column)
+
+    def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
         """Parse let [a, b, c] = expr"""
         self._expect(TokenType.LBRACKET)
         names: list[str] = []

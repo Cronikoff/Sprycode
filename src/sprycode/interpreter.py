@@ -738,10 +738,41 @@ class Interpreter:
         # WeakRef global
         env.define("WeakRef", _WeakRefNamespace())
 
-        # Set builtin — creates a deduplicated list
+        # SprySet — proper Set type with set operations
+        env.define("SprySet", _SprySetNamespace())
+
+        # Iterator global — Iterator.from(iterable)
+        env.define("Iterator", _IteratorNamespace(self))
+
+        # Promise namespace
+        env.define("Promise", _PromiseNamespace())
+
+        # Date namespace
+        env.define("Date", _DateNamespace())
+
+        # Reflect namespace
+        env.define("Reflect", _ReflectNamespace())
+
+        # globalThis — reference to the interpreter's global env dict
+        env.define("globalThis", {"__type__": "GlobalThis"})
+
+        # structuredClone — deep clone via json round-trip
+        def _structured_clone(val: Any) -> Any:
+            import json as _json
+            import copy
+            try:
+                return _json.loads(_json.dumps(val, default=lambda o: None))
+            except (TypeError, ValueError):
+                return copy.deepcopy(val)
+        env.define("structuredClone", _structured_clone)
+
+        # queueMicrotask — executes fn immediately (synchronous SpryCode model)
+        env.define("queueMicrotask", lambda fn: fn() if callable(fn) else None)
+
+        # Set builtin — creates a deduplicated list (kept for backward compat)
         def _builtin_set(lst: Any) -> list:
             if not isinstance(lst, (list, tuple)):
-                raise SpryRuntimeError("Set() requires a list", None)  # type: ignore[arg-type]
+                raise TypeError("Set() requires a list")
             seen: list = []
             for item in lst:
                 if item not in seen:
@@ -2183,6 +2214,16 @@ class Interpreter:
                         result_cw[t + i] = v
                     return result_cw
                 return _copy_within
+            if prop == "group":
+                def _group(fn: Any, _obj: list = obj) -> dict:
+                    result_g: dict = {}
+                    for item in _obj:
+                        k = fn(item)
+                        if k not in result_g:
+                            result_g[k] = []
+                        result_g[k].append(item)
+                    return result_g
+                return _group
 
         if isinstance(obj, str):
             if prop == "length":
@@ -2387,7 +2428,26 @@ class Interpreter:
                     return result
                 return _to_precision
             if prop in ("toStr", "toString"):
-                return str(int(obj)) if isinstance(obj, float) and obj == int(obj) else str(obj)
+                def _num_to_str(base: int = 10, _n: Any = obj) -> str:
+                    n = int(_n) if isinstance(_n, float) and _n == int(_n) else _n
+                    if base == 10:
+                        return str(int(n)) if isinstance(n, float) and n == int(n) else str(n)
+                    if base == 16:
+                        return format(int(n), 'x')
+                    if base == 2:
+                        return format(int(n), 'b')
+                    if base == 8:
+                        return format(int(n), 'o')
+                    # Generic: convert to given base
+                    if int(n) == 0:
+                        return "0"
+                    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+                    result_s, num = "", abs(int(n))
+                    while num:
+                        result_s = digits[num % base] + result_s
+                        num //= base
+                    return ("-" if int(n) < 0 else "") + result_s
+                return _num_to_str
             if prop in ("toInt", "floor"):
                 return int(obj)
             if prop in ("toFloat",):
@@ -2492,6 +2552,46 @@ class Interpreter:
             if prop == "done":
                 obj._materialise()
                 return obj._index >= len(obj._values)
+            if prop == "toArray":
+                obj._materialise()
+                return lambda: list(obj._values)
+            if prop == "take":
+                def _gen_take(n: int, _g: SpryGenerator = obj) -> list:
+                    _g._materialise()
+                    return list(_g._values[:int(n)])
+                return _gen_take
+            if prop == "drop":
+                def _gen_drop(n: int, _g: SpryGenerator = obj) -> list:
+                    _g._materialise()
+                    return list(_g._values[int(n):])
+                return _gen_drop
+            if prop == "map":
+                def _gen_map(fn: Any, _g: SpryGenerator = obj) -> list:
+                    _g._materialise()
+                    return [fn(v) for v in _g._values]
+                return _gen_map
+            if prop == "filter":
+                def _gen_filter(fn: Any, _g: SpryGenerator = obj) -> list:
+                    _g._materialise()
+                    return [v for v in _g._values if self._truthy(fn(v))]
+                return _gen_filter
+            if prop == "forEach":
+                def _gen_foreach(fn: Any, _g: SpryGenerator = obj) -> None:
+                    _g._materialise()
+                    for v in _g._values:
+                        fn(v)
+                return _gen_foreach
+            if prop == "reduce":
+                def _gen_reduce(fn: Any, init: Any = None, _g: SpryGenerator = obj) -> Any:
+                    _g._materialise()
+                    acc = init
+                    for v in _g._values:
+                        acc = fn(acc, v)
+                    return acc
+                return _gen_reduce
+            if prop == "length" or prop == "size":
+                obj._materialise()
+                return len(obj._values)
             raise SpryRuntimeError(f"Generator has no property {prop!r}", node)
 
         # Try attribute access
@@ -5307,3 +5407,473 @@ class _WeakRefNamespace:
 
     def __repr__(self) -> str:
         return "WeakRef"
+
+
+# ---------------------------------------------------------------------------
+# SprySet — proper Set type with set operations
+# ---------------------------------------------------------------------------
+
+
+class SprySet:
+    """A set of unique values supporting set-theory operations."""
+
+    def __init__(self, items: list = None) -> None:  # type: ignore[assignment]
+        self._data: list = []
+        if items:
+            for item in items:
+                if item not in self._data:
+                    self._data.append(item)
+
+    @property
+    def size(self) -> int:
+        return len(self._data)
+
+    def has(self, item: Any) -> bool:
+        return item in self._data
+
+    def add(self, item: Any) -> "SprySet":
+        if item not in self._data:
+            self._data.append(item)
+        return self
+
+    def delete(self, item: Any) -> bool:
+        if item in self._data:
+            self._data.remove(item)
+            return True
+        return False
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    def toList(self) -> list:
+        return list(self._data)
+
+    def union(self, other: "SprySet") -> "SprySet":
+        result = SprySet(list(self._data))
+        for item in (other._data if isinstance(other, SprySet) else other):
+            if item not in result._data:
+                result._data.append(item)
+        return result
+
+    def intersection(self, other: "SprySet") -> "SprySet":
+        other_items = other._data if isinstance(other, SprySet) else list(other)
+        return SprySet([item for item in self._data if item in other_items])
+
+    def difference(self, other: "SprySet") -> "SprySet":
+        other_items = other._data if isinstance(other, SprySet) else list(other)
+        return SprySet([item for item in self._data if item not in other_items])
+
+    def symmetricDifference(self, other: "SprySet") -> "SprySet":
+        other_items = other._data if isinstance(other, SprySet) else list(other)
+        result = [item for item in self._data if item not in other_items]
+        result += [item for item in other_items if item not in self._data]
+        return SprySet(result)
+
+    def isSubsetOf(self, other: "SprySet") -> bool:
+        other_items = other._data if isinstance(other, SprySet) else list(other)
+        return all(item in other_items for item in self._data)
+
+    def isSupersetOf(self, other: "SprySet") -> bool:
+        other_items = other._data if isinstance(other, SprySet) else list(other)
+        return all(item in self._data for item in other_items)
+
+    def isDisjointFrom(self, other: "SprySet") -> bool:
+        other_items = other._data if isinstance(other, SprySet) else list(other)
+        return not any(item in other_items for item in self._data)
+
+    def forEach(self, fn: Any) -> None:
+        for item in self._data:
+            fn(item)
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __repr__(self) -> str:
+        return f"SprySet({self._data!r})"
+
+
+class _SprySetNamespace:
+    """SprySet global — SprySet.new([items])."""
+
+    def new(self, items: Any = None) -> SprySet:
+        if items is None:
+            return SprySet()
+        if isinstance(items, (list, tuple)):
+            return SprySet(list(items))
+        return SprySet([items])
+
+    def from_(self, iterable: Any) -> SprySet:
+        try:
+            return SprySet(list(iterable))
+        except TypeError:
+            return SprySet()
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "from":
+            return self.from_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return "SprySet"
+
+
+# ---------------------------------------------------------------------------
+# Iterator global — Iterator.from(iterable) + iterator helpers
+# ---------------------------------------------------------------------------
+
+
+class _IteratorNamespace:
+    """Iterator global namespace — Iterator.from(iterable)."""
+
+    def __init__(self, interp: Any) -> None:
+        self._interp = interp
+
+    def from_(self, iterable: Any) -> list:
+        """Convert any iterable to a materialised array (iterator protocol stub)."""
+        if isinstance(iterable, SpryGenerator):
+            iterable._materialise()
+            return list(iterable._values)
+        if isinstance(iterable, SprySet):
+            return list(iterable._data)
+        if isinstance(iterable, SpryMap):
+            return [[k, v] for k, v in iterable._data.items()]
+        try:
+            return list(iterable)
+        except TypeError:
+            return []
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "from":
+            return self.from_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return "Iterator"
+
+
+# ---------------------------------------------------------------------------
+# Promise — synchronous eager resolution (SpryCode has no async event loop)
+# ---------------------------------------------------------------------------
+
+
+class SpryPromise:
+    """Synchronously-resolved promise (resolved/rejected immediately)."""
+
+    def __init__(self, value: Any = None, error: Any = None) -> None:
+        self._value = value
+        self._error = error
+        self._settled = error is None
+
+    @property
+    def value(self) -> Any:
+        return self._value
+
+    @property
+    def error(self) -> Any:
+        return self._error
+
+    @property
+    def status(self) -> str:
+        return "fulfilled" if self._settled else "rejected"
+
+    def then(self, on_fulfilled: Any = None, on_rejected: Any = None) -> "SpryPromise":
+        if self._settled and on_fulfilled is not None and callable(on_fulfilled):
+            try:
+                return SpryPromise(value=on_fulfilled(self._value))
+            except Exception as e:
+                return SpryPromise(error=str(e))
+        if not self._settled and on_rejected is not None and callable(on_rejected):
+            try:
+                return SpryPromise(value=on_rejected(self._error))
+            except Exception as e:
+                return SpryPromise(error=str(e))
+        return self
+
+    def catch(self, on_rejected: Any) -> "SpryPromise":
+        return self.then(None, on_rejected)
+
+    def finally_(self, fn: Any) -> "SpryPromise":
+        if callable(fn):
+            fn()
+        return self
+
+    def __repr__(self) -> str:
+        if self._settled:
+            return f"Promise(fulfilled: {self._value!r})"
+        return f"Promise(rejected: {self._error!r})"
+
+
+class _PromiseNamespace:
+    """Promise global namespace."""
+
+    def resolve(self, value: Any = None) -> SpryPromise:
+        return SpryPromise(value=value)
+
+    def reject(self, reason: Any = None) -> SpryPromise:
+        return SpryPromise(value=None, error=reason)
+
+    def all(self, promises: Any) -> SpryPromise:
+        """Resolve all promises; return list of values or first rejection."""
+        results = []
+        for p in (promises if isinstance(promises, (list, tuple)) else [promises]):
+            if isinstance(p, SpryPromise):
+                if not p._settled:
+                    return SpryPromise(value=None, error=p._error)
+                results.append(p._value)
+            else:
+                results.append(p)  # treat plain value as resolved
+        return SpryPromise(value=results)
+
+    def allSettled(self, promises: Any) -> SpryPromise:
+        """Return list of {status, value/reason} for each promise."""
+        results = []
+        for p in (promises if isinstance(promises, (list, tuple)) else [promises]):
+            if isinstance(p, SpryPromise):
+                if p._settled:
+                    results.append({"status": "fulfilled", "value": p._value})
+                else:
+                    results.append({"status": "rejected", "reason": p._error})
+            else:
+                results.append({"status": "fulfilled", "value": p})
+        return SpryPromise(value=results)
+
+    def race(self, promises: Any) -> SpryPromise:
+        """Return first settled promise."""
+        for p in (promises if isinstance(promises, (list, tuple)) else [promises]):
+            if isinstance(p, SpryPromise):
+                return p
+            return SpryPromise(value=p)
+        return SpryPromise(value=None)
+
+    def any(self, promises: Any) -> SpryPromise:
+        """Return first fulfilled promise; reject with AggregateError if all rejected."""
+        errors = []
+        for p in (promises if isinstance(promises, (list, tuple)) else [promises]):
+            if isinstance(p, SpryPromise):
+                if p._settled:
+                    return p
+                errors.append(p._error)
+            else:
+                return SpryPromise(value=p)
+        return SpryPromise(value=None, error=errors)
+
+    def __repr__(self) -> str:
+        return "Promise"
+
+
+# ---------------------------------------------------------------------------
+# Date namespace
+# ---------------------------------------------------------------------------
+
+
+class SpryDate:
+    """A simple date/time object."""
+
+    def __init__(self, year: int = 0, month: int = 1, day: int = 1,
+                 hour: int = 0, minute: int = 0, second: int = 0,
+                 millisecond: int = 0) -> None:
+        import datetime
+        self._dt = datetime.datetime(
+            int(year), int(month), int(day),
+            int(hour), int(minute), int(second),
+            int(millisecond) * 1000
+        )
+
+    @property
+    def year(self) -> int:
+        return self._dt.year
+
+    @property
+    def month(self) -> int:
+        return self._dt.month
+
+    @property
+    def day(self) -> int:
+        return self._dt.day
+
+    @property
+    def hour(self) -> int:
+        return self._dt.hour
+
+    @property
+    def minute(self) -> int:
+        return self._dt.minute
+
+    @property
+    def second(self) -> int:
+        return self._dt.second
+
+    @property
+    def millisecond(self) -> int:
+        return self._dt.microsecond // 1000
+
+    def getTime(self) -> float:
+        """Return milliseconds since epoch."""
+        import datetime
+        epoch = datetime.datetime(1970, 1, 1)
+        return (self._dt - epoch).total_seconds() * 1000
+
+    def toISOString(self) -> str:
+        return self._dt.isoformat() + "Z"
+
+    def toLocaleDateString(self) -> str:
+        return self._dt.strftime("%m/%d/%Y")
+
+    def toLocaleTimeString(self) -> str:
+        return self._dt.strftime("%H:%M:%S")
+
+    def toLocaleString(self) -> str:
+        return self._dt.strftime("%m/%d/%Y, %H:%M:%S")
+
+    def getFullYear(self) -> int:
+        return self._dt.year
+
+    def getMonth(self) -> int:
+        return self._dt.month - 1  # JS getMonth is 0-indexed
+
+    def getDate(self) -> int:
+        return self._dt.day
+
+    def getDay(self) -> int:
+        return self._dt.weekday()  # 0=Monday in Python
+
+    def getHours(self) -> int:
+        return self._dt.hour
+
+    def getMinutes(self) -> int:
+        return self._dt.minute
+
+    def getSeconds(self) -> int:
+        return self._dt.second
+
+    def getMilliseconds(self) -> int:
+        return self._dt.microsecond // 1000
+
+    def __repr__(self) -> str:
+        return self._dt.isoformat()
+
+
+class _DateNamespace:
+    """Date global namespace."""
+
+    def now(self) -> float:
+        """Return current time as milliseconds since epoch."""
+        import time
+        return time.time() * 1000
+
+    def new(self, year: Any = None, month: Any = 1, day: Any = 1,
+            hour: Any = 0, minute: Any = 0, second: Any = 0,
+            millisecond: Any = 0) -> SpryDate:
+        """Create a new Date object."""
+        if year is None:
+            import datetime
+            now = datetime.datetime.now()
+            return SpryDate(now.year, now.month, now.day,
+                           now.hour, now.minute, now.second,
+                           now.microsecond // 1000)
+        return SpryDate(year, month, day, hour, minute, second, millisecond)
+
+    def parse(self, date_str: str) -> float:
+        """Parse a date string and return milliseconds since epoch."""
+        import datetime
+        import time
+        formats = ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+                   "%Y-%m-%d", "%m/%d/%Y"]
+        for fmt in formats:
+            try:
+                dt = datetime.datetime.strptime(str(date_str), fmt)
+                epoch = datetime.datetime(1970, 1, 1)
+                return (dt - epoch).total_seconds() * 1000
+            except ValueError:
+                continue
+        return float('nan')
+
+    def UTC(self, year: Any, month: Any = 1, day: Any = 1,
+            hour: Any = 0, minute: Any = 0, second: Any = 0) -> float:
+        """Return UTC time as milliseconds since epoch."""
+        import datetime
+        dt = datetime.datetime(int(year), int(month), int(day),
+                               int(hour), int(minute), int(second))
+        epoch = datetime.datetime(1970, 1, 1)
+        return (dt - epoch).total_seconds() * 1000
+
+    def __repr__(self) -> str:
+        return "Date"
+
+
+# ---------------------------------------------------------------------------
+# Reflect namespace
+# ---------------------------------------------------------------------------
+
+
+class _ReflectNamespace:
+    """Reflect global namespace — mirrors JS Reflect API."""
+
+    def ownKeys(self, obj: Any) -> list:
+        """Return own enumerable keys of an object."""
+        if isinstance(obj, dict):
+            return list(obj.keys())
+        if isinstance(obj, SpryInstance):
+            return list(obj.fields.keys())
+        return []
+
+    def has(self, obj: Any, key: Any) -> bool:
+        """Return True if obj has the property key."""
+        if isinstance(obj, dict):
+            return key in obj
+        if isinstance(obj, SpryInstance):
+            return key in obj.fields
+        return False
+
+    def get(self, obj: Any, key: Any, default: Any = None) -> Any:
+        """Get a property value from obj."""
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        if isinstance(obj, SpryInstance):
+            return obj.fields.get(key, default)
+        return default
+
+    def set(self, obj: Any, key: Any, value: Any) -> bool:
+        """Set a property on obj; returns True on success."""
+        if isinstance(obj, dict):
+            obj[key] = value
+            return True
+        if isinstance(obj, SpryInstance):
+            obj.fields[key] = value
+            return True
+        return False
+
+    def deleteProperty(self, obj: Any, key: Any) -> bool:
+        """Delete a property from obj; returns True if it existed."""
+        if isinstance(obj, dict) and key in obj:
+            del obj[key]
+            return True
+        if isinstance(obj, SpryInstance) and key in obj.fields:
+            del obj.fields[key]
+            return True
+        return False
+
+    def apply(self, target: Any, this_arg: Any, args: Any) -> Any:
+        """Call target with the given args list."""
+        if callable(target):
+            return target(*(args if isinstance(args, (list, tuple)) else []))
+        return None
+
+    def construct(self, target: Any, args: Any) -> Any:
+        """Construct a new instance using target (SpryClass) with args."""
+        if callable(target):
+            return target(*(args if isinstance(args, (list, tuple)) else []))
+        return None
+
+    def defineProperty(self, obj: Any, key: Any, descriptor: Any) -> bool:
+        """Define a property (simplified — just sets value from descriptor)."""
+        if isinstance(descriptor, dict) and "value" in descriptor:
+            return self.set(obj, key, descriptor["value"])
+        return False
+
+    def getPrototypeOf(self, obj: Any) -> Any:
+        """Return None (prototype chain not modelled in SpryCode)."""
+        return None
+
+    def __repr__(self) -> str:
+        return "Reflect"

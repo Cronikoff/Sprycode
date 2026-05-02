@@ -2354,16 +2354,16 @@ class Parser:
 
         if tok.type == TokenType.LPAREN:
             self._advance()
-            # Check for lambda: (x) => expr or (a, b, c) => expr
-            # Peek ahead: if we see ident (comma ident)* ) => ...
+            # Check for lambda: () => expr  or  (x) => expr  or  (a, b) => expr
             saved_pos = self.pos
             try:
                 params: list[str] = []
+                # Zero-arg: immediately check ) =>
                 if self._check(TokenType.IDENTIFIER):
                     params.append(self._advance().value)
                     while self._match(TokenType.COMMA):
                         params.append(self._expect_ident().value)
-                if len(params) >= 1 and self._check(TokenType.RPAREN):
+                if self._check(TokenType.RPAREN):
                     self._advance()  # )
                     if self._check(TokenType.FAT_ARROW):
                         self._advance()  # =>
@@ -2371,6 +2371,11 @@ class Parser:
                             body: Node = self._parse_block()
                         else:
                             body = self._parse_null_coalesce()
+                        if len(params) == 0:
+                            # Zero-arg lambda: () => expr  — use a special single-param lambda
+                            # with no param name (empty string) so we can detect it later
+                            return MultiParamLambda(params=[], body=body,
+                                                   line=tok.line, column=tok.column)
                         if len(params) == 1:
                             return LambdaExpression(param=params[0], body=body,
                                                     line=tok.line, column=tok.column)

@@ -1188,6 +1188,11 @@ class TestListDestructure:
         assert interp.globals.get("head") == 99
         assert interp.globals.get("tail") == [2, 3]
 
+    def test_rest_not_last_raises_parse_error(self):
+        from sprycode.parser import ParseError
+        with pytest.raises(ParseError):
+            run('let [...rest, b] = [1, 2, 3]')
+
 
 # ---------------------------------------------------------------------------
 # Object destructuring

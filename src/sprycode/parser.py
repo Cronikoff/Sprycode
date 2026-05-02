@@ -1086,6 +1086,11 @@ class Parser:
             if self._check(TokenType.ELLIPSIS):
                 self._advance()
                 rest_name = self._expect_ident().value
+                if not self._check(TokenType.RBRACKET):
+                    raise ParseError(
+                        "Rest element must be the last element in a list destructuring pattern",
+                        self._current(),
+                    )
                 break  # rest must be last
             names.append(self._expect_ident().value)
             if not self._match(TokenType.COMMA):

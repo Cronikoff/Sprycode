@@ -459,8 +459,16 @@ class TestPythonNamespace:
         assert val(i, "v") == 3
 
     def test_eval_unknown_raises(self):
+        # `import` is a statement — ast.parse(mode="eval") rejects it
         with pytest.raises(Exception):
-            run('python.eval("import os; os.system(\'id\')")')
+            run('python.eval("import os")')
+
+    def test_eval_dunder_import_blocked(self):
+        # __import__ not in safe builtins — must raise at eval time
+        from sprycode.interpreter import _PythonNamespace
+        ns = _PythonNamespace()
+        with pytest.raises((NameError, Exception)):
+            ns._py_eval('__import__("os")')
 
     def test_call_sorted(self):
         i = run('let v = python.call("sorted", [3, 1, 2])')

@@ -20,3 +20,4 @@ tests/test_lexer.py
 tests/test_new_features.py
 tests/test_parser.py
 tests/test_permissions.py
+tests/test_phase4_plus.py

@@ -701,3 +701,34 @@ class InterfaceDeclaration(Node):
     """interface Printable { fn print() }"""
     name: str = ""
     body: "Block | None" = None
+
+
+# ---------------------------------------------------------------------------
+# Assignment to member / index paths
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MemberAssignment(Node):
+    """obj.prop = value  (or self.prop = value)"""
+    object: Node | None = None
+    property: str = ""
+    value: Node | None = None
+
+
+@dataclass
+class CompoundMemberAssignment(Node):
+    """obj.prop += | -= | *= | /= value"""
+    object: Node | None = None
+    property: str = ""
+    op: str = ""   # "+", "-", "*", "/"
+    value: Node | None = None
+
+
+@dataclass
+class IndexAssignment(Node):
+    """obj[index] = value"""
+    object: Node | None = None
+    index: Node | None = None
+    value: Node | None = None
+

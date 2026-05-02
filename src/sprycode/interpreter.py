@@ -31,6 +31,7 @@ from .ast_nodes import (
     ClassDeclaration,
     CompensateStatement,
     CompoundAssignment,
+    CompoundMemberAssignment,
     CompressStatement,
     ConnectorDeclaration,
     ContinueStatement,
@@ -48,6 +49,7 @@ from .ast_nodes import (
     Identifier,
     IfStatement,
     ImportStatement,
+    IndexAssignment,
     InExpression,
     IndexExpression,
     InterfaceDeclaration,
@@ -57,6 +59,7 @@ from .ast_nodes import (
     LogStatement,
     MatchArm,
     MatchStatement,
+    MemberAssignment,
     MemberExpression,
     MoveStatement,
     MultiParamLambda,
@@ -353,6 +356,17 @@ class SpryStruct:
         return obj
 
 
+class BoundMethod:
+    """A SpryCode method bound to an instance (provides implicit self)."""
+
+    def __init__(self, instance: "SpryInstance", fn: "SpryFunction") -> None:
+        self.instance = instance
+        self.fn = fn
+
+    def __repr__(self) -> str:
+        return f"<bound method {self.fn.name}>"
+
+
 # ---------------------------------------------------------------------------
 # Interpreter
 # ---------------------------------------------------------------------------
@@ -602,6 +616,58 @@ class Interpreter:
         if isinstance(node, Assignment):
             value = self._eval(node.value, env) if node.value is not None else None
             env.set(node.name, value)
+            return None
+
+        if isinstance(node, MemberAssignment):
+            obj = self._eval(node.object, env)
+            value = self._eval(node.value, env)
+            if isinstance(obj, SpryInstance):
+                obj.set(node.property, value)
+            elif isinstance(obj, dict):
+                obj[node.property] = value
+            else:
+                raise SpryRuntimeError(
+                    f"Cannot assign property {node.property!r} on {type(obj).__name__}", node
+                )
+            return None
+
+        if isinstance(node, CompoundMemberAssignment):
+            obj = self._eval(node.object, env)
+            rhs = self._eval(node.value, env)
+            if isinstance(obj, SpryInstance):
+                current = obj.fields.get(node.property)
+            elif isinstance(obj, dict):
+                current = obj.get(node.property)
+            else:
+                raise SpryRuntimeError(
+                    f"Cannot compound-assign property {node.property!r} on {type(obj).__name__}", node
+                )
+            if node.op == "+":
+                new_val = current + rhs
+            elif node.op == "-":
+                new_val = current - rhs
+            elif node.op == "*":
+                new_val = current * rhs
+            elif node.op == "/":
+                if rhs == 0:
+                    raise SpryRuntimeError("Division by zero", node)
+                new_val = current / rhs
+            else:
+                raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
+            if isinstance(obj, SpryInstance):
+                obj.set(node.property, new_val)
+            else:
+                obj[node.property] = new_val
+            return None
+
+        if isinstance(node, IndexAssignment):
+            obj = self._eval(node.object, env)
+            idx = self._eval(node.index, env)
+            value = self._eval(node.value, env)
+            try:
+                obj[idx] = value
+            except (TypeError, KeyError, IndexError) as e:
+                raise SpryRuntimeError(f"Index assignment error: {e}", node)
             return None
 
         if isinstance(node, CompoundAssignment):
@@ -1055,11 +1121,20 @@ class Interpreter:
         # Wrap any lambda/function args so Python-level closures (e.g. list.map) can call them
         py_args = [self._to_py_callable(a, env) for a in args]
 
+        if isinstance(callee, SpryClass):
+            return self._construct_class(callee, args, node)
+
+        if isinstance(callee, SpryStruct):
+            return callee.create(args)
+
         if callable(callee) and not isinstance(callee, (SpryFunction, SpryTask)):
             try:
                 return callee(*py_args)
             except Exception as e:
                 raise SpryRuntimeError(str(e), node)
+
+        if isinstance(callee, BoundMethod):
+            return self._call_bound_method(callee, args, node)
 
         if isinstance(callee, SpryFunction):
             return self._call_function(callee, args, node)
@@ -1809,6 +1884,166 @@ class Interpreter:
         source = str(self._eval(node.source, env))
         destination = str(self._eval(node.destination, env))
         return self.fs.extract_archive(source, destination)
+
+    # ------------------------------------------------------------------
+    # Enum / Struct / Class
+    # ------------------------------------------------------------------
+
+    def _exec_enum(self, node: EnumDeclaration, env: Environment) -> Any:
+        enum_obj = SpryEnum(name=node.name, variants=node.variants)
+        env.define(node.name, enum_obj, mutable=False)
+        return None
+
+    def _exec_struct(self, node: StructDeclaration, env: Environment) -> Any:
+        struct_obj = SpryStruct(name=node.name, fields=node.fields)
+        env.define(node.name, struct_obj, mutable=False)
+        return None
+
+    def _exec_class(self, node: ClassDeclaration, env: Environment) -> Any:
+        # Resolve superclass, if any
+        superclass: SpryClass | None = None
+        if node.superclass is not None:
+            try:
+                sc = env.get(node.superclass)
+                if isinstance(sc, SpryClass):
+                    superclass = sc
+            except SpryRuntimeError:
+                pass
+        cls = SpryClass(name=node.name, body=node.body, closure=env, superclass=superclass)
+        env.define(node.name, cls, mutable=False)
+        return None
+
+    def _construct_class(self, cls: SpryClass, args: list[Any], node: Node, _for_inheritance: bool = False) -> SpryInstance:
+        """Instantiate a SpryClass: set up fields from var declarations, run init if defined."""
+        # Build instance fields by executing the class body in an isolated env
+        instance_env = cls.closure.child()
+        fields: dict[str, Any] = {}
+
+        # If superclass, pre-populate fields from it (without calling super's init)
+        if cls.superclass is not None:
+            super_inst = self._construct_class(cls.superclass, [], node, _for_inheritance=True)
+            for k, v in super_inst.fields.items():
+                fields[k] = v
+                instance_env.define(k, v, mutable=True)
+
+        # Execute the class body to pick up var/fn declarations (subclass overrides superclass)
+        for stmt in cls.body.body:  # type: ignore[union-attr]
+            if isinstance(stmt, VarDeclaration):
+                val = self._eval(stmt.value, instance_env) if stmt.value is not None else None
+                fields[stmt.name] = val
+                instance_env.define(stmt.name, val, mutable=True)
+            elif isinstance(stmt, FunctionDeclaration):
+                fn = SpryFunction(
+                    name=stmt.name,
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=instance_env,
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                fields[stmt.name] = fn
+                instance_env.define(stmt.name, fn, mutable=False)
+            elif isinstance(stmt, LetDeclaration):
+                val = self._eval(stmt.value, instance_env) if stmt.value is not None else None
+                fields[stmt.name] = val
+                instance_env.define(stmt.name, val, mutable=False)
+
+        instance = SpryInstance(cls=cls, fields=fields)
+
+        # Bind "self" so methods can use it
+        instance_env.define("self", instance, mutable=False)
+
+        # Re-bind all methods with updated instance_env that includes `self`
+        for fname, fval in list(fields.items()):
+            if isinstance(fval, SpryFunction):
+                new_fn = SpryFunction(
+                    name=fval.name,
+                    params=fval.params,
+                    body=fval.body,
+                    closure=instance_env,
+                    defaults=fval.defaults,
+                    rest_param=fval.rest_param,
+                )
+                fields[fname] = new_fn
+                instance.fields[fname] = new_fn
+
+        # Call init() if defined (skip when building inheritance field structure)
+        if not _for_inheritance:
+            if "init" in fields and isinstance(fields["init"], SpryFunction):
+                self._call_bound_method(BoundMethod(instance=instance, fn=fields["init"]), args, node)
+            elif args:
+                # Positional-field constructor: Counter(10) → counter.count = 10
+                field_vars = [k for k, v in fields.items() if not callable(v) and not isinstance(v, SpryFunction)]
+                for i, arg in enumerate(args):
+                    if i < len(field_vars):
+                        instance.set(field_vars[i], arg)
+
+        return instance
+
+    def _call_bound_method(self, bm: BoundMethod, args: list[Any], node: Node) -> Any:
+        """Call a method on an instance, binding `self` in the execution environment."""
+        fn = bm.fn
+        child = fn.closure.child()
+        # Bind self so methods can do self.field = val
+        child.define("self", bm.instance, mutable=False)
+        # Also expose instance fields as direct mutable vars (for count += 1 style),
+        # recording their initial values so we can sync back only what changed directly.
+        initial_field_values: dict[str, Any] = {}
+        for fname, fval in bm.instance.fields.items():
+            if not child.has(fname):
+                child.define(fname, fval, mutable=True)
+                initial_field_values[fname] = fval
+
+        required = [
+            p for p, _ in fn.params
+            if p not in fn.defaults and not p.startswith("__destruct__")
+        ]
+        if len(args) < len(required):
+            raise SpryRuntimeError(
+                f"Method {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
+            )
+
+        for i, (pname, _ptype) in enumerate(fn.params):
+            if pname.startswith("__destruct__:"):
+                field_names = pname[len("__destruct__:"):].split(",")
+                arg_val = args[i] if i < len(args) else {}
+                if not isinstance(arg_val, dict):
+                    raise SpryRuntimeError(
+                        f"Method {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
+                    )
+                for fname in field_names:
+                    child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+            else:
+                if i < len(args):
+                    child.define(pname, args[i], mutable=False)
+                elif pname in fn.defaults:
+                    default_val = self._eval(fn.defaults[pname], fn.closure)
+                    child.define(pname, default_val, mutable=False)
+                else:
+                    child.define(pname, None, mutable=False)
+
+        if fn.rest_param is not None:
+            rest_vals = args[len(fn.params):]
+            child.define(fn.rest_param, list(rest_vals), mutable=False)
+
+        return_val = None
+        try:
+            self._exec_block(fn.body, child)
+        except ReturnSignal as r:
+            return_val = r.value
+
+        # Sync back fields that were mutated directly (count += 1 style).
+        # We only sync when the local var changed from its initial value — this
+        # avoids overwriting mutations already applied via self.field = val.
+        for fname, initial in initial_field_values.items():
+            try:
+                child_val = child.get(fname)
+            except SpryRuntimeError:
+                continue
+            if child_val is not initial and child_val != initial:
+                bm.instance.fields[fname] = child_val
+
+        return return_val
 
     # ------------------------------------------------------------------
     # Tests

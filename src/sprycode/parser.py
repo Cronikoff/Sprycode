@@ -24,6 +24,7 @@ from .ast_nodes import (
     ClassDeclaration,
     CompensateStatement,
     CompoundAssignment,
+    CompoundMemberAssignment,
     CompressStatement,
     ConnectorDeclaration,
     ContinueStatement,
@@ -41,6 +42,7 @@ from .ast_nodes import (
     Identifier,
     IfStatement,
     ImportStatement,
+    IndexAssignment,
     InExpression,
     IndexExpression,
     InterfaceDeclaration,
@@ -50,6 +52,7 @@ from .ast_nodes import (
     LogStatement,
     MatchArm,
     MatchStatement,
+    MemberAssignment,
     MemberExpression,
     MoveStatement,
     MultiParamLambda,
@@ -1333,6 +1336,24 @@ class Parser:
                 name=expr.name, value=value, line=expr.line, column=expr.column
             )
 
+        # Member assignment: obj.prop = value  (incl. self.prop = value)
+        if self._check(TokenType.EQ) and isinstance(expr, MemberExpression):
+            self._advance()
+            value = self._parse_expression()
+            return MemberAssignment(
+                object=expr.object, property=expr.property, value=value,
+                line=expr.line, column=expr.column,
+            )
+
+        # Index assignment: arr[i] = value
+        if self._check(TokenType.EQ) and isinstance(expr, IndexExpression):
+            self._advance()
+            value = self._parse_expression()
+            return IndexAssignment(
+                object=expr.object, index=expr.index, value=value,
+                line=expr.line, column=expr.column,
+            )
+
         # Compound assignments: name += value, name -= value, name *= value, name /= value
         _compound_ops = {
             TokenType.PLUS_EQ: "+",
@@ -1346,6 +1367,16 @@ class Parser:
             value = self._parse_expression()
             return CompoundAssignment(
                 name=expr.name, op=op, value=value, line=expr.line, column=expr.column
+            )
+
+        # Compound member assignments: obj.prop += value
+        if self._current().type in _compound_ops and isinstance(expr, MemberExpression):
+            op = _compound_ops[self._current().type]
+            self._advance()
+            value = self._parse_expression()
+            return CompoundMemberAssignment(
+                object=expr.object, property=expr.property, op=op, value=value,
+                line=expr.line, column=expr.column,
             )
 
         return expr
@@ -1725,6 +1756,13 @@ class Parser:
         if tok.type == TokenType.SELF:
             self._advance()
             return Identifier(name="self", line=tok.line, column=tok.column)
+
+        # new ClassName(args) → CallExpression on ClassName
+        if tok.type == TokenType.IDENTIFIER and tok.value == "new":
+            self._advance()   # consume 'new'
+            # next token is the class name identifier
+            name_tok = self._expect_ident()
+            return Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)
 
         # null keyword → NullLiteral
         if tok.type == TokenType.IDENTIFIER and tok.value == "null":

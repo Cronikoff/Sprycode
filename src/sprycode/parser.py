@@ -1763,6 +1763,8 @@ class Parser:
             TokenType.CARET_EQ: "^",
             TokenType.LSHIFT_EQ: "<<",
             TokenType.RSHIFT_EQ: ">>",
+            TokenType.AND_AND_EQ: "&&",
+            TokenType.OR_OR_EQ: "||",
         }
         if self._current().type in _compound_ops and isinstance(expr, Identifier):
             op = _compound_ops[self._current().type]

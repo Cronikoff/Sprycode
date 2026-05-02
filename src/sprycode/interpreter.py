@@ -653,7 +653,9 @@ class Interpreter:
         env.define("sqrt", math.sqrt)
         env.define("pow", pow)
         # math namespace object
-        env.define("math", _MathHelper())
+        _math_inst = _MathHelper()
+        env.define("math", _math_inst)
+        env.define("Math", _math_inst)  # uppercase JS-compatible alias
 
         # stats namespace object
         env.define("stats", _StatsHelper())
@@ -749,6 +751,39 @@ class Interpreter:
 
         # Date namespace
         env.define("Date", _DateNamespace())
+
+        # console namespace
+        env.define("console", _ConsoleNamespace())
+
+        # crypto namespace
+        env.define("crypto", _CryptoNamespace())
+
+        # WeakMap global
+        env.define("WeakMap", _WeakMapNamespace())
+
+        # WeakSet global
+        env.define("WeakSet", _WeakSetNamespace())
+
+        # Intl namespace
+        env.define("Intl", _IntlNamespace())
+
+        # FinalizationRegistry
+        env.define("FinalizationRegistry", _FinalizationRegistryNamespace())
+
+        # Proxy
+        env.define("Proxy", _ProxyNamespace(self))
+
+        # eval — evaluate SpryCode source string
+        def _spry_eval(src: Any) -> Any:
+            from .lexer import Lexer as _Lexer
+            from .parser import Parser as _Parser
+            _tokens = _Lexer(str(src)).tokenize()
+            _prog = _Parser(_tokens).parse()
+            _result = None
+            for stmt in _prog.body:
+                _result = self._eval(stmt, env)
+            return _result
+        env.define("eval", _spry_eval)
 
         # Reflect namespace
         env.define("Reflect", _ReflectNamespace())
@@ -964,7 +999,9 @@ class Interpreter:
         if isinstance(node, MemberAssignment):
             obj = self._eval(node.object, env)
             value = self._eval(node.value, env)
-            if isinstance(obj, SpryInstance):
+            if isinstance(obj, SpryProxy):
+                obj._spry_set_prop(node.property, value)
+            elif isinstance(obj, SpryInstance):
                 # Check for setter first
                 setter_key = f"__setter__{node.property}"
                 if setter_key in obj.fields:
@@ -1051,6 +1088,18 @@ class Interpreter:
             elif node.op == "??":
                 # ??= : only assign if current value is null/None
                 if current is None:
+                    new_val = rhs
+                else:
+                    return None  # no-op
+            elif node.op == "&&":
+                # &&= : only assign if current is truthy
+                if self._truthy(current):
+                    new_val = rhs
+                else:
+                    return None  # no-op
+            elif node.op == "||":
+                # ||= : only assign if current is falsy
+                if not self._truthy(current):
                     new_val = rhs
                 else:
                     return None  # no-op
@@ -2398,6 +2447,12 @@ class Interpreter:
                 return lambda n=0, _obj=obj: ord(_obj[int(n)]) if 0 <= int(n) < len(_obj) else None
             if prop == "codePointAt":
                 return lambda n=0, _obj=obj: ord(_obj[int(n)]) if 0 <= int(n) < len(_obj) else None
+            if prop == "isWellFormed":
+                # Python strings are always well-formed Unicode sequences
+                return lambda _obj=obj: True
+            if prop == "toWellFormed":
+                # Python strings are already well-formed; return unchanged
+                return lambda _obj=obj: _obj
             if prop == "replaceRegex":
                 def _replace_regex(pattern: Any, repl: str = "", _obj: str = obj) -> str:
                     if isinstance(pattern, SpryRegex):
@@ -2594,6 +2649,9 @@ class Interpreter:
                 obj._materialise()
                 return len(obj._values)
             raise SpryRuntimeError(f"Generator has no property {prop!r}", node)
+
+        if isinstance(obj, SpryProxy):
+            return obj._spry_get_prop(prop)
 
         # Try attribute access
         try:
@@ -4143,6 +4201,21 @@ class _ObjectNamespace:
             return list(obj.keys())
         return []
 
+    def is_(self, a: Any, b: Any) -> bool:
+        """SameValue comparison — like === but NaN===NaN and -0!==+0."""
+        if isinstance(a, float) and isinstance(b, float):
+            if math.isnan(a) and math.isnan(b):
+                return True
+        if a == 0 and b == 0:
+            # Distinguish +0 and -0
+            return math.copysign(1.0, float(a)) == math.copysign(1.0, float(b))
+        return a is b or a == b
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "is":
+            return self.is_
+        raise AttributeError(prop)
+
     def __repr__(self) -> str:
         return "Object"
 
@@ -4827,6 +4900,41 @@ class _MathHelper:
     def midpoint(self, x1: Any, y1: Any, x2: Any, y2: Any) -> list:
         """Midpoint of two 2-D points: [(x1+x2)/2, (y1+y2)/2]."""
         return [(float(x1) + float(x2)) / 2, (float(y1) + float(y2)) / 2]
+
+    # ── JS Math compatibility aliases ─────────────────────────────────────────
+
+    def trunc(self, x: Any) -> int:
+        """Truncate toward zero (JS Math.trunc equivalent)."""
+        return math.trunc(float(x))
+
+    def sign(self, x: Any) -> int:
+        """Return -1, 0, or 1 (JS Math.sign equivalent)."""
+        v = float(x)
+        if v > 0:
+            return 1
+        if v < 0:
+            return -1
+        return 0
+
+    def clz32(self, x: Any) -> int:
+        """Count leading zeros in a 32-bit integer (JS Math.clz32 equivalent)."""
+        n = int(x) & 0xFFFFFFFF
+        if n == 0:
+            return 32
+        return 31 - int(math.log2(n))
+
+    def fround(self, x: Any) -> float:
+        """Round to nearest 32-bit float (JS Math.fround equivalent)."""
+        import struct as _struct
+        return _struct.unpack('f', _struct.pack('f', float(x)))[0]
+
+    def imul(self, a: Any, b: Any) -> int:
+        """32-bit integer multiplication (JS Math.imul equivalent)."""
+        result = (int(a) & 0xFFFFFFFF) * (int(b) & 0xFFFFFFFF) & 0xFFFFFFFF
+        # Convert to signed 32-bit
+        if result >= 0x80000000:
+            result -= 0x100000000
+        return result
 
 
 class _StatsHelper:
@@ -5882,3 +5990,508 @@ class _ReflectNamespace:
 
     def __repr__(self) -> str:
         return "Reflect"
+
+
+# ---------------------------------------------------------------------------
+# console namespace
+# ---------------------------------------------------------------------------
+
+
+class _ConsoleNamespace:
+    """console global — console.log, console.warn, console.error, etc."""
+
+    def __init__(self) -> None:
+        self._timers: dict = {}
+        self._counts: dict = {}
+
+    def log(self, *args: Any) -> None:
+        print(*[str(a) if not isinstance(a, str) else a for a in args])
+
+    def warn(self, *args: Any) -> None:
+        import sys as _sys
+        print("WARNING:", *[str(a) for a in args], file=_sys.stderr)
+
+    def error(self, *args: Any) -> None:
+        import sys as _sys
+        print("ERROR:", *[str(a) for a in args], file=_sys.stderr)
+
+    def info(self, *args: Any) -> None:
+        print("INFO:", *[str(a) for a in args])
+
+    def debug(self, *args: Any) -> None:
+        print("DEBUG:", *[str(a) for a in args])
+
+    def assert_(self, condition: Any, *args: Any) -> None:
+        if not condition:
+            import sys as _sys
+            msg = " ".join(str(a) for a in args) if args else "Assertion failed"
+            print(f"Assertion failed: {msg}", file=_sys.stderr)
+
+    def dir(self, obj: Any) -> None:
+        if isinstance(obj, dict):
+            print(obj)
+        else:
+            print(vars(obj) if hasattr(obj, '__dict__') else repr(obj))
+
+    def table(self, data: Any) -> None:
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            keys = list(data[0].keys())
+            print("\t".join(str(k) for k in keys))
+            for row in data:
+                print("\t".join(str(row.get(k, "")) for k in keys))
+        else:
+            print(repr(data))
+
+    def time(self, label: Any = "default") -> None:
+        import time as _time
+        self._timers[str(label)] = _time.perf_counter()
+
+    def timeEnd(self, label: Any = "default") -> None:
+        import time as _time
+        key = str(label)
+        if key in self._timers:
+            elapsed = (_time.perf_counter() - self._timers.pop(key)) * 1000
+            print(f"{key}: {elapsed:.3f}ms")
+
+    def timeLog(self, label: Any = "default") -> None:
+        import time as _time
+        key = str(label)
+        if key in self._timers:
+            elapsed = (_time.perf_counter() - self._timers[key]) * 1000
+            print(f"{key}: {elapsed:.3f}ms")
+
+    def count(self, label: Any = "default") -> None:
+        key = str(label)
+        self._counts[key] = self._counts.get(key, 0) + 1
+        print(f"{key}: {self._counts[key]}")
+
+    def countReset(self, label: Any = "default") -> None:
+        self._counts.pop(str(label), None)
+
+    def group(self, *args: Any) -> None:
+        print("  ", *[str(a) for a in args])
+
+    def groupEnd(self) -> None:
+        pass
+
+    def groupCollapsed(self, *args: Any) -> None:
+        self.group(*args)
+
+    def trace(self, *args: Any) -> None:
+        import traceback as _tb
+        print("Trace:", *[str(a) for a in args])
+        _tb.print_stack(limit=3)
+
+    def clear(self) -> None:
+        pass  # no-op in non-terminal contexts
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "assert":
+            return self.assert_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return "console"
+
+
+# ---------------------------------------------------------------------------
+# crypto namespace
+# ---------------------------------------------------------------------------
+
+
+class _CryptoNamespace:
+    """crypto global — randomUUID, randomBytes, getRandomValues."""
+
+    def randomUUID(self) -> str:
+        """Return a random UUID v4 string."""
+        import uuid as _uuid
+        return str(_uuid.uuid4())
+
+    def randomBytes(self, size: Any) -> list:
+        """Return a list of `size` random bytes (integers 0-255)."""
+        import os as _os
+        return list(_os.urandom(int(size)))
+
+    def getRandomValues(self, arr: Any) -> list:
+        """Fill a list with random values (similar to Web Crypto getRandomValues)."""
+        import os as _os
+        n = len(arr) if isinstance(arr, list) else int(arr)
+        return list(_os.urandom(n))
+
+    def subtle(self) -> None:
+        """Stub — async crypto.subtle API not supported in SpryCode."""
+        return None
+
+    def __repr__(self) -> str:
+        return "crypto"
+
+
+# ---------------------------------------------------------------------------
+# WeakMap / WeakSet
+# ---------------------------------------------------------------------------
+
+
+class SpryWeakMap:
+    """WeakMap — object-keyed map using id()-based lookup (Python-level weak semantics)."""
+
+    def __init__(self) -> None:
+        self._data: dict = {}
+
+    def set(self, key: Any, value: Any) -> "SpryWeakMap":
+        self._data[id(key)] = (key, value)
+        return self
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        entry = self._data.get(id(key))
+        return entry[1] if entry is not None else default
+
+    def has(self, key: Any) -> bool:
+        return id(key) in self._data
+
+    def delete(self, key: Any) -> bool:
+        return bool(self._data.pop(id(key), None))
+
+    def __repr__(self) -> str:
+        return f"WeakMap({len(self._data)} entries)"
+
+
+class _WeakMapNamespace:
+    """WeakMap global namespace — WeakMap.new()."""
+
+    def new(self) -> SpryWeakMap:
+        return SpryWeakMap()
+
+    def __repr__(self) -> str:
+        return "WeakMap"
+
+
+class SpryWeakSet:
+    """WeakSet — object collection using id()-based membership."""
+
+    def __init__(self) -> None:
+        self._data: dict = {}
+
+    def add(self, key: Any) -> "SpryWeakSet":
+        self._data[id(key)] = key
+        return self
+
+    def has(self, key: Any) -> bool:
+        return id(key) in self._data
+
+    def delete(self, key: Any) -> bool:
+        return bool(self._data.pop(id(key), None))
+
+    def __repr__(self) -> str:
+        return f"WeakSet({len(self._data)} entries)"
+
+
+class _WeakSetNamespace:
+    """WeakSet global namespace — WeakSet.new()."""
+
+    def new(self) -> SpryWeakSet:
+        return SpryWeakSet()
+
+    def __repr__(self) -> str:
+        return "WeakSet"
+
+
+# ---------------------------------------------------------------------------
+# Intl namespace
+# ---------------------------------------------------------------------------
+
+
+class _IntlNumberFormat:
+    """Intl.NumberFormat stub."""
+
+    def __init__(self, locale: str = "en-US", options: Any = None) -> None:
+        self._locale = str(locale)
+        self._options = options or {}
+
+    def format(self, value: Any) -> str:
+        try:
+            import locale as _locale
+            # Simple formatting with thousands separator
+            v = float(value)
+            style = self._options.get("style", "decimal") if isinstance(self._options, dict) else "decimal"
+            if style == "currency":
+                currency = self._options.get("currency", "USD") if isinstance(self._options, dict) else "USD"
+                return f"{currency} {v:,.2f}"
+            if style == "percent":
+                return f"{v * 100:.1f}%"
+            # Default decimal
+            minimumFractionDigits = self._options.get("minimumFractionDigits", 0) if isinstance(self._options, dict) else 0
+            maximumFractionDigits = self._options.get("maximumFractionDigits", 3) if isinstance(self._options, dict) else 3
+            if minimumFractionDigits > 0:
+                return f"{v:,.{maximumFractionDigits}f}"
+            return f"{v:,}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def formatRange(self, start: Any, end: Any) -> str:
+        return f"{self.format(start)}–{self.format(end)}"
+
+    def resolvedOptions(self) -> dict:
+        return {"locale": self._locale}
+
+    def __repr__(self) -> str:
+        return f"Intl.NumberFormat({self._locale!r})"
+
+
+class _IntlDateTimeFormat:
+    """Intl.DateTimeFormat stub."""
+
+    def __init__(self, locale: str = "en-US", options: Any = None) -> None:
+        self._locale = str(locale)
+        self._options = options or {}
+
+    def format(self, date: Any) -> str:
+        if isinstance(date, SpryDate):
+            return date._dt.strftime("%m/%d/%Y")
+        return str(date)
+
+    def formatRange(self, start: Any, end: Any) -> str:
+        return f"{self.format(start)} – {self.format(end)}"
+
+    def resolvedOptions(self) -> dict:
+        return {"locale": self._locale}
+
+    def __repr__(self) -> str:
+        return f"Intl.DateTimeFormat({self._locale!r})"
+
+
+class _IntlCollator:
+    """Intl.Collator stub."""
+
+    def __init__(self, locale: str = "en-US", options: Any = None) -> None:
+        self._locale = str(locale)
+
+    def compare(self, a: Any, b: Any) -> int:
+        a_s, b_s = str(a), str(b)
+        if a_s < b_s:
+            return -1
+        if a_s > b_s:
+            return 1
+        return 0
+
+    def resolvedOptions(self) -> dict:
+        return {"locale": self._locale}
+
+    def __repr__(self) -> str:
+        return f"Intl.Collator({self._locale!r})"
+
+
+class _IntlPluralRules:
+    """Intl.PluralRules stub."""
+
+    def __init__(self, locale: str = "en-US", options: Any = None) -> None:
+        self._locale = str(locale)
+        self._options = options or {}
+
+    def select(self, n: Any) -> str:
+        # English plural rules (simplified)
+        v = float(n)
+        if v == 1:
+            return "one"
+        return "other"
+
+    def resolvedOptions(self) -> dict:
+        return {"locale": self._locale, "type": "cardinal"}
+
+    def __repr__(self) -> str:
+        return f"Intl.PluralRules({self._locale!r})"
+
+
+class _IntlRelativeTimeFormat:
+    """Intl.RelativeTimeFormat stub."""
+
+    def __init__(self, locale: str = "en-US", options: Any = None) -> None:
+        self._locale = str(locale)
+
+    def format(self, value: Any, unit: str = "second") -> str:
+        v = int(value)
+        sign = "" if v >= 0 else ""
+        return f"{v} {unit}{'s' if abs(v) != 1 else ''} ago" if v < 0 else f"in {v} {unit}{'s' if abs(v) != 1 else ''}"
+
+    def __repr__(self) -> str:
+        return f"Intl.RelativeTimeFormat({self._locale!r})"
+
+
+class _IntlListFormat:
+    """Intl.ListFormat stub."""
+
+    def __init__(self, locale: str = "en-US", options: Any = None) -> None:
+        self._locale = str(locale)
+
+    def format(self, lst: Any) -> str:
+        items = [str(x) for x in (lst if isinstance(lst, list) else [])]
+        if len(items) == 0:
+            return ""
+        if len(items) == 1:
+            return items[0]
+        return ", ".join(items[:-1]) + " and " + items[-1]
+
+    def __repr__(self) -> str:
+        return f"Intl.ListFormat({self._locale!r})"
+
+
+class _IntlNamespace:
+    """Intl global namespace."""
+
+    def NumberFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlNumberFormat:
+        return _IntlNumberFormat(str(locale), options)
+
+    def DateTimeFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlDateTimeFormat:
+        return _IntlDateTimeFormat(str(locale), options)
+
+    def Collator(self, locale: Any = "en-US", options: Any = None) -> _IntlCollator:
+        return _IntlCollator(str(locale), options)
+
+    def PluralRules(self, locale: Any = "en-US", options: Any = None) -> _IntlPluralRules:
+        return _IntlPluralRules(str(locale), options)
+
+    def RelativeTimeFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlRelativeTimeFormat:
+        return _IntlRelativeTimeFormat(str(locale), options)
+
+    def ListFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlListFormat:
+        return _IntlListFormat(str(locale), options)
+
+    def getCanonicalLocales(self, locales: Any) -> list:
+        if isinstance(locales, list):
+            return [str(l) for l in locales]
+        return [str(locales)]
+
+    def supportedValuesOf(self, key: str) -> list:
+        _known: dict = {
+            "currency": ["USD", "EUR", "GBP", "JPY"],
+            "calendar": ["gregory", "iso8601"],
+            "collation": ["default", "standard"],
+            "numberingSystem": ["latn"],
+            "timeZone": ["UTC"],
+            "unit": ["meter", "kilogram", "second"],
+        }
+        return _known.get(str(key), [])
+
+    def __repr__(self) -> str:
+        return "Intl"
+
+
+# ---------------------------------------------------------------------------
+# FinalizationRegistry — stub (no GC hooks in CPython/SpryCode)
+# ---------------------------------------------------------------------------
+
+
+class SpryFinalizationRegistry:
+    """FinalizationRegistry — no-op stub (GC callbacks not supported)."""
+
+    def __init__(self, callback: Any) -> None:
+        self._callback = callback
+
+    def register(self, target: Any, held_value: Any, token: Any = None) -> None:
+        pass  # no-op
+
+    def unregister(self, token: Any) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "FinalizationRegistry"
+
+
+class _FinalizationRegistryNamespace:
+    """FinalizationRegistry global namespace."""
+
+    def new(self, callback: Any) -> SpryFinalizationRegistry:
+        return SpryFinalizationRegistry(callback)
+
+    def __repr__(self) -> str:
+        return "FinalizationRegistry"
+
+
+# ---------------------------------------------------------------------------
+# Proxy — basic get/set/has/deleteProperty/apply traps
+# ---------------------------------------------------------------------------
+
+
+class SpryProxy:
+    """Basic Proxy implementation supporting get, set, has, deleteProperty traps."""
+
+    def __init__(self, target: Any, handler: Any, interp: Any) -> None:
+        object.__setattr__(self, '_target', target)
+        object.__setattr__(self, '_handler', handler)
+        object.__setattr__(self, '_interp', interp)
+
+    def _invoke_trap(self, trap: Any, *args: Any) -> Any:
+        """Invoke a trap (SpryMultiLambda, SpryFunction, or plain callable) via interpreter."""
+        interp = object.__getattribute__(self, '_interp')
+        from sprycode.interpreter import SpryMultiLambda, SpryFunction, SpryLambda
+        if isinstance(trap, (SpryMultiLambda,)):
+            return interp._apply_multi_lambda(trap, list(args), interp.globals)
+        if isinstance(trap, SpryLambda):
+            return interp._apply_lambda(trap, args[0] if args else None, interp.globals)
+        if isinstance(trap, SpryFunction):
+            # Build a fake node for error reporting
+            class _FakeNode:
+                line = 0
+                column = 0
+            return interp._call_function(trap, list(args), _FakeNode())
+        if callable(trap):
+            return trap(*args)
+        return None
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        target = object.__getattribute__(self, '_target')
+        handler = object.__getattribute__(self, '_handler')
+        # Check for get trap
+        if isinstance(handler, dict) and 'get' in handler:
+            trap = handler['get']
+            return self._invoke_trap(trap, target, prop)
+        # Fall through to target
+        if isinstance(target, dict):
+            return target.get(prop)
+        if isinstance(target, SpryInstance):
+            return target.fields.get(prop)
+        return None
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        target = object.__getattribute__(self, '_target')
+        handler = object.__getattribute__(self, '_handler')
+        if isinstance(handler, dict) and 'set' in handler:
+            trap = handler['set']
+            self._invoke_trap(trap, target, prop, value)
+            return
+        if isinstance(target, dict):
+            target[prop] = value
+        elif isinstance(target, SpryInstance):
+            target.fields[prop] = value
+
+    def _spry_has_prop(self, prop: str) -> bool:
+        target = object.__getattribute__(self, '_target')
+        handler = object.__getattribute__(self, '_handler')
+        if isinstance(handler, dict) and 'has' in handler:
+            trap = handler['has']
+            return bool(self._invoke_trap(trap, target, prop))
+        if isinstance(target, dict):
+            return prop in target
+        if isinstance(target, SpryInstance):
+            return prop in target.fields
+        return False
+
+    def __repr__(self) -> str:
+        target = object.__getattribute__(self, '_target')
+        return f"Proxy({target!r})"
+
+
+class _ProxyNamespace:
+    """Proxy global namespace — Proxy.new(target, handler)."""
+
+    def __init__(self, interp: Any) -> None:
+        self._interp = interp
+
+    def new(self, target: Any, handler: Any = None) -> SpryProxy:
+        return SpryProxy(target, handler or {}, self._interp)
+
+    def revocable(self, target: Any, handler: Any = None) -> dict:
+        proxy = SpryProxy(target, handler or {}, self._interp)
+        return {"proxy": proxy, "revoke": lambda: None}
+
+    def __repr__(self) -> str:
+        return "Proxy"

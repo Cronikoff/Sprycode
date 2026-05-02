@@ -234,6 +234,8 @@ class TokenType(Enum):
     GT_EQ = auto()
     AND_AND = auto()
     OR_OR = auto()
+    AND_AND_EQ = auto()   # &&= (logical-and assignment)
+    OR_OR_EQ = auto()     # ||= (logical-or assignment)
     BANG = auto()
     EQ = auto()
     ARROW = auto()        # ->
@@ -638,13 +640,21 @@ class Lexer:
             if ch == "&" and self._peek() == "&":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.AND_AND, "&&", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.AND_AND_EQ, "&&=", line, col)
+                else:
+                    yield Token(TokenType.AND_AND, "&&", line, col)
                 continue
 
             if ch == "|" and self._peek() == "|":
                 self._advance()
                 self._advance()
-                yield Token(TokenType.OR_OR, "||", line, col)
+                if self._current() == "=":
+                    self._advance()
+                    yield Token(TokenType.OR_OR_EQ, "||=", line, col)
+                else:
+                    yield Token(TokenType.OR_OR, "||", line, col)
                 continue
 
             # Compound assignment operators

@@ -3702,42 +3702,44 @@ class Interpreter:
         return {"type": "credit", "account": account, "amount": amount}
 
     def _spry_typeof(self, val: Any) -> str:
-        """Return the JS-compatible type name of a value."""
+        """Return the SpryCode type name of a value."""
         if val is None:
-            return "undefined"
+            return "Null"
         if isinstance(val, bool):
-            return "boolean"
+            return "Bool"
         if isinstance(val, int):
-            return "number"
+            return "Int"
         if isinstance(val, float):
-            return "number"
+            return "Float"
         if isinstance(val, str):
-            return "string"
+            return "Text"
         if isinstance(val, list):
-            return "object"
+            return "List"
         if isinstance(val, dict):
-            return "object"
+            return "Object"
         if isinstance(val, SpryGenerator):
-            return "object"
-        if isinstance(val, (SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod)):
-            return "function"
-        if callable(val) and not isinstance(val, (SpryInstance, SpryClass)):
-            return "function"
-        if isinstance(val, SprySymbol):
-            return "symbol"
+            return "Generator"
+        if isinstance(val, SpryFunction):
+            return "Function"
+        if isinstance(val, (SpryLambda, SpryMultiLambda)):
+            return "Function"
         if isinstance(val, SpryInstance):
-            return "object"
+            return val.cls.name
         if isinstance(val, SpryClass):
-            return "function"
+            return "Class"
         if isinstance(val, SpryStruct):
-            return "object"
+            return "Struct"
         if isinstance(val, SpryMoney):
-            return "object"
+            return "Money"
         if isinstance(val, SpryResult):
-            return "object"
+            return "Result"
         if isinstance(val, SpryRegex):
-            return "object"
-        return "object"
+            return "Regex"
+        if isinstance(val, SpryFile):
+            return "File"
+        if isinstance(val, SpryFolder):
+            return "Folder"
+        return type(val).__name__
 
     def _eval_type_cast(self, node: TypeCastExpression, env: Environment) -> Any:
         """Evaluate `expr as TypeName` — convert value to the target type."""

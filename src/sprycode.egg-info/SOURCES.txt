@@ -18,6 +18,7 @@ src/sprycode/runtime/stdlib.py
 tests/test_interpreter.py
 tests/test_lexer.py
 tests/test_new_features.py
+tests/test_oop.py
 tests/test_parser.py
 tests/test_permissions.py
 tests/test_phase4_plus.py

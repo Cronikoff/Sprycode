@@ -945,7 +945,8 @@ class ResultLiteral(Node):
 class TaggedTemplateExpression(Node):
     """tag`template ${expr}` — a tagged template literal call"""
     tag: "Node | None" = None       # the tag function expression
-    template: str = ""              # the raw template string (like FStringExpression.raw_template)
+    template: str = ""              # the processed template string (escape sequences resolved)
+    raw_template: str = ""          # the raw template string (escape sequences preserved)
 
 
 @dataclass

@@ -1126,6 +1126,20 @@ class Parser:
             saved_pos = self.pos
             try:
                 init_stmt = self._parse_statement()
+                # Handle comma-separated declarations: var i = 0, j = 10
+                if self._check(TokenType.COMMA) and isinstance(init_stmt, (VarDeclaration, LetDeclaration)):
+                    stmts = [init_stmt]
+                    while self._match(TokenType.COMMA):
+                        # Parse the next IDENT = expr (no var/let keyword)
+                        name_tok = self._expect_ident()
+                        self._expect(TokenType.EQ)
+                        val_node = self._parse_expression()
+                        # Use the same mutability as the first declaration
+                        if isinstance(init_stmt, VarDeclaration):
+                            stmts.append(VarDeclaration(name=name_tok.value, type_annotation=None, value=val_node, line=name_tok.line, column=name_tok.column))
+                        else:
+                            stmts.append(LetDeclaration(name=name_tok.value, type_annotation=None, value=val_node, privacy=None, line=name_tok.line, column=name_tok.column))
+                    init_stmt = Block(body=stmts, line=stmts[0].line, column=stmts[0].column)
                 if self._match(TokenType.SEMICOLON):
                     condition = self._parse_value_expression()
                     self._expect(TokenType.SEMICOLON)
@@ -2501,8 +2515,13 @@ class Parser:
             if self._check(TokenType.DOT):
                 self._advance()
                 prop_tok = self._current()
-                # Property can be any identifier or keyword used as a property
-                prop = self._advance().value
+                # Handle private field access: self.#name  (DOT followed by PRIVATE_IDENT)
+                if prop_tok.type == TokenType.PRIVATE_IDENT:
+                    self._advance()
+                    prop = f"__private__{prop_tok.value}"
+                else:
+                    # Property can be any identifier or keyword used as a property
+                    prop = self._advance().value
                 if self._check(TokenType.LPAREN):
                     # Method call
                     self._advance()
@@ -2593,9 +2612,14 @@ class Parser:
             elif self._check(TokenType.FSTRING):
                 # Tagged template literal: tag`...`
                 tmpl_tok = self._advance()
+                # Token value is "processed\x00raw" from the lexer
+                _parts = tmpl_tok.value.split("\x00", 1)
+                _processed = _parts[0]
+                _raw = _parts[1] if len(_parts) > 1 else _parts[0]
                 expr = TaggedTemplateExpression(
                     tag=expr,
-                    template=tmpl_tok.value,
+                    template=_processed,
+                    raw_template=_raw,
                     line=tmpl_tok.line,
                     column=tmpl_tok.column,
                 )
@@ -2802,7 +2826,9 @@ class Parser:
 
         if tok.type == TokenType.FSTRING:
             self._advance()
-            return FStringExpression(raw_template=tok.value, line=tok.line, column=tok.column)
+            # Token value is "processed\x00raw" — FStringExpression uses the processed part
+            _fstr_val = tok.value.split("\x00", 1)[0]
+            return FStringExpression(raw_template=_fstr_val, line=tok.line, column=tok.column)
 
         if tok.type == TokenType.OK:
             self._advance()

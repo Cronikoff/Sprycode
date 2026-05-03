@@ -874,6 +874,15 @@ class Interpreter:
         env.define("isNaN", lambda x: math.isnan(float(x)) if isinstance(x, (int, float)) else False)
         env.define("isFinite", lambda x: math.isfinite(float(x)) if isinstance(x, (int, float)) else True)
 
+        # URI encoding/decoding (JS-compat)
+        import urllib.parse as _urllib_parse
+        env.define("encodeURIComponent", lambda s: _urllib_parse.quote(str(s), safe=""))
+        env.define("decodeURIComponent", lambda s: _urllib_parse.unquote(str(s)))
+        # encodeURI preserves URI-safe characters
+        _URI_SAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();/?:@&=+$,#"
+        env.define("encodeURI", lambda s: _urllib_parse.quote(str(s), safe=_URI_SAFE))
+        env.define("decodeURI", lambda s: _urllib_parse.unquote(str(s)))
+
         # Constants
         env.define("ok", SPRY_OK)
         env.define("true", True)
@@ -1125,7 +1134,8 @@ class Interpreter:
         """
         import re as _re
         tag_fn = self._eval(node.tag, env)
-        template = node.template
+        # Use raw_template when available (preserves \\n etc for String.raw)
+        template = node.raw_template if node.raw_template else node.template
         strings: list[str] = []
         values: list[Any] = []
         last = 0
@@ -1971,6 +1981,17 @@ class Interpreter:
             item_val = self._eval(node.item, env)
             coll_val = self._eval(node.collection, env)
             if isinstance(coll_val, (list, tuple)):
+                # JS semantics: `key in array` checks if index exists
+                if isinstance(item_val, (int, float)) and not isinstance(item_val, bool):
+                    idx = int(item_val)
+                    return 0 <= idx < len(coll_val)
+                # String "0" etc. also treated as index
+                if isinstance(item_val, str):
+                    try:
+                        idx = int(item_val)
+                        return 0 <= idx < len(coll_val)
+                    except ValueError:
+                        pass
                 return item_val in coll_val
             if isinstance(coll_val, dict):
                 return item_val in coll_val
@@ -3650,6 +3671,19 @@ class Interpreter:
         return self.fs.write_file(path, data)
 
     def _exec_delete(self, node: DeleteStatement, env: Environment) -> Any:
+        # JS-style `delete obj.prop` / `delete obj[key]` — remove a property from an object/dict
+        if node.target_type == "file" and isinstance(node.path, (MemberExpression, IndexExpression)):
+            obj = self._eval(node.path.object, env)
+            prop = (
+                node.path.property
+                if isinstance(node.path, MemberExpression)
+                else self._eval(node.path.index, env)
+            )
+            if isinstance(obj, dict):
+                obj.pop(prop, None)
+            elif isinstance(obj, SpryInstance):
+                obj.fields.pop(str(prop), None)
+            return True
         path = str(self._eval(node.path, env))
         if node.target_type == "folder":
             return self.fs.delete_folder(path)
@@ -3832,7 +3866,11 @@ class Interpreter:
         """Execute C-style for loop: for var i = 0; i < n; i++ { ... }"""
         child_env = env.child()
         if node.init is not None:
-            self._exec(node.init, child_env)
+            if isinstance(node.init, Block):
+                for stmt in node.init.body:
+                    self._exec(stmt, child_env)
+            else:
+                self._exec(node.init, child_env)
         max_iterations = 100_000
         count = 0
         while node.condition is None or self._truthy(self._eval(node.condition, child_env)):
@@ -4105,10 +4143,10 @@ class Interpreter:
             return "Object"
         if isinstance(val, SpryGenerator):
             return "Generator"
-        if isinstance(val, SpryFunction):
+        if isinstance(val, (SpryFunction, SpryLambda, SpryMultiLambda)):
             return "Function"
-        if isinstance(val, (SpryLambda, SpryMultiLambda)):
-            return "Function"
+        if isinstance(val, SprySymbol):
+            return "Symbol"
         if isinstance(val, SpryInstance):
             return val.cls.name
         if isinstance(val, SpryClass):
@@ -4125,6 +4163,8 @@ class Interpreter:
             return "File"
         if isinstance(val, SpryFolder):
             return "Folder"
+        if callable(val):
+            return "Function"
         return type(val).__name__
 
     def _eval_type_cast(self, node: TypeCastExpression, env: Environment) -> Any:

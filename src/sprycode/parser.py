@@ -278,12 +278,12 @@ class Parser:
         if tok.type == TokenType.EXPORT:
             return self._parse_export()
         if tok.type == TokenType.ASYNC:
-            # async fn — same as fn, just skip the async keyword
+            # async fn — parse function and mark it as async
             self._advance()
             if self._check(TokenType.FN):
-                return self._parse_fn()
+                return self._parse_fn(is_async=True)
             if self._check(TokenType.FN_STAR):
-                return self._parse_fn(is_generator=True)
+                return self._parse_fn(is_generator=True, is_async=True)
             # async block or expression — parse remainder as expression stmt
             return self._parse_expr_or_assignment()
         if tok.type == TokenType.TASK:
@@ -499,7 +499,7 @@ class Parser:
             column=tok.column,
         )
 
-    def _parse_fn(self, is_generator: bool = False) -> FunctionDeclaration:
+    def _parse_fn(self, is_generator: bool = False, is_async: bool = False) -> FunctionDeclaration:
         if is_generator:
             tok = self._expect(TokenType.FN_STAR)
         else:
@@ -577,6 +577,7 @@ class Parser:
                 defaults=defaults,
                 rest_param=rest_param,
                 is_generator=is_generator,
+                is_async=is_async,
                 line=tok.line,
                 column=tok.column,
             )
@@ -590,6 +591,7 @@ class Parser:
             defaults=defaults,
             rest_param=rest_param,
             is_generator=is_generator,
+            is_async=is_async,
             line=tok.line,
             column=tok.column,
         )

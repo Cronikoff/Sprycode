@@ -291,6 +291,7 @@ class SpryFunction:
         defaults: "dict | None" = None,
         rest_param: "str | None" = None,
         is_generator: bool = False,
+        is_async: bool = False,
     ) -> None:
         self.name = name
         self.params = params
@@ -299,6 +300,7 @@ class SpryFunction:
         self.defaults: dict = defaults or {}
         self.rest_param: str | None = rest_param
         self.is_generator: bool = is_generator
+        self.is_async: bool = is_async
 
     def __repr__(self) -> str:
         return f"<fn{'*' if self.is_generator else ''} {self.name}>"
@@ -389,6 +391,17 @@ class SpryInstance:
 
     def set(self, name: str, value: Any) -> None:
         self.fields[name] = value
+
+    def __getitem__(self, key: Any) -> Any:
+        """Support p["fieldName"] indexing on instances."""
+        k = str(key)
+        if k in self.fields:
+            return self.fields[k]
+        raise KeyError(k)
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        """Support p["fieldName"] = value on instances."""
+        self.fields[str(key)] = value
 
     def __repr__(self) -> str:
         return f"<{self.cls.name} {self.fields!r}>"
@@ -1518,6 +1531,7 @@ class Interpreter:
                 defaults=node.defaults,
                 rest_param=node.rest_param,
                 is_generator=node.is_generator,
+                is_async=node.is_async,
             )
             env.define(node.name, fn, mutable=False)
             return None
@@ -2240,6 +2254,8 @@ class Interpreter:
         if node.op in ("!", "not"):
             return not self._truthy(operand)
         if node.op == "-":
+            if isinstance(operand, int) and operand == 0:
+                return float(-0.0)  # JS-style negative zero
             return -operand
         if node.op == "~":
             return ~int(operand)
@@ -2365,7 +2381,19 @@ class Interpreter:
         try:
             self._exec_block(fn.body, child)
         except ReturnSignal as r:
+            if fn.is_async:
+                val = r.value
+                # Unwrap awaited promise in async fn
+                if isinstance(val, SpryPromise):
+                    return val
+                return SpryPromise(value=val)
             return r.value
+        except (SpryUserError, SpryRuntimeError) as e:
+            if fn.is_async:
+                return SpryPromise(value=None, error=str(e))
+            raise
+        if fn.is_async:
+            return SpryPromise(value=None)
         return None
 
     def _call_task(self, task: SpryTask) -> Any:
@@ -3347,6 +3375,51 @@ class Interpreter:
                 return obj.name
             raise SpryRuntimeError(f"Struct {obj.name!r} has no property {prop!r}", node)
 
+        if isinstance(obj, SpryPromise):
+            if prop == "status":
+                return obj.status
+            if prop == "value":
+                return obj._value
+            if prop == "error":
+                return obj._error
+            if prop in ("then", "catch", "finally"):
+                # Return a wrapper that invokes SpryLambda callbacks through the interpreter
+                _interp = self
+                _promise = obj
+                if prop == "then":
+                    def _then(on_fulfilled: Any = None, on_rejected: Any = None) -> SpryPromise:
+                        if _promise._settled and on_fulfilled is not None:
+                            try:
+                                return SpryPromise(value=_interp._call_value(on_fulfilled, [_promise._value]))
+                            except Exception as e:
+                                return SpryPromise(error=str(e))
+                        if not _promise._settled and on_rejected is not None:
+                            try:
+                                return SpryPromise(value=_interp._call_value(on_rejected, [_promise._error]))
+                            except Exception as e:
+                                return SpryPromise(error=str(e))
+                        return _promise
+                    return _then
+                if prop == "catch":
+                    def _catch(on_rejected: Any) -> SpryPromise:
+                        if not _promise._settled and on_rejected is not None:
+                            try:
+                                return SpryPromise(value=_interp._call_value(on_rejected, [_promise._error]))
+                            except Exception as e:
+                                return SpryPromise(error=str(e))
+                        return _promise
+                    return _catch
+                if prop == "finally":
+                    def _finally(fn: Any) -> SpryPromise:
+                        if fn is not None:
+                            try:
+                                _interp._call_value(fn, [])
+                            except Exception:
+                                pass
+                        return _promise
+                    return _finally
+            raise SpryRuntimeError(f"Promise has no property {prop!r}", node)
+
         if isinstance(obj, SpryGenerator):
             if prop == "next":
                 return obj.next
@@ -3855,7 +3928,10 @@ class Interpreter:
                     iterator = self._call_bound_method(bm, [], node)
                     return self._consume_iterator(iterator, node)
             # Try direct next() iterator protocol
-            return self._consume_iterator(value, node) or [k for k in value.fields if not k.startswith("__")]
+            return self._consume_iterator(value, node) or [
+                k for k, v in value.fields.items()
+                if not k.startswith("__") and not isinstance(v, SpryFunction)
+            ]
         if isinstance(value, dict):
             # Check if it's an iterator (has 'next') — if so consume it
             if "next" in value and callable(value.get("next")):
@@ -4222,6 +4298,8 @@ class Interpreter:
             return "Object"
         if isinstance(val, SpryGenerator):
             return "Generator"
+        if isinstance(val, SpryPromise):
+            return "Promise"
         if isinstance(val, (SpryFunction, SpryLambda, SpryMultiLambda)):
             return "Function"
         if isinstance(val, SprySymbol):
@@ -5157,6 +5235,10 @@ class _ArrayNamespace:
             result = list(iterable)
         elif isinstance(iterable, str):
             result = list(iterable)
+        elif isinstance(iterable, SpryMap):
+            result = [[k, v] for k, v in iterable._data.items()]
+        elif isinstance(iterable, SprySet):
+            result = list(iterable._data)
         elif isinstance(iterable, dict) and "length" in iterable:
             # Array-like: {length: N, "0": x, "1": y, ...}
             n = int(iterable["length"])
@@ -5238,7 +5320,11 @@ class _ObjectNamespace:
         return target
 
     def freeze(self, obj: Any) -> Any:
-        """Return the object unchanged (SpryCode values are not mutable by default)."""
+        """Mark the object as frozen (immutable). Returns the object."""
+        if isinstance(obj, dict):
+            obj["__spry_frozen__"] = True
+        elif isinstance(obj, SpryInstance):
+            obj.fields["__spry_frozen__"] = True
         return obj
 
     def create(self, proto: Any = None, props: Any = None) -> dict:
@@ -5344,7 +5430,11 @@ class _ObjectNamespace:
         return obj
 
     def isFrozen(self, obj: Any) -> bool:
-        """Always returns False — SpryCode objects are mutable dicts."""
+        """Return True if the object has been frozen via Object.freeze()."""
+        if isinstance(obj, dict):
+            return bool(obj.get("__spry_frozen__", False))
+        if isinstance(obj, SpryInstance):
+            return bool(obj.fields.get("__spry_frozen__", False))
         return False
 
     def isSealed(self, obj: Any) -> bool:

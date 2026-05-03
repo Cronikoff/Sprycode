@@ -95,6 +95,7 @@ class FunctionDeclaration(Node):
     defaults: dict[str, "Node"] = field(default_factory=dict)  # param -> default expr
     rest_param: str | None = None  # name of the ...rest parameter
     is_generator: bool = False     # fn* generator function
+    is_async: bool = False         # async fn — wraps return in SpryPromise
 
 
 @dataclass

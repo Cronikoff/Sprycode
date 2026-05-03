@@ -57,7 +57,7 @@ class TestArrowBodyAssignment:
             "let f = i => arr[i] = i * 2;"
             "f(1);"
         ).globals
-        assert globals_["arr"] == [0, 2, 0]
+        assert globals_.get("arr") == [0, 2, 0]
 
     def test_single_param_simple_assignment(self):
         i = run("var a = 0\nlet f = v => a = v\nf(42)")

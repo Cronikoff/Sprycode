@@ -737,6 +737,7 @@ class ListDestructure(Node):
     mutable: bool = False
     rest_name: str | None = None  # name of the ...rest element, if any
     defaults: dict[str, "Node"] = field(default_factory=dict)  # name -> default expr
+    nested: dict[int, "Node"] = field(default_factory=dict)  # index -> nested destructure node
 
 
 @dataclass
@@ -748,6 +749,7 @@ class ObjectDestructure(Node):
     value: Node | None = None
     mutable: bool = False
     defaults: dict[str, "Node"] = field(default_factory=dict)  # name/alias -> default expr
+    rest_name: str | None = None  # ...rest element, if any
 
 
 @dataclass

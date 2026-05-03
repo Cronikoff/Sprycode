@@ -1300,7 +1300,7 @@ class Interpreter:
         if isinstance(node, Assignment):
             value = self._eval(node.value, env) if node.value is not None else None
             env.set(node.name, value)
-            return None
+            return value
 
         if isinstance(node, MemberAssignment):
             obj = self._eval(node.object, env)
@@ -1338,7 +1338,7 @@ class Interpreter:
                 raise SpryRuntimeError(
                     f"Cannot assign property {node.property!r} on {type(obj).__name__}", node
                 )
-            return None
+            return value
 
         if isinstance(node, CompoundMemberAssignment):
             obj = self._eval(node.object, env)
@@ -1710,9 +1710,16 @@ class Interpreter:
             items = list(rhs) if not isinstance(rhs, list) else rhs
             for i, name in enumerate(node.names):
                 val = items[i] if i < len(items) else None
-                env.set(name, val)
+                try:
+                    env.set(name, val)
+                except SpryRuntimeError:
+                    env.define(name, val, mutable=True)
             if node.rest_name is not None:
-                env.set(node.rest_name, items[len(node.names):])
+                rest_val = items[len(node.names):]
+                try:
+                    env.set(node.rest_name, rest_val)
+                except SpryRuntimeError:
+                    env.define(node.rest_name, rest_val, mutable=True)
             return None
 
         if isinstance(node, ObjectDestructure):
@@ -2648,8 +2655,9 @@ class Interpreter:
             if prop == "concat":
                 return lambda other: obj + (other if isinstance(other, list) else [other])
             if prop == "unshift":
-                def _list_unshift(item: Any) -> int:
-                    obj.insert(0, item)
+                def _list_unshift(*items: Any) -> int:
+                    for item in reversed(items):
+                        obj.insert(0, item)
                     return len(obj)
                 return _list_unshift
             if prop == "splice":
@@ -3960,14 +3968,21 @@ class Interpreter:
                 current = obj.fields.get(prop)
             elif isinstance(obj, dict):
                 current = obj.get(prop)
+            elif isinstance(obj, SpryClass):
+                # Seed static field into _static_fields if not yet present
+                current = self._eval_member_on(obj, prop, node)
             else:
                 raise SpryRuntimeError(f"Cannot apply {op!r} to {type(obj).__name__}", node)
+            if current is None:
+                current = 0
             if op in ("++", "pre++"):
                 new_val = current + 1
             else:
                 new_val = current - 1
             if isinstance(obj, SpryInstance):
                 obj.set(prop, new_val)
+            elif isinstance(obj, SpryClass):
+                obj._static_fields[prop] = new_val
             else:
                 obj[prop] = new_val
             return current if op in ("++", "--") else new_val
@@ -4217,6 +4232,14 @@ class Interpreter:
             )
         for i, name in enumerate(node.names):
             item = val[i] if i < len(val) else None
+            if i in node.nested:
+                # Nested destructuring: [[a, b], c] or [{x}, c]
+                nested_node = node.nested[i]
+                if isinstance(nested_node, ListDestructure):
+                    self._apply_list_destructure(nested_node, item if item is not None else [], env, mutable)
+                elif isinstance(nested_node, ObjectDestructure):
+                    self._apply_object_destructure(nested_node, item if item is not None else {}, env, mutable)
+                continue
             # Apply default if item is None/missing and a default is defined
             if item is None and name in node.defaults:
                 item = self._eval(node.defaults[name], env)
@@ -4261,6 +4284,11 @@ class Interpreter:
                 elif item is None and name in node.defaults:
                     item = self._eval(node.defaults[name], env)
                 env.define(alias, item, mutable=mutable)
+        # Rest element: collect all keys not already consumed
+        if node.rest_name is not None:
+            consumed = set(node.aliases.get(n, n) for n in node.names) | set(node.names)
+            rest_obj = {k: v for k, v in obj.items() if k not in consumed}
+            env.define(node.rest_name, rest_obj, mutable=mutable)
         return None
 
     # ------------------------------------------------------------------

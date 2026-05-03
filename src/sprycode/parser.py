@@ -1139,6 +1139,9 @@ class Parser:
                 self.pos = saved_pos
             except Exception:
                 self.pos = saved_pos
+        # for let x of ... / for var x of ... (skip optional let/var before iterator var)
+        if self._check(TokenType.LET, TokenType.VAR):
+            self._advance()
         var_tok = self._expect_ident()
         # Destructured: for i, v in enumerate(...)
         extra_vars: list[str] = []
@@ -1672,6 +1675,7 @@ class Parser:
         names: list[str] = []
         rest_name: str | None = None
         defaults: dict[str, "Node"] = {}
+        nested_destruct: dict[int, "Node"] = {}
         while not self._check(TokenType.RBRACKET) and not self._at_end():
             if self._check(TokenType.ELLIPSIS):
                 self._advance()
@@ -1682,11 +1686,25 @@ class Parser:
                         self._current(),
                     )
                 break  # rest must be last
-            name = self._expect_ident().value
-            names.append(name)
-            # Default value: [a = expr, b]
-            if self._match(TokenType.EQ):
-                defaults[name] = self._parse_expression()
+            idx = len(names)
+            if self._check(TokenType.LBRACKET):
+                # Nested array destructuring: [[a, b], c]
+                inner = self._parse_list_destructure(let_tok, mutable)
+                inner.value = None
+                nested_destruct[idx] = inner
+                names.append(f"__nested_arr_{idx}__")
+            elif self._check(TokenType.LBRACE):
+                # Nested object destructuring: [{x, y}, c]
+                inner = self._parse_object_destructure(let_tok, mutable)
+                inner.value = None
+                nested_destruct[idx] = inner
+                names.append(f"__nested_obj_{idx}__")
+            else:
+                name = self._expect_ident().value
+                names.append(name)
+                # Default value: [a = expr, b]
+                if self._match(TokenType.EQ):
+                    defaults[name] = self._parse_expression()
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACKET)
@@ -1698,16 +1716,23 @@ class Parser:
             value = None
         return ListDestructure(names=names, value=value, mutable=mutable,
                                rest_name=rest_name, defaults=defaults,
+                               nested=nested_destruct,
                                line=let_tok.line, column=let_tok.column)
 
     def _parse_object_destructure(self, let_tok: Token, mutable: bool) -> ObjectDestructure:
-        """Parse let {a, b: alias, c = default, d: {e}} = expr"""
+        """Parse let {a, b: alias, c = default, d: {e}, ...rest} = expr"""
         self._expect(TokenType.LBRACE)
         names: list[str] = []
         aliases: dict[str, str] = {}
         nested: dict[str, "Node"] = {}
         defaults: dict[str, "Node"] = {}
+        rest_name: str | None = None
         while not self._check(TokenType.RBRACE) and not self._at_end():
+            # Rest element: ...rest
+            if self._check(TokenType.ELLIPSIS):
+                self._advance()
+                rest_name = self._expect_ident().value
+                break  # rest must be last
             name = self._expect_ident().value
             names.append(name)
             if self._match(TokenType.COLON):
@@ -1743,6 +1768,7 @@ class Parser:
             value = None
         return ObjectDestructure(names=names, aliases=aliases, nested=nested,
                                  defaults=defaults, value=value,
+                                 rest_name=rest_name,
                                  mutable=mutable, line=let_tok.line, column=let_tok.column)
 
     # ------------------------------------------------------------------
@@ -2020,7 +2046,7 @@ class Parser:
         # Simple assignment: name = value
         if self._check(TokenType.EQ) and isinstance(expr, Identifier):
             self._advance()
-            value = self._parse_expression()
+            value = self._parse_expr_or_assignment()
             return Assignment(
                 name=expr.name, value=value, line=expr.line, column=expr.column
             )
@@ -2028,7 +2054,7 @@ class Parser:
         # Member assignment: obj.prop = value  (incl. self.prop = value)
         if self._check(TokenType.EQ) and isinstance(expr, MemberExpression):
             self._advance()
-            value = self._parse_expression()
+            value = self._parse_expr_or_assignment()
             return MemberAssignment(
                 object=expr.object, property=expr.property, value=value,
                 line=expr.line, column=expr.column,
@@ -2037,7 +2063,7 @@ class Parser:
         # Index assignment: arr[i] = value
         if self._check(TokenType.EQ) and isinstance(expr, IndexExpression):
             self._advance()
-            value = self._parse_expression()
+            value = self._parse_expr_or_assignment()
             return IndexAssignment(
                 object=expr.object, index=expr.index, value=value,
                 line=expr.line, column=expr.column,
@@ -2764,7 +2790,7 @@ class Parser:
                 pass
             # Not a lambda — restore and parse as grouped expression
             self.pos = saved_pos
-            expr = self._parse_expression()
+            expr = self._parse_expr_or_assignment()
             self._expect(TokenType.RPAREN)
             return expr
 

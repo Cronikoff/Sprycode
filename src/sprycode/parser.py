@@ -22,6 +22,7 @@ from .ast_nodes import (
     BreakStatement,
     CallExpression,
     ClassDeclaration,
+    ClassExpression,
     CompensateStatement,
     CompoundAssignment,
     CompoundMemberAssignment,
@@ -591,10 +592,14 @@ class Parser:
 
     def _parse_yield(self) -> YieldStatement:
         tok = self._expect(TokenType.YIELD)
+        delegate = False
         value: Node | None = None
+        if self._check(TokenType.STAR):
+            self._advance()
+            delegate = True
         if not self._check(TokenType.NEWLINE, TokenType.RBRACE, TokenType.EOF, TokenType.SEMICOLON):
             value = self._parse_expression()
-        return YieldStatement(value=value, line=tok.line, column=tok.column)
+        return YieldStatement(value=value, line=tok.line, column=tok.column, delegate=delegate)
 
     def _parse_export(self) -> ExportStatement:
         tok = self._expect(TokenType.EXPORT)
@@ -1939,6 +1944,15 @@ class Parser:
                 name=expr.name, op="??", value=value, line=expr.line, column=expr.column
             )
 
+        # Null-coalescing assignment on member: obj.prop ??= value
+        if self._current().type == TokenType.QUESTION_QUESTION_EQ and isinstance(expr, MemberExpression):
+            self._advance()
+            value = self._parse_expression()
+            return CompoundMemberAssignment(
+                object=expr.object, property=expr.property, op="??",
+                value=value, line=expr.line, column=expr.column,
+            )
+
         # Array destructuring assignment: [a, b] = expr
         if self._check(TokenType.EQ) and isinstance(expr, ArrayLiteral):
             # Validate that all elements are simple identifiers (or ...rest)
@@ -2208,7 +2222,7 @@ class Parser:
 
     def _parse_equality(self) -> Node:
         left = self._parse_in()
-        while self._check(TokenType.EQ_EQ, TokenType.BANG_EQ):
+        while self._check(TokenType.EQ_EQ, TokenType.BANG_EQ, TokenType.EQ_EQ_EQ, TokenType.BANG_EQ_EQ):
             op_tok = self._advance()
             right = self._parse_in()
             left = BinaryExpression(
@@ -2467,6 +2481,20 @@ class Parser:
         # yield as expression: let r = yield 1
         if tok.type == TokenType.YIELD:
             return self._parse_yield()
+
+        # class as expression: let X = class { ... } or let X = class Foo { ... }
+        if tok.type == TokenType.CLASS:
+            self._advance()  # consume 'class'
+            name = "anonymous"
+            if self._check(TokenType.IDENTIFIER):
+                name = self._advance().value
+            superclass: str | None = None
+            if self._check(TokenType.EXTENDS):
+                self._advance()
+                super_tok = self._advance()  # consume superclass name
+                superclass = super_tok.value
+            body = self._parse_block()
+            return ClassExpression(name=name, superclass=superclass, body=body, line=tok.line, column=tok.column)
 
         if tok.type == TokenType.STRING:
             self._advance()

@@ -99,8 +99,9 @@ class FunctionDeclaration(Node):
 
 @dataclass
 class YieldStatement(Node):
-    """yield [<value>]"""
+    """yield [<value>]  or  yield* <iterable>"""
     value: "Node | None" = None
+    delegate: bool = False  # True for yield*
 
 
 @dataclass
@@ -942,3 +943,11 @@ class TaggedTemplateExpression(Node):
     """tag`template ${expr}` — a tagged template literal call"""
     tag: "Node | None" = None       # the tag function expression
     template: str = ""              # the raw template string (like FStringExpression.raw_template)
+
+
+@dataclass
+class ClassExpression(Node):
+    """Anonymous/named class expression: let X = class Foo { ... }"""
+    name: str = "anonymous"
+    superclass: str | None = None
+    body: "Block | None" = None

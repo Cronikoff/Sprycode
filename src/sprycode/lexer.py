@@ -230,6 +230,8 @@ class TokenType(Enum):
     PERCENT = auto()
     EQ_EQ = auto()
     BANG_EQ = auto()
+    EQ_EQ_EQ = auto()   # ===
+    BANG_EQ_EQ = auto() # !==
     LT = auto()
     GT = auto()
     LT_EQ = auto()
@@ -630,15 +632,23 @@ class Lexer:
                 continue
 
             if ch == "=" and self._peek() == "=":
-                self._advance()
-                self._advance()
-                yield Token(TokenType.EQ_EQ, "==", line, col)
+                self._advance()  # consume 1st =
+                self._advance()  # consume 2nd =
+                if self._current() == "=":
+                    self._advance()  # consume 3rd =
+                    yield Token(TokenType.EQ_EQ_EQ, "===", line, col)
+                else:
+                    yield Token(TokenType.EQ_EQ, "==", line, col)
                 continue
 
             if ch == "!" and self._peek() == "=":
-                self._advance()
-                self._advance()
-                yield Token(TokenType.BANG_EQ, "!=", line, col)
+                self._advance()  # consume !
+                self._advance()  # consume 1st =
+                if self._current() == "=":
+                    self._advance()  # consume 2nd =
+                    yield Token(TokenType.BANG_EQ_EQ, "!==", line, col)
+                else:
+                    yield Token(TokenType.BANG_EQ, "!=", line, col)
                 continue
 
             if ch == "<" and self._peek() == "=":

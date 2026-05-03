@@ -30,6 +30,7 @@ from .ast_nodes import (
     BreakStatement,
     CallExpression,
     ClassDeclaration,
+    ClassExpression,
     CompensateStatement,
     CompoundAssignment,
     CompoundMemberAssignment,
@@ -878,6 +879,9 @@ class Interpreter:
         # Symbol global
         env.define("Symbol", _SymbolNamespace())
 
+        # Boolean callable converter
+        env.define("Boolean", _BooleanCallable())
+
         # WeakRef global
         env.define("WeakRef", _WeakRefNamespace())
 
@@ -1321,6 +1325,12 @@ class Interpreter:
                 new_val = int(current) << int(rhs)
             elif node.op == ">>":
                 new_val = int(current) >> int(rhs)
+            elif node.op == "??":
+                new_val = rhs if current is None else current
+            elif node.op == "&&":
+                new_val = rhs if self._truthy(current) else current
+            elif node.op == "||":
+                new_val = current if self._truthy(current) else rhs
             else:
                 raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
             if isinstance(obj, SpryInstance):
@@ -1671,6 +1681,26 @@ class Interpreter:
             return self._exec_credit(node, env)
 
         if isinstance(node, YieldStatement):
+            if getattr(node, 'delegate', False):
+                # yield* iterable — iterate and forward each value via the yield hook
+                iterable = self._eval(node.value, env) if node.value is not None else []
+                yield_hook = getattr(self._tl, "yield_hook", None)
+                if isinstance(iterable, SpryGenerator):
+                    iterable._materialise()
+                    items = list(iterable._collected)
+                elif isinstance(iterable, (list, tuple)):
+                    items = list(iterable)
+                else:
+                    try:
+                        items = list(iterable)
+                    except TypeError:
+                        items = []
+                for item in items:
+                    if yield_hook is not None:
+                        yield_hook(item)
+                    else:
+                        raise YieldSignal(item)
+                return None
             value = self._eval(node.value, env) if node.value is not None else None
             # Check for thread-local generator yield hook (used by coroutine generators)
             yield_hook = getattr(self._tl, "yield_hook", None)
@@ -1841,6 +1871,8 @@ class Interpreter:
                 return str(item_val) in coll_val.fields
             if isinstance(coll_val, SprySet):
                 return coll_val.has(item_val)
+            if isinstance(coll_val, SpryMap):
+                return item_val in coll_val._data
             raise SpryRuntimeError(f"'in' requires a list, object, or string, got {type(coll_val).__name__}", node)
 
         if isinstance(node, FStringExpression):
@@ -1848,6 +1880,9 @@ class Interpreter:
 
         if isinstance(node, TaggedTemplateExpression):
             return self._eval_tagged_template(node, env)
+
+        if isinstance(node, ClassExpression):
+            return self._eval_class_expression(node, env)
 
         if isinstance(node, PipelineExpression):
             return self._eval_pipeline(node, env)
@@ -1917,6 +1952,18 @@ class Interpreter:
 
         if isinstance(node, InstanceofExpression):
             val = self._eval(node.operand, env)
+            # Try to find the type as a SpryClass in the environment (supports inheritance)
+            try:
+                target = env.get(node.type_name)
+                if isinstance(target, SpryClass) and isinstance(val, SpryInstance):
+                    cls: SpryClass | None = val.cls
+                    while cls is not None:
+                        if cls is target:
+                            return True
+                        cls = cls.superclass
+                    return False
+            except SpryRuntimeError:
+                pass
             return self._spry_instanceof(val, node.type_name)
 
         if isinstance(node, TypeCastExpression):
@@ -1971,6 +2018,26 @@ class Interpreter:
         if op == "==":
             return left == right
         if op == "!=":
+            return left != right
+        if op == "===":
+            # Strict equality: same type AND same value; objects by identity
+            if type(left) is not type(right):
+                # Allow int/float interop for numbers
+                if isinstance(left, (int, float)) and not isinstance(left, bool) and \
+                        isinstance(right, (int, float)) and not isinstance(right, bool):
+                    return left == right
+                return False
+            if isinstance(left, (dict, list)) or isinstance(left, SpryInstance):
+                return left is right
+            return left == right
+        if op == "!==":
+            if type(left) is not type(right):
+                if isinstance(left, (int, float)) and not isinstance(left, bool) and \
+                        isinstance(right, (int, float)) and not isinstance(right, bool):
+                    return left != right
+                return True
+            if isinstance(left, (dict, list)) or isinstance(left, SpryInstance):
+                return left is not right
             return left != right
         if op == "<":
             return left < right
@@ -4119,6 +4186,20 @@ class Interpreter:
         env.define(node.name, cls, mutable=False)
         return None
 
+    def _eval_class_expression(self, node: "ClassExpression", env: Environment) -> SpryClass:
+        """Evaluate a class expression — creates a SpryClass but does NOT bind it to a name."""
+        superclass: SpryClass | None = None
+        if node.superclass is not None:
+            try:
+                sc = env.get(node.superclass)
+                if isinstance(sc, SpryClass):
+                    superclass = sc
+            except SpryRuntimeError:
+                pass
+        cls = SpryClass(name=node.name, body=node.body, closure=env, superclass=superclass)
+        cls._mixins = []  # type: ignore[attr-defined]
+        return cls
+
     def _eval_super(self, node: SuperExpression, env: Environment) -> Any:
         """super(args) — call the parent class init() on the current instance."""
         # Resolve current instance (self) and its class
@@ -5073,6 +5154,25 @@ class _NumberNamespace:
 
     def __repr__(self) -> str:
         return "Number"
+
+    def __call__(self, val: Any) -> Any:
+        """Number(x) — convert x to a number."""
+        if val is None:
+            return 0
+        if isinstance(val, bool):
+            return 1 if val else 0
+        if isinstance(val, (int, float)):
+            return val
+        if isinstance(val, str):
+            try:
+                s = val.strip()
+                v = float(s)
+                if v == int(v) and 'e' not in s.lower() and '.' not in s:
+                    return int(v)
+                return v
+            except (ValueError, OverflowError):
+                return float('nan')
+        return float('nan')
 
 
 class _MathHelper:
@@ -6240,10 +6340,21 @@ class _StringNamespace:
     def __repr__(self) -> str:
         return "String"
 
-
-# ---------------------------------------------------------------------------
-# Symbol global
-# ---------------------------------------------------------------------------
+    def __call__(self, val: Any) -> str:
+        """String(x) — convert x to a string."""
+        if val is None:
+            return ""
+        if isinstance(val, bool):
+            return "true" if val else "false"
+        if isinstance(val, float):
+            if math.isnan(val):
+                return "NaN"
+            if math.isinf(val):
+                return "Infinity" if val > 0 else "-Infinity"
+            if val == int(val):
+                return str(int(val))
+            return str(val)
+        return str(val)
 
 _symbol_counter = 0
 
@@ -6265,6 +6376,24 @@ class SprySymbol:
 
     def __hash__(self) -> int:
         return id(self)
+
+
+class _BooleanCallable:
+    """Boolean(x) — convert x to a boolean."""
+
+    def __call__(self, val: Any) -> bool:
+        if val is None:
+            return False
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return val != 0 and not (isinstance(val, float) and math.isnan(val))
+        if isinstance(val, str):
+            return len(val) > 0
+        return True
+
+    def __repr__(self) -> str:
+        return "Boolean"
 
 
 class _SymbolNamespace:

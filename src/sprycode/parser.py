@@ -1725,6 +1725,7 @@ class Parser:
                     else:
                         stmts2: list[Node] = []
                         while (not self._check(TokenType.CASE)
+                               and not self._check(TokenType.DEFAULT)
                                and not self._check(TokenType.RBRACE)
                                and not self._at_end()):
                             stmt = self._parse_statement()

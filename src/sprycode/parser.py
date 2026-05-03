@@ -1410,6 +1410,42 @@ class Parser:
                                                       body=setter_body,
                                                       line=cur.line, column=cur.column))
                     continue
+                # fn [Symbol.iterator]() { ... } — computed method with fn keyword
+                if self._peek(1).type == TokenType.LBRACKET:
+                    self._advance()  # consume 'fn'
+                    self._advance()  # consume '['
+                    key_expr = self._parse_expression()
+                    self._expect(TokenType.RBRACKET)
+                    self._expect(TokenType.LPAREN)
+                    comp_params: list[tuple[str, str | None]] = []
+                    comp_defaults: dict = {}
+                    comp_rest: str | None = None
+                    while not self._check(TokenType.RPAREN) and not self._at_end():
+                        if self._check(TokenType.ELLIPSIS):
+                            self._advance()
+                            comp_rest = self._expect_ident().value
+                            break
+                        pname = self._expect_ident().value
+                        ptype = None
+                        if self._match(TokenType.COLON):
+                            ptype = self._parse_type_name()
+                        comp_params.append((pname, ptype))
+                        if self._check(TokenType.EQ):
+                            self._advance()
+                            comp_defaults[pname] = self._parse_expression()
+                        if not self._match(TokenType.COMMA):
+                            break
+                    self._expect(TokenType.RPAREN)
+                    if self._check(TokenType.ARROW):
+                        self._advance()
+                        self._parse_type_name()
+                    comp_body = self._parse_block()
+                    body.append(ComputedMethodDeclaration(
+                        key=key_expr, params=comp_params, body=comp_body,
+                        defaults=comp_defaults, rest_param=comp_rest,
+                        line=cur.line, column=cur.column,
+                    ))
+                    continue
             if (cur.type == TokenType.IDENTIFIER and cur.value == "static"):
                 next_tok = self._peek(1)
                 # static get propName() { ... } or static set propName(v) { ... }
@@ -2387,18 +2423,18 @@ class Parser:
         return left
 
     def _parse_bitwise_and(self) -> Node:
-        left = self._parse_shift()
+        left = self._parse_equality()
         while self._check(TokenType.AMP):
             op_tok = self._advance()
-            right = self._parse_shift()
+            right = self._parse_equality()
             left = BinaryExpression(left=left, op="&", right=right, line=op_tok.line, column=op_tok.column)
         return left
 
     def _parse_shift(self) -> Node:
-        left = self._parse_equality()
+        left = self._parse_addition()
         while self._check(TokenType.LSHIFT, TokenType.RSHIFT, TokenType.URSHIFT):
             op_tok = self._advance()
-            right = self._parse_equality()
+            right = self._parse_addition()
             left = BinaryExpression(left=left, op=op_tok.value, right=right, line=op_tok.line, column=op_tok.column)
         return left
 
@@ -2440,10 +2476,10 @@ class Parser:
         return left
 
     def _parse_comparison(self) -> Node:
-        left = self._parse_addition()
+        left = self._parse_shift()
         while self._check(TokenType.LT, TokenType.GT, TokenType.LT_EQ, TokenType.GT_EQ):
             op_tok = self._advance()
-            right = self._parse_addition()
+            right = self._parse_shift()
             left = BinaryExpression(
                 left=left, op=op_tok.value, right=right, line=op_tok.line, column=op_tok.column
             )

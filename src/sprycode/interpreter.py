@@ -1858,15 +1858,10 @@ class Interpreter:
             for item in node.items:
                 if isinstance(item, SpreadElement):
                     spread_val = self._eval(item.expr, env)
-                    if isinstance(spread_val, SpryIterator):
-                        result_list.extend(spread_val._items)
-                    elif isinstance(spread_val, SpryGenerator):
-                        spread_val._materialise()
-                        result_list.extend(spread_val._collected or [])
-                    elif isinstance(spread_val, (list, tuple)):
-                        result_list.extend(spread_val)
-                    else:
-                        raise SpryRuntimeError("Spread operator requires a list", item)
+                    try:
+                        result_list.extend(self._iter_to_list(spread_val, item))
+                    except SpryRuntimeError:
+                        raise SpryRuntimeError("Spread operator requires an iterable", item)
                 else:
                     result_list.append(self._eval(item, env))
             return result_list
@@ -2216,14 +2211,9 @@ class Interpreter:
         for a in node.args:
             if isinstance(a, SpreadElement):
                 spread_val = self._eval(a.expr, env)
-                if isinstance(spread_val, SpryIterator):
-                    args.extend(spread_val._items)
-                elif isinstance(spread_val, SpryGenerator):
-                    spread_val._materialise()
-                    args.extend(spread_val._collected or [])
-                elif isinstance(spread_val, (list, tuple)):
-                    args.extend(spread_val)
-                else:
+                try:
+                    args.extend(self._iter_to_list(spread_val, a))
+                except SpryRuntimeError:
                     args.append(spread_val)
             else:
                 args.append(self._eval(a, env))
@@ -3763,6 +3753,75 @@ class Interpreter:
     # Loops
     # ------------------------------------------------------------------
 
+    def _consume_iterator(self, iterator: Any, node: Any) -> list:
+        """Consume a JS-style iterator object (has `next()` method) into a list."""
+        items: list[Any] = []
+        next_fn: Any = None
+        if isinstance(iterator, dict) and "next" in iterator:
+            next_fn = iterator["next"]
+        elif isinstance(iterator, SpryInstance) and "next" in iterator.fields:
+            next_fn_raw = iterator.fields["next"]
+            if isinstance(next_fn_raw, SpryFunction):
+                bm = BoundMethod(instance=iterator, fn=next_fn_raw)
+                next_fn = lambda: self._call_bound_method(bm, [], node)
+            else:
+                next_fn = next_fn_raw
+        if next_fn is None:
+            return items
+        while True:
+            result = self._call_value(next_fn, [])
+            if isinstance(result, dict):
+                if result.get("done"):
+                    break
+                items.append(result.get("value"))
+            else:
+                break
+        return items
+
+    def _iter_to_list(self, value: Any, node: Any) -> list:
+        """Convert any SpryCode iterable to a Python list.
+
+        Handles lists, strings, ranges, generators, iterators, SprySet/SpryMap,
+        SpryTypedArray, plain dicts (yields keys), SpryInstance with next()
+        method (iterator protocol), and SpryInstance with [Symbol.iterator]()
+        (iterable protocol).
+        """
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, range):
+            return list(value)
+        if isinstance(value, str):
+            return list(value)
+        if isinstance(value, SpryGenerator):
+            return list(value)
+        if isinstance(value, SpryIterator):
+            return list(value._items)
+        if isinstance(value, SprySet):
+            return list(value._data)
+        if isinstance(value, SpryTypedArray):
+            return list(value._data)
+        if isinstance(value, SpryMap):
+            return [[k, v] for k, v in value._data.items()]
+        if isinstance(value, SpryInstance):
+            # Try [Symbol.iterator]() iterable protocol first
+            sym_key = "Symbol('iterator')"
+            if sym_key in value.fields:
+                sym_iter_fn = value.fields[sym_key]
+                if isinstance(sym_iter_fn, SpryFunction):
+                    bm = BoundMethod(instance=value, fn=sym_iter_fn)
+                    iterator = self._call_bound_method(bm, [], node)
+                    return self._consume_iterator(iterator, node)
+            # Try direct next() iterator protocol
+            return self._consume_iterator(value, node) or [k for k in value.fields if not k.startswith("__")]
+        if isinstance(value, dict):
+            # Check if it's an iterator (has 'next') — if so consume it
+            if "next" in value and callable(value.get("next")):
+                return self._consume_iterator(value, node)
+            return [k for k in value.keys() if not k.startswith("__spry_")]
+        raise SpryRuntimeError(
+            f"Value is not iterable: {type(value).__name__}", node
+        )
+
     def _exec_for(self, node: ForStatement, env: Environment) -> Any:
         # Range shorthand: for i in start..end (BinaryExpression with op="..")
         if isinstance(node.iterable, BinaryExpression) and node.iterable.op == "..":
@@ -3772,39 +3831,8 @@ class Interpreter:
         else:
             iterable = self._eval(node.iterable, env)
 
-        # Allow iterating over dict keys
-        if isinstance(iterable, dict):
-            iterable = list(iterable.keys())
-        if isinstance(iterable, SpryGenerator):
-            iterable = list(iterable)  # materialise generator
-        if isinstance(iterable, SpryIterator):
-            iterable = iterable._items  # iterate all items
-        if isinstance(iterable, SprySet):
-            iterable = list(iterable._data)
-        if isinstance(iterable, SpryTypedArray):
-            iterable = list(iterable._data)
-        if isinstance(iterable, SpryMap):
-            iterable = [[k, v] for k, v in iterable._data.items()]
-        if isinstance(iterable, SpryInstance):
-            # Support iterator protocol: instance with next() method
-            if "next" in iterable.fields and isinstance(iterable.fields["next"], SpryFunction):
-                items: list[Any] = []
-                while True:
-                    bm = BoundMethod(instance=iterable, fn=iterable.fields["next"])
-                    result = self._call_bound_method(bm, [], node)
-                    if isinstance(result, dict):
-                        if result.get("done"):
-                            break
-                        items.append(result.get("value"))
-                    else:
-                        break
-                iterable = items
-            else:
-                iterable = [k for k in iterable.fields if not k.startswith("__")]
-        if not isinstance(iterable, (list, tuple, str, range)):
-            raise SpryRuntimeError(
-                f"'for' loop requires a list or object, got {type(iterable).__name__}", node
-            )
+        if not isinstance(iterable, range):
+            iterable = self._iter_to_list(iterable, node)
 
         # Destructured loop: for i, v in enumerate(list)
         multi_vars = node.vars if node.vars else [node.var]
@@ -5157,10 +5185,13 @@ class _ObjectNamespace:
         return obj
 
     def create(self, proto: Any = None, props: Any = None) -> dict:
-        """Create a new object, optionally copying from a prototype dict."""
+        """Create a new object with the given prototype (values are copied in)."""
         result: dict = {}
         if isinstance(proto, dict):
+            # Copy prototype properties into the new object
             result.update(proto)
+            # Track the prototype so getPrototypeOf can return it
+            result["__spry_proto__"] = proto
         return result
 
     def hasOwn(self, obj: Any, key: str) -> bool:
@@ -5292,7 +5323,13 @@ class _ObjectNamespace:
         return result
 
     def getPrototypeOf(self, obj: Any) -> Any:
-        """Return the prototype of an object (null in SpryCode; objects have no prototype chain)."""
+        """Return the prototype of an object.
+
+        For objects created with Object.create(proto), returns proto.
+        For plain objects/instances/null, returns None.
+        """
+        if isinstance(obj, dict) and "__spry_proto__" in obj:
+            return obj["__spry_proto__"]
         return None
 
     def setPrototypeOf(self, obj: Any, proto: Any) -> Any:

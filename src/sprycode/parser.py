@@ -2892,13 +2892,12 @@ class Parser:
         if tok.type == TokenType.CLASS:
             self._advance()  # consume 'class'
             name = "anonymous"
-            if self._check(TokenType.IDENTIFIER):
-                name = self._advance().value
+            if self._current().type in self._IDENTIFIER_LIKE:
+                name = self._expect_ident().value
             superclass: str | None = None
             if self._check(TokenType.EXTENDS):
                 self._advance()
-                super_tok = self._advance()  # consume superclass name
-                superclass = super_tok.value
+                superclass = self._expect_ident().value
             body = self._parse_block()
             return ClassExpression(name=name, superclass=superclass, body=body, line=tok.line, column=tok.column)
 

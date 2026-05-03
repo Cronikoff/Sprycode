@@ -507,6 +507,12 @@ class NullCoalesceExpression(Node):
 
 
 @dataclass
+class SequenceExpression(Node):
+    """Comma expression: (a, b, c) — evaluates each expression in order and returns the last value."""
+    expressions: list = field(default_factory=list)
+
+
+@dataclass
 class InExpression(Node):
     """item in collection  — membership test"""
     item: Node | None = None
@@ -986,7 +992,4 @@ class ComputedMethodDeclaration(Node):
     rest_param: "str | None" = None
 
 
-@dataclass
-class SequenceExpression(Node):
-    """(a, b, c) — evaluates each expression, returns value of the last."""
-    expressions: list["Node"] = field(default_factory=list)
+

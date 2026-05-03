@@ -528,6 +528,15 @@ class SpryWebSocket:
         return f"<WebSocket {self.url!r} connected={self.connected}>"
 
 
+class _Missing:
+    """Sentinel for missing optional arguments (e.g. reduce initial value)."""
+    def __repr__(self) -> str:
+        return "<missing>"
+
+
+_MISSING = _Missing()
+
+
 class _CallableList(list):
     """A list that is also callable — used for properties like `.flat` that work both
     as `list.flat` (returns default result) and `list.flat(depth)` (parameterised)."""
@@ -545,11 +554,22 @@ class SpryIterator:
 
     Also compares equal to the underlying list for backward compatibility
     with existing tests that use `assert result == [...]`.
+
+    Supports TC39 Iterator Helpers (filter, map, take, drop, flatMap, toArray)
+    with a call_fn hook so SpryCode lambdas can be used as predicates/mappers.
     """
 
-    def __init__(self, items: list) -> None:
+    def __init__(self, items: list, call_fn: "Any | None" = None) -> None:
         self._items = list(items)
         self._index = 0
+        self._call_fn = call_fn  # Interpreter._call_function partial for lambdas
+
+    def _call(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args, None)
+        if callable(fn):
+            return fn(*args)
+        return fn
 
     def next(self) -> dict:
         if self._index < len(self._items):
@@ -557,6 +577,84 @@ class SpryIterator:
             self._index += 1
             return {"value": val, "done": False}
         return {"value": None, "done": True}
+
+    def toArray(self) -> list:
+        """Return remaining items as a plain list (alias for toList)."""
+        return list(self._items[self._index:])
+
+    def toList(self) -> list:
+        return list(self._items[self._index:])
+
+    def filter(self, fn: Any) -> "SpryIterator":
+        """Return a new SpryIterator keeping only items where fn(item) is truthy."""
+        result = []
+        for item in self._items[self._index:]:
+            if self._call(fn, [item]):
+                result.append(item)
+        return SpryIterator(result, self._call_fn)
+
+    def map(self, fn: Any) -> "SpryIterator":
+        """Return a new SpryIterator with fn applied to each item."""
+        result = [self._call(fn, [item]) for item in self._items[self._index:]]
+        return SpryIterator(result, self._call_fn)
+
+    def take(self, n: Any) -> "SpryIterator":
+        """Return a new SpryIterator with at most n items."""
+        return SpryIterator(self._items[self._index:self._index + int(n)], self._call_fn)
+
+    def drop(self, n: Any) -> "SpryIterator":
+        """Return a new SpryIterator skipping the first n items."""
+        return SpryIterator(self._items[self._index + int(n):], self._call_fn)
+
+    def flatMap(self, fn: Any) -> "SpryIterator":
+        """Return a new SpryIterator with fn applied and results flattened one level."""
+        result: list = []
+        for item in self._items[self._index:]:
+            val = self._call(fn, [item])
+            if isinstance(val, (list, SpryIterator)):
+                result.extend(val)
+            else:
+                result.append(val)
+        return SpryIterator(result, self._call_fn)
+
+    def forEach(self, fn: Any) -> None:
+        """Call fn(item) for each remaining item."""
+        for item in self._items[self._index:]:
+            self._call(fn, [item])
+
+    def reduce(self, fn: Any, initial: Any = _MISSING) -> Any:
+        """Reduce remaining items with fn(acc, item)."""
+        items = self._items[self._index:]
+        if not items:
+            if initial is _MISSING:
+                raise TypeError("reduce of empty iterator with no initial value")
+            return initial
+        acc = initial if initial is not _MISSING else items[0]
+        start = 0 if initial is not _MISSING else 1
+        for item in items[start:]:
+            acc = self._call(fn, [acc, item])
+        return acc
+
+    def some(self, fn: Any) -> bool:
+        """Return True if fn(item) is truthy for any remaining item."""
+        for item in self._items[self._index:]:
+            if self._call(fn, [item]):
+                return True
+        return False
+
+    def every(self, fn: Any) -> bool:
+        """Return True if fn(item) is truthy for all remaining items."""
+        for item in self._items[self._index:]:
+            if not self._call(fn, [item]):
+                return False
+        return True
+
+    def find(self, fn: Any) -> Any:
+        """Return first item where fn(item) is truthy, or None."""
+        for item in self._items[self._index:]:
+            if self._call(fn, [item]):
+                return item
+        return None
 
     def __iter__(self):
         return iter(self._items)
@@ -573,9 +671,6 @@ class SpryIterator:
 
     def __getitem__(self, index: Any) -> Any:
         return self._items[index]
-
-    def toList(self) -> list:
-        return list(self._items[self._index:])
 
     def __repr__(self) -> str:
         return f"Iterator({self._items!r})"
@@ -1067,7 +1162,7 @@ class Interpreter:
         # globalThis — reference to the interpreter's global env dict
         env.define("globalThis", {"__type__": "GlobalThis", "undefined": None})
 
-        # structuredClone — deep clone that handles SpryMap, SprySet, dict, list
+        # structuredClone — deep clone that handles SpryMap, SprySet, SpryDate, dict, list
         def _structured_clone(val: Any) -> Any:
             if isinstance(val, SpryMap):
                 new_map = SpryMap()
@@ -1079,6 +1174,11 @@ class Interpreter:
                 for item in val._data:
                     new_set.add(_structured_clone(item))
                 return new_set
+            if isinstance(val, SpryDate):
+                import datetime as _datetime_mod
+                new_date = object.__new__(SpryDate)
+                new_date._dt = val._dt.replace()  # replace() with no args makes a shallow copy
+                return new_date
             if isinstance(val, dict):
                 return {k: _structured_clone(v) for k, v in val.items()}
             if isinstance(val, list):
@@ -3024,6 +3124,8 @@ class Interpreter:
                     for _idx, _x in enumerate(_o):
                         fn(_x, _idx, _o) if multi else fn(_x)
                 return _list_foreach
+            if prop == "toArray":
+                return list(obj)  # plain list — toArray() returns itself as a new list
 
         if isinstance(obj, str):
             if prop == "length":
@@ -3526,10 +3628,87 @@ class Interpreter:
         if isinstance(obj, SpryIterator):
             if prop == "next":
                 return lambda _it=obj: _it.next()
-            if prop == "toList":
-                return lambda _it=obj: _it.toList()
+            if prop in ("toList", "toArray"):
+                return lambda _it=obj: _it.toArray()
             if prop in ("values", "entries", "keys"):
                 return lambda _it=obj: _it  # iterators are already iterators
+            # Iterator helper methods — inject interpreter call_fn so lambdas work
+            _call_fn = self._call_value
+            if prop == "filter":
+                def _iter_filter(fn: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    result = []
+                    for _item in _it._items[_it._index:]:
+                        if _call_fn(fn, [_item]):
+                            result.append(_item)
+                    return SpryIterator(result, _call_fn)
+                return _iter_filter
+            if prop == "map":
+                def _iter_map(fn: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    return SpryIterator(
+                        [_call_fn(fn, [_item]) for _item in _it._items[_it._index:]],
+                        _call_fn,
+                    )
+                return _iter_map
+            if prop == "take":
+                def _iter_take(n: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    return SpryIterator(_it._items[_it._index:_it._index + int(n)], _call_fn)
+                return _iter_take
+            if prop == "drop":
+                def _iter_drop(n: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    return SpryIterator(_it._items[_it._index + int(n):], _call_fn)
+                return _iter_drop
+            if prop == "flatMap":
+                def _iter_flatmap(fn: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    result: list = []
+                    for _item in _it._items[_it._index:]:
+                        _val = _call_fn(fn, [_item])
+                        if isinstance(_val, (list, SpryIterator)):
+                            result.extend(_val)
+                        else:
+                            result.append(_val)
+                    return SpryIterator(result, _call_fn)
+                return _iter_flatmap
+            if prop == "forEach":
+                def _iter_foreach(fn: Any, _it: SpryIterator = obj) -> None:
+                    for _item in _it._items[_it._index:]:
+                        _call_fn(fn, [_item])
+                return _iter_foreach
+            if prop == "reduce":
+                def _iter_reduce(fn: Any, initial: Any = _MISSING, _it: SpryIterator = obj) -> Any:
+                    items = _it._items[_it._index:]
+                    if not items:
+                        if isinstance(initial, _Missing):
+                            raise SpryRuntimeError("reduce of empty iterator with no initial value", node)
+                        return initial
+                    acc = items[0] if isinstance(initial, _Missing) else initial
+                    start = 1 if isinstance(initial, _Missing) else 0
+                    for _item in items[start:]:
+                        acc = _call_fn(fn, [acc, _item])
+                    return acc
+                return _iter_reduce
+            if prop == "some":
+                def _iter_some(fn: Any, _it: SpryIterator = obj) -> bool:
+                    for _item in _it._items[_it._index:]:
+                        if _call_fn(fn, [_item]):
+                            return True
+                    return False
+                return _iter_some
+            if prop == "every":
+                def _iter_every(fn: Any, _it: SpryIterator = obj) -> bool:
+                    for _item in _it._items[_it._index:]:
+                        if not _call_fn(fn, [_item]):
+                            return False
+                    return True
+                return _iter_every
+            if prop == "find":
+                def _iter_find(fn: Any, _it: SpryIterator = obj) -> Any:
+                    for _item in _it._items[_it._index:]:
+                        if _call_fn(fn, [_item]):
+                            return _item
+                    return None
+                return _iter_find
+            if prop == "length" or prop == "size":
+                return len(obj._items) - obj._index
             raise SpryRuntimeError(f"Iterator has no property {prop!r}", node)
 
         if isinstance(obj, SpryProxy):
@@ -4861,6 +5040,11 @@ class Interpreter:
                 )
                 fields[computed_key_str] = fn
                 instance_env.define(computed_key_str, fn, mutable=False)
+            elif isinstance(stmt, Assignment) and stmt.value is not None:
+                # Public instance field declaration: fieldName = value (no var/let keyword)
+                val = self._eval(stmt.value, instance_env)
+                fields[stmt.name] = val
+                instance_env.define(stmt.name, val, mutable=True)
 
         instance = SpryInstance(cls=cls, fields=fields)
 
@@ -5354,7 +5538,14 @@ class _ArrayNamespace:
     def __getattr__(self, name: str) -> Any:
         if name == "from":
             return self.from_
+        if name == "fromAsync":
+            return self.fromAsync
         raise AttributeError(name)
+
+    def fromAsync(self, iterable: Any, map_fn: Any = None) -> SpryPromise:
+        """ES2024 Array.fromAsync — wrap Array.from result in a fulfilled Promise."""
+        result = self.from_(iterable, map_fn)
+        return SpryPromise(value=result)
 
     def of(self, *args: Any) -> list:
         """Create an array from arguments: Array.of(1, 2, 3) → [1, 2, 3]."""
@@ -7099,6 +7290,16 @@ class SprySet:
     def entries(self) -> "SpryIterator":
         return SpryIterator([[v, v] for v in self._data])
 
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, SprySet):
+            return self._data == other._data
+        if isinstance(other, list):
+            return self._data == other
+        return NotImplemented
+
     def __iter__(self):
         return iter(self._data)
 
@@ -7107,17 +7308,20 @@ class SprySet:
 
 
 class _SprySetNamespace:
-    """Set global — supports both Set(list) for dedup and Set.new([items]) for SprySet."""
+    """Set global — supports Set(iterable) creating a SprySet, and Set.new([items])."""
 
-    def __call__(self, lst: Any) -> list:
-        """Backward compat: Set([1,2,3]) returns a deduplicated list."""
-        if not isinstance(lst, (list, tuple)):
-            raise TypeError("Set() requires a list")
-        seen: list = []
-        for item in lst:
-            if item not in seen:
-                seen.append(item)
-        return seen
+    def __call__(self, lst: Any = None) -> SprySet:
+        """Create a SprySet from an iterable (JS: new Set(iterable))."""
+        if lst is None:
+            return SprySet()
+        if isinstance(lst, (list, tuple)):
+            return SprySet(list(lst))
+        if isinstance(lst, SprySet):
+            return SprySet(list(lst._data))
+        try:
+            return SprySet(list(lst))
+        except TypeError:
+            return SprySet()
 
     def new(self, items: Any = None) -> SprySet:
         if items is None:
@@ -7152,18 +7356,21 @@ class _IteratorNamespace:
     def __init__(self, interp: Any) -> None:
         self._interp = interp
 
-    def from_(self, iterable: Any) -> list:
-        """Convert any iterable to a materialised array (iterator protocol stub)."""
+    def from_(self, iterable: Any) -> SpryIterator:
+        """Convert any iterable to a SpryIterator with chainable helper methods."""
+        _call_fn = self._interp._call_value
+        if isinstance(iterable, SpryIterator):
+            return SpryIterator(iterable._items[iterable._index:], _call_fn)
         if isinstance(iterable, SpryGenerator):
-            return iterable._materialise()
+            return SpryIterator(iterable._materialise(), _call_fn)
         if isinstance(iterable, SprySet):
-            return list(iterable._data)
+            return SpryIterator(list(iterable._data), _call_fn)
         if isinstance(iterable, SpryMap):
-            return [[k, v] for k, v in iterable._data.items()]
+            return SpryIterator([[k, v] for k, v in iterable._data.items()], _call_fn)
         try:
-            return list(iterable)
+            return SpryIterator(list(iterable), _call_fn)
         except TypeError:
-            return []
+            return SpryIterator([], _call_fn)
 
     def __getattr__(self, prop: str) -> Any:
         if prop == "from":
@@ -7279,6 +7486,30 @@ class _PromiseNamespace:
             else:
                 return SpryPromise(value=p)
         return SpryPromise(value=None, error=errors)
+
+    def withResolvers(self) -> dict:
+        """ES2024: Return {promise, resolve, reject} with the promise pre-resolved.
+
+        In SpryCode's synchronous model the promise is already settled; resolve/reject
+        are no-op callables that mimic the JS API shape.
+        """
+        promise: SpryPromise = SpryPromise(value=None)
+        container: dict = {"_p": promise}
+
+        def _resolve(value: Any = None) -> None:
+            container["_p"] = SpryPromise(value=value)
+
+        def _reject(reason: Any = None) -> None:
+            container["_p"] = SpryPromise(value=None, error=reason)
+
+        class _LazyPromise:
+            """Proxy that delegates to the container's current promise."""
+            def __getattr__(self_, attr: str) -> Any:  # noqa: N805
+                return getattr(container["_p"], attr)
+            def __repr__(self_) -> str:  # noqa: N805
+                return repr(container["_p"])
+
+        return {"promise": _LazyPromise(), "resolve": _resolve, "reject": _reject}
 
     def __repr__(self) -> str:
         return "Promise"

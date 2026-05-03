@@ -250,6 +250,8 @@ class Parser:
         TokenType.DELETE,        # "delete"
         TokenType.FROM,          # "from"
         TokenType.DEFAULT,       # "default"
+        TokenType.TO,            # "to" — commonly used as variable name in ranges
+        TokenType.STOP,          # "stop" — commonly used as variable name
     })
 
     def _expect_ident(self) -> Token:

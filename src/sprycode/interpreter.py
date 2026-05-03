@@ -1123,7 +1123,9 @@ class Interpreter:
         env.define("python", _PythonNamespace())
 
         # String global namespace
-        env.define("String", _StringNamespace())
+        _string_ns = _StringNamespace()
+        _string_ns._interp = self
+        env.define("String", _string_ns)
 
         # Map global namespace
         _map_ns = _MapNamespace()
@@ -4361,7 +4363,12 @@ class Interpreter:
         items: list[Any] = []
         next_fn: Any = None
         if isinstance(iterator, dict) and "next" in iterator:
-            next_fn = iterator["next"]
+            raw = iterator["next"]
+            if isinstance(raw, DictBoundMethod):
+                # DictBoundMethod — call via _call_dict_method so `this` = the dict
+                next_fn = lambda _r=raw: self._call_dict_bound_method(_r.fn, _r.obj, [], node)
+            else:
+                next_fn = raw
         elif isinstance(iterator, SpryInstance) and "next" in iterator.fields:
             next_fn_raw = iterator.fields["next"]
             if isinstance(next_fn_raw, SpryFunction):
@@ -4421,7 +4428,12 @@ class Interpreter:
             ]
         if isinstance(value, dict):
             # Check if it's an iterator (has 'next') — if so consume it
-            if "next" in value and callable(value.get("next")):
+            next_val = value.get("next")
+            if next_val is not None and (
+                callable(next_val)
+                or isinstance(next_val, (DictBoundMethod, SpryFunction, SpryLambda,
+                                          SpryMultiLambda, BoundMethod))
+            ):
                 return self._consume_iterator(value, node)
             return [k for k in value.keys() if not k.startswith("__spry_")]
         raise SpryRuntimeError(
@@ -7512,6 +7524,20 @@ class _StringNamespace:
             if val == int(val):
                 return str(int(val))
             return str(val)
+        # For SpryInstance, delegate to _builtin_str so toString() is called
+        if isinstance(val, SpryInstance):
+            # Import here to avoid circular ref — interpreter is the one we need
+            # _builtin_str is on the interpreter; fall back to str() if no interp ref
+            if hasattr(self, "_interp"):
+                return self._interp._builtin_str(val)
+            # Fallback: call toString manually if present
+            if "toString" in val.fields:
+                ts = val.fields["toString"]
+                if callable(ts):
+                    try:
+                        return str(ts())
+                    except Exception:
+                        pass
         return str(val)
 
 _symbol_counter = 0

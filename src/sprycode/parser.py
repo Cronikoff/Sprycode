@@ -243,6 +243,12 @@ class Parser:
         TokenType.CASE,          # "case"
         TokenType.SCOPE,         # "scope"
         TokenType.WEBSOCKET,     # "websocket"
+        # Common SpryCode keywords also used as method names in class bodies
+        # and object literals (e.g. class { create() {}, delete() {}, from() {} })
+        TokenType.CREATE,        # "create"
+        TokenType.DELETE,        # "delete"
+        TokenType.FROM,          # "from"
+        TokenType.DEFAULT,       # "default"
     })
 
     def _expect_ident(self) -> Token:
@@ -1665,7 +1671,32 @@ class Parser:
                         fn_node = self._parse_fn()
                         body.append(fn_node)
                         continue
+                    if self._check(TokenType.FN_STAR):
+                        fn_node = self._parse_fn(is_generator=True)
+                        body.append(fn_node)
+                        continue
                     name_tok = self._expect_ident()
+                    # static name() { ... } — static method shorthand (no fn keyword)
+                    if self._check(TokenType.LPAREN):
+                        sm_params, sm_defaults, sm_rest = self._parse_method_params()
+                        # optional return type annotation
+                        if self._check(TokenType.ARROW):
+                            self._advance()
+                            self._parse_type_name()
+                        sm_body = self._parse_block()
+                        # Static methods use plain name (same convention as `static fn name()`)
+                        body.append(FunctionDeclaration(
+                            name=name_tok.value,
+                            params=sm_params,
+                            body=sm_body,
+                            defaults=sm_defaults,
+                            rest_param=sm_rest,
+                            is_async=False,
+                            is_generator=False,
+                            line=cur.line,
+                            column=cur.column,
+                        ))
+                        continue
                     value_node = None
                     if self._match(TokenType.EQ):
                         value_node = self._parse_expression()
@@ -1703,11 +1734,105 @@ class Parser:
                     line=cur.line, column=cur.column,
                 ))
                 continue
+            # Method shorthand: name() { ... }  (without fn keyword)
+            # Must come after get/set/fn/static/computed checks to avoid conflicts.
+            # Also handles: async name() { ... } and *name() { ... } generator methods.
+            ms_is_async = False
+            ms_is_gen = False
+            cur = self._current()  # refresh after the previous checks may have advanced
+            if cur.type == TokenType.IDENTIFIER and cur.value == "async":
+                # async name() { ... } — look-ahead to confirm it's a method
+                if self._peek(1).type in self._IDENTIFIER_LIKE and self._peek(2).type == TokenType.LPAREN:
+                    ms_is_async = True
+                    self._advance()  # consume 'async'
+                    cur = self._current()
+            if cur.type == TokenType.STAR:
+                # *name() { ... } — generator method shorthand
+                if self._peek(1).type in self._IDENTIFIER_LIKE and self._peek(2).type == TokenType.LPAREN:
+                    ms_is_gen = True
+                    self._advance()  # consume '*'
+                    cur = self._current()
+            if cur.type in self._IDENTIFIER_LIKE and self._peek(1).type == TokenType.LPAREN:
+                ms_tok = self._advance()
+                ms_params, ms_defaults, ms_rest = self._parse_method_params()
+                # optional return type
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                ms_body = self._parse_block()
+                body.append(FunctionDeclaration(
+                    name=ms_tok.value,
+                    params=ms_params,
+                    body=ms_body,
+                    defaults=ms_defaults,
+                    rest_param=ms_rest,
+                    is_async=ms_is_async,
+                    is_generator=ms_is_gen,
+                    line=ms_tok.line,
+                    column=ms_tok.column,
+                ))
+                continue
             stmt = self._parse_statement()
             if stmt is not None:
                 body.append(stmt)
         self._expect(TokenType.RBRACE)
         return Block(body=body, line=tok.line, column=tok.column)
+
+    def _parse_method_params(self) -> tuple[list[tuple[str, str | None]], dict, str | None]:
+        """Parse ``(params)`` for a class method shorthand.
+
+        Expects the opening ``(`` to be current; consumes up to and including
+        the closing ``)``.  Returns ``(params, defaults, rest_param)``.
+        """
+        self._expect(TokenType.LPAREN)
+        params: list[tuple[str, str | None]] = []
+        defaults: dict = {}
+        rest_param: str | None = None
+        while not self._check(TokenType.RPAREN) and not self._at_end():
+            if self._check(TokenType.ELLIPSIS):
+                self._advance()
+                rest_param = self._expect_ident().value
+                break
+            if self._check(TokenType.LBRACE):
+                param_names = self._parse_dict_destruct_param()
+                params.append(("__destruct__:" + ",".join(param_names), None))
+                if not self._match(TokenType.COMMA):
+                    break
+                continue
+            if self._check(TokenType.LBRACKET):
+                self._advance()
+                arr_names: list[str] = []
+                arr_rest: str | None = None
+                while not self._check(TokenType.RBRACKET) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        arr_rest = self._expect_ident().value
+                        break
+                    arr_names.append(self._expect_ident().value)
+                    if not self._match(TokenType.COMMA):
+                        break
+                self._expect(TokenType.RBRACKET)
+                synth = "__array_destruct__:" + ",".join(arr_names)
+                if arr_rest:
+                    synth += "..." + arr_rest
+                params.append((synth, None))
+                if not self._match(TokenType.COMMA):
+                    break
+                continue
+            pname = self._expect_ident()
+            ptype = None
+            if self._match(TokenType.COLON):
+                ptype = self._parse_type_name()
+            default_expr = None
+            if self._match(TokenType.EQ):
+                default_expr = self._parse_null_coalesce()
+            params.append((pname.value, ptype))
+            if default_expr is not None:
+                defaults[pname.value] = default_expr
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.RPAREN)
+        return params, defaults, rest_param
 
     def _parse_interface(self) -> InterfaceDeclaration:
         tok = self._expect(TokenType.INTERFACE)

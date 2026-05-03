@@ -1020,7 +1020,13 @@ class Interpreter:
         env.define("entries", lambda d: [[k, v] for k, v in d.items()] if isinstance(d, dict) else [])
 
         # Dict/Object helpers
-        env.define("fromEntries", lambda lst: dict(lst) if isinstance(lst, list) else {})
+        def _from_entries(entries: Any) -> dict:
+            if isinstance(entries, list):
+                return {str(k): v for k, v in entries}
+            if isinstance(entries, SpryMap):
+                return {str(k): v for k, v in entries._data.items()}
+            return {}
+        env.define("fromEntries", _from_entries)
         env.define("merge", lambda *dicts: {k: v for d in dicts if isinstance(d, dict) for k, v in d.items()})
 
         # Parsing helpers (global convenience functions)
@@ -1317,25 +1323,80 @@ class Interpreter:
         return env
 
     def _eval_fstring(self, template: str, env: "Environment") -> str:
-        """Evaluate an f-string template by substituting {expr} with evaluated values."""
-        import re
+        """Evaluate an f-string template by substituting {expr} with evaluated values.
+
+        Uses a depth-aware scan instead of a simple regex so that nested braces
+        and inner backtick template literals inside ``{...}`` expressions are
+        handled correctly.
+        """
         result = ""
-        last = 0
-        for m in re.finditer(r"\{([^}]+)\}", template):
-            result += template[last:m.start()]
-            expr_src = m.group(1)
-            try:
-                from .lexer import Lexer as _Lexer
-                from .parser import Parser as _Parser
-                tokens = _Lexer(expr_src).tokenize()
-                prog = _Parser(tokens).parse()
-                # prog.body[0] is the expression statement
-                val = self._eval(prog.body[0], env)
-                result += self._builtin_str(val)
-            except Exception as e:
-                result += f"{{{expr_src}}}"
-            last = m.end()
-        result += template[last:]
+        i = 0
+        n = len(template)
+        while i < n:
+            if template[i] == "{":
+                # Depth-tracking scan for the matching closing }
+                i += 1
+                depth = 1
+                expr_start = i
+                while i < n and depth > 0:
+                    c = template[i]
+                    if c == "{":
+                        depth += 1
+                        i += 1
+                    elif c == "}":
+                        depth -= 1
+                        i += 1
+                    elif c == "`":
+                        # Inner backtick string — skip until matching close backtick,
+                        # tracking its own ${...} depth so inner } don't confuse us.
+                        i += 1
+                        while i < n:
+                            bc = template[i]
+                            if bc == "\\":
+                                i += 2  # skip escape + escaped char
+                            elif bc == "`":
+                                i += 1
+                                break
+                            elif bc == "$" and i + 1 < n and template[i + 1] == "{":
+                                i += 2  # skip ${
+                                inner_d = 1
+                                while i < n and inner_d > 0:
+                                    ic = template[i]
+                                    if ic == "{":
+                                        inner_d += 1
+                                    elif ic == "}":
+                                        inner_d -= 1
+                                    i += 1
+                            else:
+                                i += 1
+                    elif c in ("'", '"'):
+                        quote = c
+                        i += 1
+                        while i < n:
+                            sc = template[i]
+                            if sc == "\\":
+                                i += 2
+                            elif sc == quote:
+                                i += 1
+                                break
+                            else:
+                                i += 1
+                    else:
+                        i += 1
+                expr_src = template[expr_start:i - 1]  # exclude trailing }
+                try:
+                    from .lexer import Lexer as _Lexer
+                    from .parser import Parser as _Parser
+                    tokens = _Lexer(expr_src).tokenize()
+                    prog = _Parser(tokens).parse()
+                    # prog.body[0] is the expression statement
+                    val = self._eval(prog.body[0], env)
+                    result += self._builtin_str(val)
+                except Exception as e:
+                    result += f"{{{expr_src}}}"
+            else:
+                result += template[i]
+                i += 1
         return result
 
     def _eval_tagged_template(self, node: "TaggedTemplateExpression", env: "Environment") -> Any:
@@ -1344,27 +1405,66 @@ class Interpreter:
         Calls tag(strings, ...values) where strings is the list of raw string parts
         and values are the evaluated expressions.
         """
-        import re as _re
         tag_fn = self._eval(node.tag, env)
         # Use raw_template when available (preserves \\n etc for String.raw)
         template = node.raw_template if node.raw_template else node.template
         strings: list[str] = []
         values: list[Any] = []
-        last = 0
-        for m in _re.finditer(r"\{([^}]+)\}", template):
-            strings.append(template[last:m.start()])
-            expr_src = m.group(1)
-            try:
-                from .lexer import Lexer as _Lexer
-                from .parser import Parser as _Parser
-                _tokens = _Lexer(expr_src).tokenize()
-                _prog = _Parser(_tokens).parse()
-                val = self._eval(_prog.body[0], env)
-                values.append(val)
-            except Exception:
-                values.append(None)
-            last = m.end()
-        strings.append(template[last:])
+        i = 0
+        n = len(template)
+        current_str = ""
+        while i < n:
+            if template[i] == "{":
+                i += 1
+                depth = 1
+                expr_start = i
+                while i < n and depth > 0:
+                    c = template[i]
+                    if c == "{":
+                        depth += 1
+                        i += 1
+                    elif c == "}":
+                        depth -= 1
+                        i += 1
+                    elif c == "`":
+                        i += 1
+                        while i < n:
+                            bc = template[i]
+                            if bc == "\\":
+                                i += 2
+                            elif bc == "`":
+                                i += 1
+                                break
+                            elif bc == "$" and i + 1 < n and template[i + 1] == "{":
+                                i += 2
+                                inner_d = 1
+                                while i < n and inner_d > 0:
+                                    ic = template[i]
+                                    if ic == "{":
+                                        inner_d += 1
+                                    elif ic == "}":
+                                        inner_d -= 1
+                                    i += 1
+                            else:
+                                i += 1
+                    else:
+                        i += 1
+                expr_src = template[expr_start:i - 1]
+                strings.append(current_str)
+                current_str = ""
+                try:
+                    from .lexer import Lexer as _Lexer
+                    from .parser import Parser as _Parser
+                    _tokens = _Lexer(expr_src).tokenize()
+                    _prog = _Parser(_tokens).parse()
+                    val = self._eval(_prog.body[0], env)
+                    values.append(val)
+                except Exception:
+                    values.append(None)
+            else:
+                current_str += template[i]
+                i += 1
+        strings.append(current_str)
         return self._call_value(tag_fn, [strings, *values])
 
     def _builtin_str(self, value: Any) -> str:
@@ -5178,6 +5278,8 @@ class Interpreter:
                     closure=instance_env,
                     defaults=stmt.defaults,
                     rest_param=stmt.rest_param,
+                    is_generator=stmt.is_generator,
+                    is_async=stmt.is_async,
                 )
                 fields[stmt.name] = fn
                 instance_env.define(stmt.name, fn, mutable=False)
@@ -5245,6 +5347,8 @@ class Interpreter:
                     closure=instance_env,
                     defaults=fval.defaults,
                     rest_param=fval.rest_param,
+                    is_generator=fval.is_generator,
+                    is_async=fval.is_async,
                 )
                 fields[fname] = new_fn
                 instance.fields[fname] = new_fn
@@ -5289,6 +5393,26 @@ class Interpreter:
     def _call_bound_method(self, bm: BoundMethod, args: list[Any], node: Node) -> Any:
         """Call a method on an instance, binding `self` in the execution environment."""
         fn = bm.fn
+        # Generator methods: create a generator with self/this pre-bound in the closure
+        if fn.is_generator:
+            gen_closure = fn.closure.child()
+            gen_closure.define("self", bm.instance, mutable=False)
+            gen_closure.define("this", bm.instance, mutable=False)
+            if hasattr(bm, "_defining_class") and bm._defining_class is not None:
+                gen_closure.define("__current_class__", bm._defining_class, mutable=False)
+            elif isinstance(bm.instance, SpryInstance):
+                gen_closure.define("__current_class__", bm.instance.cls, mutable=False)
+            bound_gen_fn = SpryFunction(
+                name=fn.name,
+                params=fn.params,
+                body=fn.body,
+                closure=gen_closure,
+                defaults=fn.defaults,
+                rest_param=fn.rest_param,
+                is_async=getattr(fn, "is_async", False),
+                is_generator=True,
+            )
+            return SpryGenerator(bound_gen_fn, args, self)
         child = fn.closure.child()
         # Bind self so methods can do self.field = val
         child.define("self", bm.instance, mutable=False)
@@ -5829,9 +5953,13 @@ class _ObjectNamespace:
         return []
 
     def fromEntries(self, entries: Any) -> dict:
-        """Create an object from [[key, value], ...] pairs."""
+        """Create an object from [[key, value], ...] pairs or a Map."""
         if isinstance(entries, list):
             return {str(k): v for k, v in entries}
+        if isinstance(entries, SpryMap):
+            return {str(k): v for k, v in entries._data.items()}
+        if isinstance(entries, SpryIterator):
+            return {str(k): v for k, v in entries._iterator}
         return {}
 
     def assign(self, *objs: Any) -> dict:

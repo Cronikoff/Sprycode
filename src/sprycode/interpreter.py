@@ -2809,7 +2809,7 @@ class Interpreter:
                 return _CallableList(sorted(obj), _sorted_fn)
             if prop == "indexOf":
                 def _list_index_of(item: Any, from_index: int = 0, _o: list = obj) -> int:
-                    start = int(from_index) if from_index else 0
+                    start = int(from_index) if from_index is not None else 0
                     if start < 0:
                         start = max(0, len(_o) + start)
                     for _i in range(start, len(_o)):
@@ -3228,7 +3228,7 @@ class Interpreter:
                 return len(obj) > 0
             if prop == "indexOf":
                 def _str_index_of(sub: str, from_index: int = 0, _s: str = obj) -> int:
-                    start = max(0, int(from_index)) if from_index else 0
+                    start = max(0, int(from_index)) if from_index is not None else 0
                     return _s.find(str(sub), start)
                 return _str_index_of
             if prop == "lastIndexOf":

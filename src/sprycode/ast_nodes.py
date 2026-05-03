@@ -840,6 +840,13 @@ class OptionalMemberExpression(Node):
 
 
 @dataclass
+class OptionalIndexExpression(Node):
+    """obj?.[index]  — returns null if obj is null/None"""
+    object: Node | None = None
+    index: Node | None = None
+
+
+@dataclass
 class EnumDeclaration(Node):
     """enum Color { Red, Green, Blue }"""
     name: str = ""

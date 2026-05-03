@@ -73,6 +73,7 @@ from .ast_nodes import (
     ObjectDestructure,
     ObjectLiteral,
     OptionalMemberExpression,
+    OptionalIndexExpression,
     ParseStatement,
     PipelineExpression,
     PostfixExpression,
@@ -2338,23 +2339,30 @@ class Parser:
             elif self._check(TokenType.QUESTION_DOT):
                 # Optional chaining: obj?.prop
                 qt = self._advance()
-                prop_tok = self._current()
-                prop = self._advance().value
-                if self._check(TokenType.LPAREN):
-                    # Optional method call: obj?.method(args)
-                    self._advance()
-                    args = self._parse_arg_list()
-                    self._expect(TokenType.RPAREN)
-                    callee = OptionalMemberExpression(
-                        object=expr, property=prop, line=qt.line, column=qt.column
-                    )
-                    expr = CallExpression(
-                        callee=callee, args=args, line=qt.line, column=qt.column
-                    )
+                if self._check(TokenType.LBRACKET):
+                    # Optional index: arr?.[i]
+                    self._advance()  # consume [
+                    index = self._parse_expression()
+                    self._expect(TokenType.RBRACKET)
+                    expr = OptionalIndexExpression(object=expr, index=index, line=qt.line, column=qt.column)
                 else:
-                    expr = OptionalMemberExpression(
-                        object=expr, property=prop, line=qt.line, column=qt.column
-                    )
+                    prop_tok = self._current()
+                    prop = self._advance().value
+                    if self._check(TokenType.LPAREN):
+                        # Optional method call: obj?.method(args)
+                        self._advance()
+                        args = self._parse_arg_list()
+                        self._expect(TokenType.RPAREN)
+                        callee = OptionalMemberExpression(
+                            object=expr, property=prop, line=qt.line, column=qt.column
+                        )
+                        expr = CallExpression(
+                            callee=callee, args=args, line=qt.line, column=qt.column
+                        )
+                    else:
+                        expr = OptionalMemberExpression(
+                            object=expr, property=prop, line=qt.line, column=qt.column
+                        )
             elif self._check(TokenType.LBRACKET):
                 op_tok = self._advance()
                 index = self._parse_expression()

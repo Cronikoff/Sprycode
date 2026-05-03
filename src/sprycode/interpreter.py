@@ -81,6 +81,7 @@ from .ast_nodes import (
     ObjectDestructure,
     ObjectLiteral,
     OptionalMemberExpression,
+    OptionalIndexExpression,
     ParseStatement,
     PipelineExpression,
     PostfixExpression,
@@ -350,6 +351,7 @@ class SpryClass:
         self.body = body
         self.closure = closure
         self.superclass = superclass
+        self._static_fields: dict = {}  # mutable static field storage
 
     def __repr__(self) -> str:
         return f"<class {self.name}>"
@@ -1270,6 +1272,8 @@ class Interpreter:
                 obj.set(node.property, value)
             elif isinstance(obj, dict):
                 obj[node.property] = value
+            elif isinstance(obj, SpryClass):
+                obj._static_fields[node.property] = value
             else:
                 raise SpryRuntimeError(
                     f"Cannot assign property {node.property!r} on {type(obj).__name__}", node
@@ -1283,6 +1287,15 @@ class Interpreter:
                 current = obj.fields.get(node.property)
             elif isinstance(obj, dict):
                 current = obj.get(node.property)
+            elif isinstance(obj, SpryClass):
+                current = obj._static_fields.get(node.property)
+                # Seed from AST if not yet stored
+                if current is None and node.property not in obj._static_fields:
+                    cls_env = obj.closure.child()
+                    for stmt in obj.body.body:  # type: ignore[union-attr]
+                        if isinstance(stmt, (LetDeclaration, VarDeclaration)) and stmt.name == node.property:
+                            current = self._eval(stmt.value, cls_env) if stmt.value is not None else None
+                            break
             else:
                 raise SpryRuntimeError(
                     f"Cannot compound-assign property {node.property!r} on {type(obj).__name__}", node
@@ -1312,8 +1325,10 @@ class Interpreter:
                 raise SpryRuntimeError(f"Unknown compound operator: {node.op!r}", node)
             if isinstance(obj, SpryInstance):
                 obj.set(node.property, new_val)
-            else:
+            elif isinstance(obj, dict):
                 obj[node.property] = new_val
+            elif isinstance(obj, SpryClass):
+                obj._static_fields[node.property] = new_val
             return None
 
         if isinstance(node, IndexAssignment):
@@ -1740,7 +1755,12 @@ class Interpreter:
             for item in node.items:
                 if isinstance(item, SpreadElement):
                     spread_val = self._eval(item.expr, env)
-                    if isinstance(spread_val, (list, tuple)):
+                    if isinstance(spread_val, SpryIterator):
+                        result_list.extend(spread_val._items)
+                    elif isinstance(spread_val, SpryGenerator):
+                        spread_val._materialise()
+                        result_list.extend(spread_val._collected or [])
+                    elif isinstance(spread_val, (list, tuple)):
                         result_list.extend(spread_val)
                     else:
                         raise SpryRuntimeError("Spread operator requires a list", item)
@@ -1765,6 +1785,16 @@ class Interpreter:
             if obj is None:
                 return None
             return self._eval_member_on(obj, node.property, node)
+
+        if isinstance(node, OptionalIndexExpression):
+            obj = self._eval(node.object, env)
+            if obj is None:
+                return None
+            idx = self._eval(node.index, env)
+            try:
+                return obj[idx]
+            except (KeyError, IndexError, TypeError) as e:
+                raise SpryRuntimeError(f"Index error: {e}", node)
 
         if isinstance(node, IndexExpression):
             obj = self._eval(node.object, env)
@@ -1989,7 +2019,12 @@ class Interpreter:
         for a in node.args:
             if isinstance(a, SpreadElement):
                 spread_val = self._eval(a.expr, env)
-                if isinstance(spread_val, (list, tuple)):
+                if isinstance(spread_val, SpryIterator):
+                    args.extend(spread_val._items)
+                elif isinstance(spread_val, SpryGenerator):
+                    spread_val._materialise()
+                    args.extend(spread_val._collected or [])
+                elif isinstance(spread_val, (list, tuple)):
                     args.extend(spread_val)
                 else:
                     args.append(spread_val)
@@ -2394,6 +2429,24 @@ class Interpreter:
                         acc = _fn2(acc, _item)
                     return acc
                 return _list_reduce
+            if prop == "reduceRight":
+                def _list_reduce_right(fn: Any, initial: Any = _SENTINEL) -> Any:
+                    items = list(reversed(obj))
+                    if initial is _SENTINEL:
+                        if not items:
+                            raise SpryRuntimeError("reduceRight of empty array with no initial value", node)
+                        acc = items[0]
+                        items = items[1:]
+                    else:
+                        acc = initial
+                    for i, item in enumerate(items):
+                        arity = getattr(fn, "_spry_arity", 1)
+                        if arity > 1:
+                            acc = fn(acc, item, len(obj) - 1 - i, obj)
+                        else:
+                            acc = fn(acc, item)
+                    return acc
+                return _list_reduce_right
             if prop == "findIndex":
                 return lambda pred: next((i for i, x in enumerate(obj) if self._truthy(pred(x))), -1)
             if prop == "concat":
@@ -2987,6 +3040,9 @@ class Interpreter:
                 return lambda *args: self._construct_class(obj, list(args), node)
             if prop == "name":
                 return obj.name
+            # Check mutable static field storage first
+            if prop in obj._static_fields:
+                return obj._static_fields[prop]
             # Look up static methods and properties from class body
             cls_env = obj.closure.child()
             for stmt in obj.body.body:  # type: ignore[union-attr]
@@ -3002,7 +3058,10 @@ class Interpreter:
                 # Static let/var declarations
                 if isinstance(stmt, (LetDeclaration, VarDeclaration)) and stmt.name == prop:
                     val = self._eval(stmt.value, cls_env) if stmt.value is not None else None
-                    return val
+                    # Seed into _static_fields for future mutation
+                    if prop not in obj._static_fields:
+                        obj._static_fields[prop] = val
+                    return obj._static_fields[prop]
             raise SpryRuntimeError(f"Class {obj.name!r} has no static member {prop!r}", node)
 
         if isinstance(obj, SpryStruct):
@@ -3095,6 +3154,35 @@ class Interpreter:
                              SpryBroadcastChannel, SpryMessageChannel, SpryMessagePort,
                              _NavigatorNamespace, _SubtleCryptoNamespace)):
             return obj._spry_get_prop(prop)
+
+        if isinstance(obj, (SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod)):
+            if prop == "bind":
+                def _fn_bind(this_arg: Any, *bound_args: Any, _fn=obj) -> Any:
+                    def _bound(*call_args: Any) -> Any:
+                        all_args = list(bound_args) + list(call_args)
+                        return self._call_value(_fn, all_args)
+                    return _bound
+                return _fn_bind
+            if prop == "call":
+                def _fn_call(this_arg: Any, *call_args: Any, _fn=obj) -> Any:
+                    return self._call_value(_fn, list(call_args))
+                return _fn_call
+            if prop == "apply":
+                def _fn_apply(this_arg: Any, args_list: Any = None, _fn=obj) -> Any:
+                    args = list(args_list) if args_list is not None else []
+                    return self._call_value(_fn, args)
+                return _fn_apply
+            if prop == "name":
+                if isinstance(obj, SpryFunction):
+                    return obj.name
+                return ""
+            if prop == "length":
+                if isinstance(obj, SpryFunction):
+                    return len(obj.params)
+                return 0
+            if prop in ("toString", "__str__"):
+                return lambda: repr(obj)
+            raise SpryRuntimeError(f"Function has no property {prop!r}", node)
 
         # Try attribute access
         try:
@@ -3437,6 +3525,8 @@ class Interpreter:
             iterable = iterable._items  # iterate all items
         if isinstance(iterable, SprySet):
             iterable = list(iterable._data)
+        if isinstance(iterable, SpryTypedArray):
+            iterable = list(iterable._data)
         if isinstance(iterable, SpryMap):
             iterable = [[k, v] for k, v in iterable._data.items()]
         if isinstance(iterable, SpryInstance):
@@ -3454,9 +3544,7 @@ class Interpreter:
                         break
                 iterable = items
             else:
-                raise SpryRuntimeError(
-                    f"'for' loop requires a list or object, got SpryInstance (no next() method)", node
-                )
+                iterable = [k for k in iterable.fields if not k.startswith("__")]
         if not isinstance(iterable, (list, tuple, str, range)):
             raise SpryRuntimeError(
                 f"'for' loop requires a list or object, got {type(iterable).__name__}", node
@@ -4171,6 +4259,7 @@ class Interpreter:
 
         # Bind "self" so methods can use it
         instance_env.define("self", instance, mutable=False)
+        instance_env.define("this", instance, mutable=False)
 
         # Re-bind all methods with updated instance_env that includes `self`
         for fname, fval in list(fields.items()):
@@ -4228,6 +4317,7 @@ class Interpreter:
         child = fn.closure.child()
         # Bind self so methods can do self.field = val
         child.define("self", bm.instance, mutable=False)
+        child.define("this", bm.instance, mutable=False)
         # Track which class's method we're currently executing — needed for multi-level super.
         # bm.fn.closure is the env where the method was defined (the class's instance_env child).
         # We store the "defining class" so that super resolves to *its* parent, not the instance's class.
@@ -4666,18 +4756,24 @@ class _ObjectNamespace:
         """Return the keys of an object/dict."""
         if isinstance(obj, dict):
             return list(obj.keys())
+        if isinstance(obj, SpryInstance):
+            return [k for k in obj.fields if not k.startswith("__") and not callable(obj.fields[k]) and not isinstance(obj.fields[k], SpryFunction)]
         return []
 
     def values(self, obj: Any) -> list:
         """Return the values of an object/dict."""
         if isinstance(obj, dict):
             return list(obj.values())
+        if isinstance(obj, SpryInstance):
+            return [v for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
 
     def entries(self, obj: Any) -> list:
         """Return [[key, value], ...] pairs."""
         if isinstance(obj, dict):
             return [[k, v] for k, v in obj.items()]
+        if isinstance(obj, SpryInstance):
+            return [[k, v] for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
 
     def fromEntries(self, entries: Any) -> dict:
@@ -8027,6 +8123,18 @@ class SpryTypedArray:
 
     def set(self, index: Any, value: Any) -> None:
         self._data[int(index)] = self._coerce(value)
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._data[int(index)]
+
+    def __setitem__(self, index: Any, value: Any) -> None:
+        self._data[int(index)] = self._coerce(value)
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
 
     def toList(self) -> list:
         return list(self._data)

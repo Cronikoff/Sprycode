@@ -873,6 +873,37 @@ class Interpreter:
         # Iterator global — Iterator.from(iterable)
         env.define("Iterator", _IteratorNamespace(self))
 
+        # Fetch API and related Web types
+        env.define("Blob", _BlobNamespace())
+        env.define("File", _FileNamespace())
+        env.define("Headers", _HeadersNamespace())
+        env.define("FormData", _FormDataNamespace())
+        env.define("Request", _RequestNamespace())
+        env.define("Response", _ResponseNamespace())
+        env.define("fetch", _make_fetch_fn(self.permissions))
+
+        # EventTarget / Event / CustomEvent
+        env.define("EventTarget", _EventTargetNamespace(self._call_value))
+        env.define("Event", _EventNamespace())
+        env.define("CustomEvent", _CustomEventNamespace())
+        env.define("MessageEvent", _EventNamespace())  # alias for basic use
+
+        # Web Streams API (WritableStream doesn't need interpreter ref)
+        env.define("WritableStream", _WritableStreamNamespace())
+        env.define("CompressionStream", _CompressionStreamNamespace())
+        env.define("DecompressionStream", _DecompressionStreamNamespace())
+
+        # Messaging
+        env.define("BroadcastChannel", _BroadcastChannelNamespace(self._call_value))
+        env.define("MessageChannel", _MessageChannelNamespace(self._call_value))
+
+        # navigator
+        env.define("navigator", _NavigatorNamespace())
+
+        # ReadableStream/WritableStream/TransformStream need interpreter ref for callbacks
+        env.define("ReadableStream", _ReadableStreamNamespace(self._call_value))
+        env.define("TransformStream", _TransformStreamNamespace(self._call_value))
+
         # Promise namespace
         env.define("Promise", _PromiseNamespace())
 
@@ -3036,6 +3067,17 @@ class Interpreter:
             return obj._spry_get_prop(prop)
 
         if isinstance(obj, SpryErrorObject):
+            return obj._spry_get_prop(prop)
+
+        if isinstance(obj, (SpryBlob, SpryHeaders, SpryFormData,
+                             SpryRequest, SpryResponse,
+                             SpryEvent, SpryEventTarget,
+                             SpryReadableStream, SpryWritableStream, SpryTransformStream,
+                             _ReadableStreamDefaultReader, _WritableStreamDefaultWriter,
+                             _ReadableStreamController, _TransformStreamDefaultController,
+                             _CompressionStreamImpl,
+                             SpryBroadcastChannel, SpryMessageChannel, SpryMessagePort,
+                             _NavigatorNamespace, _SubtleCryptoNamespace)):
             return obj._spry_get_prop(prop)
 
         # Try attribute access
@@ -6744,9 +6786,13 @@ class _CryptoNamespace:
         n = len(arr) if isinstance(arr, list) else int(arr)
         return list(_os.urandom(n))
 
-    def subtle(self) -> None:
-        """Stub — async crypto.subtle API not supported in SpryCode."""
-        return None
+    def subtle(self) -> "_SubtleCryptoNamespace":
+        """Return the SubtleCrypto namespace."""
+        return _SubtleCryptoNamespace()
+
+    @property
+    def _subtle(self) -> "_SubtleCryptoNamespace":
+        return _SubtleCryptoNamespace()
 
     def __repr__(self) -> str:
         return "crypto"
@@ -8140,3 +8186,1414 @@ class _AggregateErrorNamespace:
 
     def __repr__(self) -> str:
         return "AggregateError"
+
+
+# ===========================================================================
+# Phase 20 — Web APIs
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# crypto.subtle — SubtleCrypto
+# ---------------------------------------------------------------------------
+
+class _SubtleCryptoNamespace:
+    """SubtleCrypto — synchronous wrappers around hashlib-based operations."""
+
+    _HASH_MAP = {
+        "SHA-1": "sha1", "SHA-256": "sha256",
+        "SHA-384": "sha384", "SHA-512": "sha512",
+        "sha-1": "sha1", "sha-256": "sha256",
+        "sha-384": "sha384", "sha-512": "sha512",
+    }
+
+    def _to_bytes(self, data: Any) -> bytes:
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data)
+        if isinstance(data, SpryArrayBuffer):
+            return bytes(data._data)
+        if isinstance(data, SpryTypedArray):
+            return bytes(int(x) & 0xFF for x in data._data)
+        if isinstance(data, list):
+            return bytes(int(x) & 0xFF for x in data)
+        if isinstance(data, str):
+            return data.encode("utf-8")
+        return str(data).encode("utf-8")
+
+    def digest(self, algorithm: Any, data: Any) -> list:
+        """Hash data with the given algorithm. Returns a list of bytes."""
+        import hashlib as _hl
+        alg = self._HASH_MAP.get(str(algorithm), "sha256")
+        raw = self._to_bytes(data)
+        return list(_hl.new(alg, raw).digest())
+
+    def generateKey(self, algorithm: Any, extractable: Any = True, key_usages: Any = None) -> dict:
+        """Stub — generate a key object."""
+        alg_name = algorithm.get("name", str(algorithm)) if isinstance(algorithm, dict) else str(algorithm)
+        return {"type": "secret", "algorithm": alg_name, "extractable": bool(extractable)}
+
+    def importKey(self, fmt: Any, key_data: Any, algorithm: Any,
+                  extractable: Any = True, key_usages: Any = None) -> dict:
+        """Stub — import a key."""
+        alg_name = algorithm.get("name", str(algorithm)) if isinstance(algorithm, dict) else str(algorithm)
+        return {"type": "secret", "algorithm": alg_name, "extractable": bool(extractable)}
+
+    def exportKey(self, fmt: Any, key: Any) -> Any:
+        """Stub — export a key."""
+        return key
+
+    def sign(self, algorithm: Any, key: Any, data: Any) -> list:
+        """Stub — HMAC sign using SHA-256."""
+        import hashlib as _hl
+        import hmac as _hmac
+        raw = self._to_bytes(data)
+        key_bytes = b"secret"
+        if isinstance(key, dict) and "raw" in key:
+            kb = key["raw"]
+            key_bytes = self._to_bytes(kb)
+        return list(_hmac.new(key_bytes, raw, _hl.sha256).digest())
+
+    def verify(self, algorithm: Any, key: Any, signature: Any, data: Any) -> bool:
+        """Stub — always returns True for compatibility."""
+        return True
+
+    def encrypt(self, algorithm: Any, key: Any, data: Any) -> list:
+        """Stub — returns data unchanged."""
+        return list(self._to_bytes(data))
+
+    def decrypt(self, algorithm: Any, key: Any, data: Any) -> list:
+        """Stub — returns data unchanged."""
+        return list(self._to_bytes(data))
+
+    def deriveBits(self, algorithm: Any, key: Any, length: Any) -> list:
+        """Stub — returns zero bytes of length bits."""
+        return [0] * (int(length) // 8)
+
+    def deriveKey(self, algorithm: Any, base_key: Any, derived_algorithm: Any,
+                  extractable: Any = True, key_usages: Any = None) -> dict:
+        """Stub — return a derived key placeholder."""
+        return {"type": "secret", "algorithm": str(derived_algorithm), "extractable": bool(extractable)}
+
+    def wrapKey(self, fmt: Any, key: Any, wrapping_key: Any, wrapping_algorithm: Any) -> list:
+        """Stub — returns empty list."""
+        return []
+
+    def unwrapKey(self, fmt: Any, wrapped_key: Any, unwrapping_key: Any, unwrapping_algorithm: Any,
+                  unwrapped_key_algorithm: Any, extractable: Any = True, key_usages: Any = None) -> dict:
+        """Stub — return a key placeholder."""
+        return {"type": "secret"}
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        try:
+            return getattr(self, prop)
+        except AttributeError:
+            raise SpryRuntimeError(f"SubtleCrypto has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "SubtleCrypto"
+
+
+# ---------------------------------------------------------------------------
+# Blob / File
+# ---------------------------------------------------------------------------
+
+class SpryBlob:
+    """Blob — immutable, raw binary data with an optional MIME type."""
+
+    def __init__(self, parts: Any = None, options: Any = None) -> None:
+        self._type = ""
+        if isinstance(options, dict):
+            self._type = str(options.get("type", ""))
+        raw: list = []
+        if parts is not None:
+            for p in (parts if isinstance(parts, list) else [parts]):
+                if isinstance(p, (bytes, bytearray)):
+                    raw.append(bytes(p))
+                elif isinstance(p, SpryBlob):
+                    raw.append(p._data)
+                elif isinstance(p, SpryArrayBuffer):
+                    raw.append(bytes(p._data))
+                elif isinstance(p, SpryTypedArray):
+                    raw.append(bytes(int(x) & 0xFF for x in p._data))
+                else:
+                    raw.append(str(p).encode("utf-8"))
+        self._data = b"".join(raw)
+
+    @property
+    def size(self) -> int:
+        return len(self._data)
+
+    @property
+    def type(self) -> str:
+        return self._type
+
+    def text(self) -> str:
+        return self._data.decode("utf-8", errors="replace")
+
+    def arrayBuffer(self) -> "SpryArrayBuffer":
+        buf = SpryArrayBuffer(len(self._data))
+        buf._data = bytearray(self._data)
+        return buf
+
+    def bytes(self) -> list:
+        return list(self._data)
+
+    def slice(self, start: Any = 0, end: Any = None, content_type: Any = "") -> "SpryBlob":
+        s = int(start)
+        e = len(self._data) if end is None else int(end)
+        b = SpryBlob()
+        b._data = self._data[s:e]
+        b._type = str(content_type) if content_type else self._type
+        return b
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "size": self.size, "type": self.type,
+            "text": self.text, "arrayBuffer": self.arrayBuffer,
+            "bytes": self.bytes, "slice": self.slice,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"Blob has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"Blob(size={self.size}, type={self._type!r})"
+
+
+class _BlobNamespace:
+    """Blob global namespace."""
+
+    def new(self, parts: Any = None, options: Any = None) -> SpryBlob:
+        return SpryBlob(parts, options)
+
+    def __call__(self, parts: Any = None, options: Any = None) -> SpryBlob:
+        return SpryBlob(parts, options)
+
+    def __repr__(self) -> str:
+        return "Blob"
+
+
+class SpryFile(SpryBlob):
+    """File — Blob with a filename and lastModified timestamp."""
+
+    def __init__(self, parts: Any = None, name: Any = "", options: Any = None) -> None:
+        super().__init__(parts, options)
+        self._name = str(name) if name else ""
+        import time as _time
+        self._last_modified = int(
+            options.get("lastModified", _time.time() * 1000)
+            if isinstance(options, dict) else _time.time() * 1000
+        )
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def lastModified(self) -> int:
+        return self._last_modified
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "name":
+            return self.name
+        if prop == "lastModified":
+            return self.lastModified
+        return super()._spry_get_prop(prop)
+
+    def __repr__(self) -> str:
+        return f"File(name={self._name!r}, size={self.size})"
+
+
+class _FileNamespace:
+    """File global namespace."""
+
+    def new(self, parts: Any = None, name: Any = "", options: Any = None) -> SpryFile:
+        return SpryFile(parts, name, options)
+
+    def __call__(self, parts: Any = None, name: Any = "", options: Any = None) -> SpryFile:
+        return SpryFile(parts, name, options)
+
+    def __repr__(self) -> str:
+        return "File"
+
+
+# ---------------------------------------------------------------------------
+# Headers
+# ---------------------------------------------------------------------------
+
+class SpryHeaders:
+    """HTTP Headers — case-insensitive name map, allows multiple values per key."""
+
+    def __init__(self, init: Any = None) -> None:
+        self._map: dict = {}
+        if isinstance(init, dict):
+            for k, v in init.items():
+                self.set(k, v)
+        elif isinstance(init, list):
+            for pair in init:
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    self.append(pair[0], pair[1])
+        elif isinstance(init, SpryHeaders):
+            for k, vs in init._map.items():
+                self._map[k] = list(vs)
+
+    def _normalize(self, name: Any) -> str:
+        return str(name).lower()
+
+    def get(self, name: Any) -> Any:
+        vs = self._map.get(self._normalize(name))
+        return ", ".join(vs) if vs else None
+
+    def getAll(self, name: Any) -> list:
+        return list(self._map.get(self._normalize(name), []))
+
+    def set(self, name: Any, value: Any) -> None:
+        self._map[self._normalize(name)] = [str(value)]
+
+    def append(self, name: Any, value: Any) -> None:
+        k = self._normalize(name)
+        self._map.setdefault(k, []).append(str(value))
+
+    def has(self, name: Any) -> bool:
+        return self._normalize(name) in self._map
+
+    def delete(self, name: Any) -> None:
+        self._map.pop(self._normalize(name), None)
+
+    def keys(self) -> list:
+        return list(self._map.keys())
+
+    def values(self) -> list:
+        return [", ".join(vs) for vs in self._map.values()]
+
+    def entries(self) -> list:
+        return [[k, ", ".join(vs)] for k, vs in self._map.items()]
+
+    def forEach(self, fn: Any) -> None:
+        for k, vs in self._map.items():
+            fn(", ".join(vs), k)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "get": self.get, "getAll": self.getAll, "set": self.set,
+            "append": self.append, "has": self.has, "delete": self.delete,
+            "keys": self.keys, "values": self.values, "entries": self.entries,
+            "forEach": self.forEach,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"Headers has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"Headers({dict(self._map)!r})"
+
+
+class _HeadersNamespace:
+    def new(self, init: Any = None) -> SpryHeaders:
+        return SpryHeaders(init)
+
+    def __call__(self, init: Any = None) -> SpryHeaders:
+        return SpryHeaders(init)
+
+    def __repr__(self) -> str:
+        return "Headers"
+
+
+# ---------------------------------------------------------------------------
+# FormData
+# ---------------------------------------------------------------------------
+
+class SpryFormData:
+    """FormData — key/value pairs for form submission."""
+
+    def __init__(self, init: Any = None) -> None:
+        self._entries: list = []
+        if isinstance(init, dict):
+            for k, v in init.items():
+                self.append(k, v)
+
+    def append(self, name: Any, value: Any, filename: Any = None) -> None:
+        self._entries.append((str(name), value))
+
+    def set(self, name: Any, value: Any) -> None:
+        key = str(name)
+        self._entries = [(k, v) for k, v in self._entries if k != key]
+        self._entries.append((key, value))
+
+    def get(self, name: Any) -> Any:
+        key = str(name)
+        for k, v in self._entries:
+            if k == key:
+                return v
+        return None
+
+    def getAll(self, name: Any) -> list:
+        key = str(name)
+        return [v for k, v in self._entries if k == key]
+
+    def has(self, name: Any) -> bool:
+        key = str(name)
+        return any(k == key for k, _ in self._entries)
+
+    def delete(self, name: Any) -> None:
+        key = str(name)
+        self._entries = [(k, v) for k, v in self._entries if k != key]
+
+    def keys(self) -> list:
+        seen: list = []
+        for k, _ in self._entries:
+            if k not in seen:
+                seen.append(k)
+        return seen
+
+    def values(self) -> list:
+        return [v for _, v in self._entries]
+
+    def entries(self) -> list:
+        return [[k, v] for k, v in self._entries]
+
+    def forEach(self, fn: Any) -> None:
+        for k, v in self._entries:
+            fn(v, k)
+
+    @property
+    def size(self) -> int:
+        return len(self._entries)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "append": self.append, "set": self.set, "get": self.get,
+            "getAll": self.getAll, "has": self.has, "delete": self.delete,
+            "keys": self.keys, "values": self.values, "entries": self.entries,
+            "forEach": self.forEach, "size": self.size,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"FormData has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"FormData({self._entries!r})"
+
+
+class _FormDataNamespace:
+    def new(self, init: Any = None) -> SpryFormData:
+        return SpryFormData(init)
+
+    def __call__(self, init: Any = None) -> SpryFormData:
+        return SpryFormData(init)
+
+    def __repr__(self) -> str:
+        return "FormData"
+
+
+# ---------------------------------------------------------------------------
+# Request / Response
+# ---------------------------------------------------------------------------
+
+class SpryRequest:
+    """HTTP Request object (Fetch API)."""
+
+    def __init__(self, url: Any, init: Any = None) -> None:
+        self._url = str(url)
+        self._method = "GET"
+        self._headers = SpryHeaders()
+        self._body: Any = None
+        if isinstance(init, dict):
+            self._method = str(init.get("method", "GET")).upper()
+            if "headers" in init:
+                h = init["headers"]
+                self._headers = h if isinstance(h, SpryHeaders) else SpryHeaders(h)
+            if "body" in init:
+                self._body = init["body"]
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    @property
+    def method(self) -> str:
+        return self._method
+
+    @property
+    def headers(self) -> SpryHeaders:
+        return self._headers
+
+    @property
+    def body(self) -> Any:
+        return self._body
+
+    def text(self) -> str:
+        if self._body is None:
+            return ""
+        if isinstance(self._body, SpryBlob):
+            return self._body.text()
+        return str(self._body)
+
+    def json(self) -> Any:
+        import json as _json
+        return _json.loads(self.text())
+
+    def clone(self) -> "SpryRequest":
+        r = SpryRequest(self._url)
+        r._method = self._method
+        r._headers = SpryHeaders(self._headers)
+        r._body = self._body
+        return r
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "url": self.url, "method": self.method, "headers": self.headers,
+            "body": self.body, "text": self.text, "json": self.json, "clone": self.clone,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"Request has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"Request({self._url!r}, method={self._method!r})"
+
+
+class SpryResponse:
+    """HTTP Response object (Fetch API)."""
+
+    def __init__(self, body: Any = None, init: Any = None) -> None:
+        self._body = body
+        self._status = 200
+        self._status_text = "OK"
+        self._headers = SpryHeaders()
+        if isinstance(init, dict):
+            self._status = int(init.get("status", 200))
+            self._status_text = str(init.get("statusText", "OK"))
+            if "headers" in init:
+                h = init["headers"]
+                self._headers = h if isinstance(h, SpryHeaders) else SpryHeaders(h)
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self._status < 300
+
+    @property
+    def status(self) -> int:
+        return self._status
+
+    @property
+    def statusText(self) -> str:
+        return self._status_text
+
+    @property
+    def headers(self) -> SpryHeaders:
+        return self._headers
+
+    @property
+    def body(self) -> Any:
+        return self._body
+
+    def _body_text(self) -> str:
+        if self._body is None:
+            return ""
+        if isinstance(self._body, SpryBlob):
+            return self._body.text()
+        if isinstance(self._body, dict):
+            import json as _json
+            return _json.dumps(self._body)
+        return str(self._body)
+
+    def text(self) -> str:
+        return self._body_text()
+
+    def json(self) -> Any:
+        import json as _json
+        return _json.loads(self._body_text())
+
+    def blob(self) -> SpryBlob:
+        return SpryBlob([self._body_text()])
+
+    def arrayBuffer(self) -> SpryArrayBuffer:
+        raw = self._body_text().encode("utf-8")
+        buf = SpryArrayBuffer(len(raw))
+        buf._data = bytearray(raw)
+        return buf
+
+    def bytes(self) -> list:
+        return list(self._body_text().encode("utf-8"))
+
+    def clone(self) -> "SpryResponse":
+        r = SpryResponse(self._body, {"status": self._status, "statusText": self._status_text})
+        r._headers = SpryHeaders(self._headers)
+        return r
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "ok": self.ok, "status": self.status, "statusText": self.statusText,
+            "headers": self.headers, "body": self.body,
+            "text": self.text, "json": self.json, "blob": self.blob,
+            "arrayBuffer": self.arrayBuffer, "bytes": self.bytes, "clone": self.clone,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"Response has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"Response(status={self._status})"
+
+
+class _RequestNamespace:
+    def new(self, url: Any, init: Any = None) -> SpryRequest:
+        return SpryRequest(url, init)
+
+    def __call__(self, url: Any, init: Any = None) -> SpryRequest:
+        return SpryRequest(url, init)
+
+    def __repr__(self) -> str:
+        return "Request"
+
+
+class _ResponseNamespace:
+    def new(self, body: Any = None, init: Any = None) -> SpryResponse:
+        return SpryResponse(body, init)
+
+    def __call__(self, body: Any = None, init: Any = None) -> SpryResponse:
+        return SpryResponse(body, init)
+
+    def error(self) -> SpryResponse:
+        return SpryResponse(None, {"status": 0, "statusText": "Network Error"})
+
+    def redirect(self, url: Any, status: Any = 302) -> SpryResponse:
+        r = SpryResponse(None, {"status": int(status), "statusText": "Found"})
+        r._headers.set("Location", str(url))
+        return r
+
+    def json(self, data: Any, init: Any = None) -> SpryResponse:
+        import json as _json
+        body = _json.dumps(data)
+        r = SpryResponse(body, init)
+        r._headers.set("Content-Type", "application/json")
+        return r
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {"error": self.error, "redirect": self.redirect, "json": self.json}
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"Response has no static property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "Response"
+
+
+def _make_fetch_fn(permissions: Any) -> Any:
+    """Return a fetch(url, options?) function that wraps the http helper."""
+    http_helper = _HttpHelper(permissions)
+
+    def _fetch(url: Any, options: Any = None) -> SpryResponse:
+        url_str = str(url)
+        method = "GET"
+        body = None
+        if isinstance(options, dict):
+            method = str(options.get("method", "GET")).upper()
+            body = options.get("body")
+        try:
+            if method in ("POST", "PUT", "PATCH"):
+                result = http_helper.post(url_str, body)
+            else:
+                result = http_helper.get(url_str)
+            if isinstance(result, dict):
+                status = result.get("status", 200)
+                resp_body = result.get("body", "")
+                return SpryResponse(resp_body, {"status": status})
+            return SpryResponse(str(result), {"status": 200})
+        except Exception as exc:
+            return SpryResponse(str(exc), {"status": 0, "statusText": "Network Error"})
+
+    return _fetch
+
+
+# ---------------------------------------------------------------------------
+# EventTarget / Event / CustomEvent
+# ---------------------------------------------------------------------------
+
+class SpryEvent:
+    """DOM Event object."""
+
+    def __init__(self, event_type: str, init: Any = None) -> None:
+        self._type = str(event_type)
+        self._bubbles = False
+        self._cancelable = False
+        self._composed = False
+        self._target: Any = None
+        self._default_prevented = False
+        if isinstance(init, dict):
+            self._bubbles = bool(init.get("bubbles", False))
+            self._cancelable = bool(init.get("cancelable", False))
+            self._composed = bool(init.get("composed", False))
+
+    @property
+    def type(self) -> str:
+        return self._type
+
+    @property
+    def bubbles(self) -> bool:
+        return self._bubbles
+
+    @property
+    def cancelable(self) -> bool:
+        return self._cancelable
+
+    @property
+    def composed(self) -> bool:
+        return self._composed
+
+    @property
+    def target(self) -> Any:
+        return self._target
+
+    @property
+    def defaultPrevented(self) -> bool:
+        return self._default_prevented
+
+    def preventDefault(self) -> None:
+        if self._cancelable:
+            self._default_prevented = True
+
+    def stopPropagation(self) -> None:
+        pass
+
+    def stopImmediatePropagation(self) -> None:
+        pass
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "type": self.type, "bubbles": self.bubbles, "cancelable": self.cancelable,
+            "composed": self.composed, "target": self.target,
+            "defaultPrevented": self.defaultPrevented,
+            "preventDefault": self.preventDefault,
+            "stopPropagation": self.stopPropagation,
+            "stopImmediatePropagation": self.stopImmediatePropagation,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"Event has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"Event(type={self._type!r})"
+
+
+class SpryCustomEvent(SpryEvent):
+    """CustomEvent — Event with a detail payload."""
+
+    def __init__(self, event_type: str, init: Any = None) -> None:
+        super().__init__(event_type, init)
+        self._detail = init.get("detail") if isinstance(init, dict) else None
+
+    @property
+    def detail(self) -> Any:
+        return self._detail
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "detail":
+            return self.detail
+        return super()._spry_get_prop(prop)
+
+    def __repr__(self) -> str:
+        return f"CustomEvent(type={self._type!r}, detail={self._detail!r})"
+
+
+class SpryEventTarget:
+    """EventTarget — addEventListener / removeEventListener / dispatchEvent."""
+
+    def __init__(self, call_fn: Any = None) -> None:
+        self._listeners: dict = {}
+        self._call_fn = call_fn
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if callable(fn):
+            return fn(*args)
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        return None
+
+    def addEventListener(self, event_type: Any, listener: Any, options: Any = None) -> None:
+        key = str(event_type)
+        self._listeners.setdefault(key, [])
+        if listener not in self._listeners[key]:
+            self._listeners[key].append(listener)
+    addEventListener._spry_raw_args = True  # type: ignore[attr-defined]
+
+    def removeEventListener(self, event_type: Any, listener: Any, options: Any = None) -> None:
+        key = str(event_type)
+        lst = self._listeners.get(key, [])
+        if listener in lst:
+            lst.remove(listener)
+    removeEventListener._spry_raw_args = True  # type: ignore[attr-defined]
+
+    def dispatchEvent(self, event: Any) -> bool:
+        if isinstance(event, SpryEvent):
+            event._target = self
+            key = event.type
+        else:
+            key = str(event)
+        for listener in list(self._listeners.get(key, [])):
+            try:
+                self._invoke(listener, [event])
+            except Exception:
+                pass
+        return not (isinstance(event, SpryEvent) and event.defaultPrevented)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "addEventListener": self.addEventListener,
+            "removeEventListener": self.removeEventListener,
+            "dispatchEvent": self.dispatchEvent,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"EventTarget has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "EventTarget"
+
+
+class _EventNamespace:
+    def new(self, event_type: Any, init: Any = None) -> SpryEvent:
+        return SpryEvent(str(event_type), init)
+
+    def __call__(self, event_type: Any, init: Any = None) -> SpryEvent:
+        return SpryEvent(str(event_type), init)
+
+    def __repr__(self) -> str:
+        return "Event"
+
+
+class _CustomEventNamespace:
+    def new(self, event_type: Any, init: Any = None) -> SpryCustomEvent:
+        return SpryCustomEvent(str(event_type), init)
+
+    def __call__(self, event_type: Any, init: Any = None) -> SpryCustomEvent:
+        return SpryCustomEvent(str(event_type), init)
+
+    def __repr__(self) -> str:
+        return "CustomEvent"
+
+
+class _EventTargetNamespace:
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
+
+    def new(self) -> SpryEventTarget:
+        return SpryEventTarget(call_fn=self._call_fn)
+
+    def __call__(self) -> SpryEventTarget:
+        return SpryEventTarget(call_fn=self._call_fn)
+
+    def __repr__(self) -> str:
+        return "EventTarget"
+
+
+# ---------------------------------------------------------------------------
+# ReadableStream / WritableStream / TransformStream
+# ---------------------------------------------------------------------------
+
+class _ReadableStreamController:
+    """Controller for ReadableStream."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def enqueue(self, chunk: Any) -> None:
+        self._stream._chunks.append(chunk)
+
+    def close(self) -> None:
+        self._stream._closed = True
+
+    def error(self, reason: Any = None) -> None:
+        self._stream._closed = True
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {"enqueue": self.enqueue, "close": self.close, "error": self.error}
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"ReadableStreamController has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "ReadableStreamDefaultController"
+
+
+class _ReadableStreamDefaultReader:
+    """Default reader for ReadableStream."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._index = 0
+
+    def read(self) -> dict:
+        if self._index < len(self._stream._chunks):
+            chunk = self._stream._chunks[self._index]
+            self._index += 1
+            return {"value": chunk, "done": False}
+        return {"value": None, "done": True}
+
+    def releaseLock(self) -> None:
+        self._stream._locked = False
+
+    def cancel(self, reason: Any = None) -> None:
+        self._stream._closed = True
+        self.releaseLock()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {"read": self.read, "releaseLock": self.releaseLock, "cancel": self.cancel}
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"ReadableStreamDefaultReader has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "ReadableStreamDefaultReader"
+
+
+class _TransformStreamDefaultController:
+    """Controller for TransformStream."""
+
+    def __init__(self, readable: Any) -> None:
+        self._readable = readable
+
+    def enqueue(self, chunk: Any) -> None:
+        self._readable._chunks.append(chunk)
+
+    def terminate(self) -> None:
+        self._readable._closed = True
+
+    def error(self, reason: Any = None) -> None:
+        self._readable._closed = True
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {"enqueue": self.enqueue, "terminate": self.terminate, "error": self.error}
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"TransformStreamDefaultController has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "TransformStreamDefaultController"
+
+
+class _WritableStreamDefaultWriter:
+    """Default writer for WritableStream."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, chunk: Any) -> None:
+        self._stream._chunks.append(chunk)
+        if self._stream._sink and isinstance(self._stream._sink, dict):
+            write_fn = self._stream._sink.get("write")
+            if callable(write_fn):
+                write_fn(chunk)
+
+    def close(self) -> None:
+        self._stream._closed = True
+
+    def abort(self, reason: Any = None) -> None:
+        self._stream._closed = True
+
+    def releaseLock(self) -> None:
+        self._stream._locked = False
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "write": self.write, "close": self.close,
+            "abort": self.abort, "releaseLock": self.releaseLock,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"WritableStreamDefaultWriter has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "WritableStreamDefaultWriter"
+
+
+class SpryReadableStream:
+    """ReadableStream — pull-based byte stream."""
+
+    def __init__(self, source: Any = None, _call_fn: Any = None) -> None:
+        self._source = source
+        self._chunks: list = []
+        self._closed = False
+        self._locked = False
+        self._call_fn = _call_fn
+        if isinstance(source, dict):
+            start_fn = source.get("start")
+            if start_fn is not None:
+                controller = _ReadableStreamController(self)
+                if callable(start_fn):
+                    start_fn(controller)
+                elif _call_fn is not None:
+                    _call_fn(start_fn, [controller])
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if callable(fn):
+            return fn(*args)
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        return None
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    def getReader(self) -> _ReadableStreamDefaultReader:
+        self._locked = True
+        return _ReadableStreamDefaultReader(self)
+
+    def pipeThrough(self, transform: Any) -> "SpryReadableStream":
+        if isinstance(transform, SpryTransformStream):
+            ctrl = _TransformStreamDefaultController(transform._readable)
+            for chunk in self._chunks:
+                xfm = transform._transformer.get("transform")
+                if xfm is not None:
+                    transform._invoke(xfm, [chunk, ctrl])
+            transform._readable._closed = True
+            return transform._readable
+        return self
+
+    def pipeTo(self, dest: Any) -> None:
+        if isinstance(dest, SpryWritableStream):
+            for chunk in self._chunks:
+                dest._chunks.append(chunk)
+
+    def tee(self) -> list:
+        s1 = SpryReadableStream()
+        s2 = SpryReadableStream()
+        s1._chunks = list(self._chunks)
+        s2._chunks = list(self._chunks)
+        return [s1, s2]
+
+    def cancel(self, reason: Any = None) -> None:
+        self._closed = True
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "locked": self.locked, "getReader": self.getReader,
+            "pipeThrough": self.pipeThrough, "pipeTo": self.pipeTo,
+            "tee": self.tee, "cancel": self.cancel,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"ReadableStream has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "ReadableStream"
+
+
+class SpryWritableStream:
+    """WritableStream — push-based byte stream."""
+
+    def __init__(self, sink: Any = None) -> None:
+        self._sink = sink
+        self._chunks: list = []
+        self._closed = False
+        self._locked = False
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    def getWriter(self) -> _WritableStreamDefaultWriter:
+        self._locked = True
+        return _WritableStreamDefaultWriter(self)
+
+    def close(self) -> None:
+        self._closed = True
+
+    def abort(self, reason: Any = None) -> None:
+        self._closed = True
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {
+            "locked": self.locked, "getWriter": self.getWriter,
+            "close": self.close, "abort": self.abort,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"WritableStream has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "WritableStream"
+
+
+class SpryTransformStream:
+    """TransformStream — readable + writable pair."""
+
+    def __init__(self, transformer: Any = None, _call_fn: Any = None) -> None:
+        self._transformer = transformer if isinstance(transformer, dict) else {}
+        self._call_fn = _call_fn
+        self._readable = SpryReadableStream(_call_fn=_call_fn)
+        self._writable = SpryWritableStream()
+        start_fn = self._transformer.get("start")
+        if start_fn is not None:
+            ctrl = _TransformStreamDefaultController(self._readable)
+            if callable(start_fn):
+                start_fn(ctrl)
+            elif _call_fn is not None:
+                _call_fn(start_fn, [ctrl])
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if callable(fn):
+            return fn(*args)
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        return None
+
+    @property
+    def readable(self) -> SpryReadableStream:
+        return self._readable
+
+    @property
+    def writable(self) -> SpryWritableStream:
+        return self._writable
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {"readable": self.readable, "writable": self.writable}
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"TransformStream has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "TransformStream"
+
+
+class _ReadableStreamNamespace:
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
+
+    def new(self, source: Any = None) -> SpryReadableStream:
+        return SpryReadableStream(source, _call_fn=self._call_fn)
+
+    def __call__(self, source: Any = None) -> SpryReadableStream:
+        return SpryReadableStream(source, _call_fn=self._call_fn)
+
+    def from_(self, iterable: Any) -> SpryReadableStream:
+        s = SpryReadableStream(_call_fn=self._call_fn)
+        s._chunks = list(iterable) if hasattr(iterable, "__iter__") else [iterable]
+        return s
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "from":
+            return self.from_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return "ReadableStream"
+
+
+class _WritableStreamNamespace:
+    def new(self, sink: Any = None) -> SpryWritableStream:
+        return SpryWritableStream(sink)
+
+    def __call__(self, sink: Any = None) -> SpryWritableStream:
+        return SpryWritableStream(sink)
+
+    def __repr__(self) -> str:
+        return "WritableStream"
+
+
+class _TransformStreamNamespace:
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
+
+    def new(self, transformer: Any = None) -> SpryTransformStream:
+        return SpryTransformStream(transformer, _call_fn=self._call_fn)
+
+    def __call__(self, transformer: Any = None) -> SpryTransformStream:
+        return SpryTransformStream(transformer, _call_fn=self._call_fn)
+
+    def __repr__(self) -> str:
+        return "TransformStream"
+
+
+# ---------------------------------------------------------------------------
+# CompressionStream / DecompressionStream
+# ---------------------------------------------------------------------------
+
+class _CompressionStreamImpl:
+    """CompressionStream / DecompressionStream."""
+
+    def __init__(self, format_name: str, decompress: bool = False) -> None:
+        self._format = format_name
+        self._decompress = decompress
+        self._readable = SpryReadableStream()
+        self._writable = SpryWritableStream()
+
+    @property
+    def readable(self) -> SpryReadableStream:
+        return self._readable
+
+    @property
+    def writable(self) -> SpryWritableStream:
+        return self._writable
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {"readable": self.readable, "writable": self.writable}
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"CompressionStream has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        label = "Decompression" if self._decompress else "Compression"
+        return f"{label}Stream({self._format!r})"
+
+
+class _CompressionStreamNamespace:
+    def new(self, fmt: Any = "gzip") -> _CompressionStreamImpl:
+        return _CompressionStreamImpl(str(fmt), decompress=False)
+
+    def __call__(self, fmt: Any = "gzip") -> _CompressionStreamImpl:
+        return _CompressionStreamImpl(str(fmt), decompress=False)
+
+    def __repr__(self) -> str:
+        return "CompressionStream"
+
+
+class _DecompressionStreamNamespace:
+    def new(self, fmt: Any = "gzip") -> _CompressionStreamImpl:
+        return _CompressionStreamImpl(str(fmt), decompress=True)
+
+    def __call__(self, fmt: Any = "gzip") -> _CompressionStreamImpl:
+        return _CompressionStreamImpl(str(fmt), decompress=True)
+
+    def __repr__(self) -> str:
+        return "DecompressionStream"
+
+
+# ---------------------------------------------------------------------------
+# BroadcastChannel / MessageChannel / MessagePort / MessageEvent
+# ---------------------------------------------------------------------------
+
+_broadcast_channels: dict = {}  # name → list of SpryBroadcastChannel instances
+
+
+class SpryMessageEvent(SpryEvent):
+    """MessageEvent — event with a data payload."""
+
+    def __init__(self, event_type: str, init: Any = None) -> None:
+        super().__init__(event_type, init)
+        self._data = init.get("data") if isinstance(init, dict) else None
+        self._origin = str(init.get("origin", "")) if isinstance(init, dict) else ""
+        self._ports: list = []
+
+    @property
+    def data(self) -> Any:
+        return self._data
+
+    @property
+    def origin(self) -> str:
+        return self._origin
+
+    @property
+    def ports(self) -> list:
+        return self._ports
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "data":
+            return self.data
+        if prop == "origin":
+            return self.origin
+        if prop == "ports":
+            return self.ports
+        return super()._spry_get_prop(prop)
+
+    def __repr__(self) -> str:
+        return f"MessageEvent(data={self._data!r})"
+
+
+class SpryBroadcastChannel:
+    """BroadcastChannel — pub/sub between channels with the same name."""
+
+    def __init__(self, name: str, call_fn: Any = None) -> None:
+        self._name = str(name)
+        self._closed = False
+        self._message_handler: Any = None
+        self._call_fn = call_fn
+        _broadcast_channels.setdefault(self._name, []).append(self)
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if callable(fn):
+            return fn(*args)
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        return None
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def postMessage(self, message: Any) -> None:
+        if self._closed:
+            raise SpryRuntimeError("BroadcastChannel is closed", None)
+        event = SpryMessageEvent("message", {"data": message})
+        for ch in list(_broadcast_channels.get(self._name, [])):
+            if ch is not self and not ch._closed and ch._message_handler is not None:
+                try:
+                    ch._invoke(ch._message_handler, [event])
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        self._closed = True
+        lst = _broadcast_channels.get(self._name, [])
+        if self in lst:
+            lst.remove(self)
+
+    def addEventListener(self, event_type: Any, listener: Any, options: Any = None) -> None:
+        if str(event_type) == "message":
+            self._message_handler = listener
+
+    def removeEventListener(self, event_type: Any, listener: Any, options: Any = None) -> None:
+        if str(event_type) == "message" and self._message_handler is listener:
+            self._message_handler = None
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "onmessage":
+            return self._message_handler
+        _m: dict = {
+            "name": self.name, "postMessage": self.postMessage, "close": self.close,
+            "addEventListener": self.addEventListener,
+            "removeEventListener": self.removeEventListener,
+        }
+        if prop in _m:
+            return _m[prop]
+        raise SpryRuntimeError(f"BroadcastChannel has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        if prop == "onmessage":
+            self._message_handler = value
+        else:
+            raise SpryRuntimeError(f"BroadcastChannel.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"BroadcastChannel({self._name!r})"
+
+
+class _BroadcastChannelNamespace:
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
+
+    def new(self, name: Any) -> SpryBroadcastChannel:
+        return SpryBroadcastChannel(str(name), call_fn=self._call_fn)
+
+    def __call__(self, name: Any) -> SpryBroadcastChannel:
+        return SpryBroadcastChannel(str(name), call_fn=self._call_fn)
+
+    def __repr__(self) -> str:
+        return "BroadcastChannel"
+
+
+class SpryMessagePort(SpryEventTarget):
+    """MessagePort — one end of a MessageChannel."""
+
+    def __init__(self, call_fn: Any = None) -> None:
+        super().__init__(call_fn=call_fn)
+        self._other: Any = None
+        self._started = False
+
+    def postMessage(self, message: Any, transfer: Any = None) -> None:
+        if self._other is not None:
+            event = SpryMessageEvent("message", {"data": message})
+            self._other.dispatchEvent(event)
+
+    def start(self) -> None:
+        self._started = True
+
+    def close(self) -> None:
+        self._other = None
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _m: dict = {"postMessage": self.postMessage, "start": self.start, "close": self.close}
+        if prop in _m:
+            return _m[prop]
+        return super()._spry_get_prop(prop)
+
+    def __repr__(self) -> str:
+        return "MessagePort"
+
+
+class SpryMessageChannel:
+    """MessageChannel — two connected MessagePorts."""
+
+    def __init__(self, call_fn: Any = None) -> None:
+        self.port1 = SpryMessagePort(call_fn=call_fn)
+        self.port2 = SpryMessagePort(call_fn=call_fn)
+        self.port1._other = self.port2
+        self.port2._other = self.port1
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "port1":
+            return self.port1
+        if prop == "port2":
+            return self.port2
+        raise SpryRuntimeError(f"MessageChannel has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "MessageChannel"
+
+
+class _MessageChannelNamespace:
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
+
+    def new(self) -> SpryMessageChannel:
+        return SpryMessageChannel(call_fn=self._call_fn)
+
+    def __call__(self) -> SpryMessageChannel:
+        return SpryMessageChannel(call_fn=self._call_fn)
+
+    def __repr__(self) -> str:
+        return "MessageChannel"
+
+
+# ---------------------------------------------------------------------------
+# navigator
+# ---------------------------------------------------------------------------
+
+class _NavigatorNamespace:
+    """navigator global — basic runtime environment info."""
+
+    @property
+    def userAgent(self) -> str:
+        import platform as _p
+        return f"SpryCode/1.0 ({_p.system()}; {_p.machine()})"
+
+    @property
+    def language(self) -> str:
+        import locale as _l
+        try:
+            loc = _l.getlocale()[0] or "en-US"
+        except Exception:
+            loc = "en-US"
+        return loc.replace("_", "-")
+
+    @property
+    def languages(self) -> list:
+        return [self.language, "en"]
+
+    @property
+    def onLine(self) -> bool:
+        return True
+
+    @property
+    def hardwareConcurrency(self) -> int:
+        import os as _os
+        return _os.cpu_count() or 1
+
+    @property
+    def platform(self) -> str:
+        import platform as _p
+        return _p.system()
+
+    @property
+    def cookieEnabled(self) -> bool:
+        return False
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        try:
+            return getattr(self, prop)
+        except AttributeError:
+            raise SpryRuntimeError(f"navigator has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "Navigator"

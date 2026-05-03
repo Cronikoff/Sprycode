@@ -458,7 +458,6 @@ KEYWORDS: dict[str, TokenType] = {
     "List": TokenType.LIST_TYPE,
     "Map": TokenType.MAP_TYPE,
     "Stream": TokenType.STREAM_TYPE,
-    "Event": TokenType.EVENT_TYPE,
 }
 
 

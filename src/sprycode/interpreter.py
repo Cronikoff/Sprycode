@@ -4075,14 +4075,16 @@ class Interpreter:
         if node.init is not None:
             if isinstance(node.init, Block):
                 for stmt in node.init.body:
-                    # let/const in C-style for init must be mutable (loop counter)
+                    # In C-style for-loop init, both `let` and `const` produce LetDeclaration
+                    # nodes but must be mutable (JS semantics: loop counter is reassignable)
                     if isinstance(stmt, LetDeclaration):
                         val = self._eval(stmt.value, child_env) if stmt.value is not None else None
                         child_env.define(stmt.name, val, mutable=True)
                     else:
                         self._exec(stmt, child_env)
             elif isinstance(node.init, LetDeclaration):
-                # let/const i = 0 in for-loop init: define as mutable loop counter
+                # let/const in C-style for-loop init: both `let` and `const` produce LetDeclaration
+                # nodes but are treated as mutable loop counters here (JS semantics for for-loop vars)
                 val = self._eval(node.init.value, child_env) if node.init.value is not None else None
                 child_env.define(node.init.name, val, mutable=True)
             else:

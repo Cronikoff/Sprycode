@@ -465,7 +465,7 @@ class Parser:
 
     def _parse_let(self) -> Node:
         if self._check(TokenType.CONST):
-            tok = self._advance()  # consume 'const' (immutable binding, same as let)
+            tok = self._advance()  # consume 'const' (JS-compatible immutable binding, parsed like let)
         else:
             tok = self._expect(TokenType.LET)
         # Check for list destructuring: let [a, b, c] = expr

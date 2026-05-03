@@ -140,7 +140,8 @@ class TestConstForLoops:
         assert val(i) == 6
 
     def test_const_for_cstyle(self) -> None:
-        # const in C-style for init is treated as a mutable loop counter (JS semantics)
+        # In a C-style for-loop init, const is treated as a mutable loop counter (JS semantics).
+        # This deviates from const's usual immutable semantics to support the for-loop pattern.
         assert val("var v = 0; for (const i = 0; i < 5; i++) { v++ }") == 5
 
     def test_const_for_of_string(self) -> None:

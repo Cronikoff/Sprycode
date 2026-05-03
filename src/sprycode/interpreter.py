@@ -3722,7 +3722,7 @@ class Interpreter:
             if prop == "reduce":
                 def _iter_reduce(fn: Any, initial: Any = _MISSING, _it: SpryIterator = obj) -> Any:
                     items = _it._items[_it._index:]
-                    has_initial = not isinstance(initial, _Missing)
+                    has_initial = initial is not _MISSING
                     if not items:
                         if not has_initial:
                             raise SpryRuntimeError("reduce of empty iterator with no initial value", node)

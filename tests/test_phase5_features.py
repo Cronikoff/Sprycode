@@ -158,51 +158,51 @@ let v = sum"""
 class TestTypeof:
     def test_typeof_int(self):
         i = run("let v = typeof 42")
-        assert val(i, "v") == "Int"
+        assert val(i, "v") == "number"
 
     def test_typeof_float(self):
         i = run("let v = typeof 3.14")
-        assert val(i, "v") == "Float"
+        assert val(i, "v") == "number"
 
     def test_typeof_text(self):
         i = run('let v = typeof "hello"')
-        assert val(i, "v") == "Text"
+        assert val(i, "v") == "string"
 
     def test_typeof_bool_true(self):
         i = run("let v = typeof true")
-        assert val(i, "v") == "Bool"
+        assert val(i, "v") == "boolean"
 
     def test_typeof_bool_false(self):
         i = run("let v = typeof false")
-        assert val(i, "v") == "Bool"
+        assert val(i, "v") == "boolean"
 
     def test_typeof_null(self):
         i = run("let v = typeof null")
-        assert val(i, "v") == "Null"
+        assert val(i, "v") == "object"
 
     def test_typeof_list(self):
         i = run("let v = typeof [1,2,3]")
-        assert val(i, "v") == "List"
+        assert val(i, "v") == "object"
 
     def test_typeof_object(self):
         i = run("let v = typeof {a:1}")
-        assert val(i, "v") == "Object"
+        assert val(i, "v") == "object"
 
     def test_typeof_function(self):
         i = run("fn f() { return 1 }\nlet v = typeof f")
-        assert val(i, "v") == "Function"
+        assert val(i, "v") == "function"
 
     def test_typeof_anon_fn(self):
         i = run("let f = fn(x) => x\nlet v = typeof f")
-        assert val(i, "v") == "Function"
+        assert val(i, "v") == "function"
 
     def test_typeof_in_condition(self):
-        i = run('let x = 42\nvar v = "no"\nif typeof x == "Int" { v = "yes" }')
+        i = run('let x = 42\nvar v = "no"\nif typeof x == "number" { v = "yes" }')
         assert val(i, "v") == "yes"
 
     def test_typeof_variable(self):
         i = run('let s = "world"\nlet v = typeof s')
-        assert val(i, "v") == "Text"
+        assert val(i, "v") == "string"
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +440,7 @@ class TestIntegration:
 var idx = 0
 var count_nums = 0
 do {
-  if typeof items[idx] == "Int" { count_nums = count_nums + 1 }
+  if typeof items[idx] == "number" { count_nums = count_nums + 1 }
   idx = idx + 1
 } while idx < 5
 let v = count_nums"""
@@ -464,9 +464,9 @@ try {
     def test_typeof_in_switch(self):
         src = """fn describe(x) {
   switch typeof x {
-    case "Int": return "integer"
-    case "Text": return "string"
-    case "Bool": return "boolean"
+    case "number": return "integer"
+    case "string": return "string"
+    case "boolean": return "boolean"
     default: return "other"
   }
 }

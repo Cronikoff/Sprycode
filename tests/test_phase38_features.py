@@ -216,8 +216,8 @@ class TestNullPropertyTypeError:
 
     def test_null_property_stack(self):
         src = "var v = null; try { null.x } catch(e) { v = typeof e.stack }"
-        # stack is a string (SpryCode type: "Text")
-        assert val(src) == "Text"
+        # stack is a string (JS typeof: "string")
+        assert val(src) == "string"
 
     def test_null_property_rethrow(self):
         src = "var v = null; try { try { null.x } catch(e) { throw e } } catch(e2) { v = e2.name }"

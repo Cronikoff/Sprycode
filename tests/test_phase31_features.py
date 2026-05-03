@@ -164,7 +164,7 @@ class TestToExponential:
 class TestProxyTypeof:
     def test_typeof_proxy_is_object(self):
         i = run('let p = Proxy.new({x: 1}, {})\nlet v = typeof p')
-        assert val(i, "v") == 'Object'
+        assert val(i, "v") == 'object'
 
     def test_proxy_member_access(self):
         i = run('let p = Proxy.new({x: 42}, {})\nlet v = p.x')

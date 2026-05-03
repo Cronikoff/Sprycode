@@ -414,7 +414,7 @@ class TestListAt:
 class TestMathRandom:
     def test_random_returns_float(self):
         i = run('let v = typeof math.random()')
-        assert val(i, "v") == "Float"
+        assert val(i, "v") == "number"
 
     def test_random_in_range(self):
         src = """var passed = true

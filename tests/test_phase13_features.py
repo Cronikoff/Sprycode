@@ -329,7 +329,7 @@ class TestGlobalThis:
 
     def test_is_defined(self):
         i = run("let v = typeof globalThis")
-        assert val(i) == "Object"
+        assert val(i) == "object"
 
 
 # ---------------------------------------------------------------------------

@@ -2413,7 +2413,7 @@ class Interpreter:
                 if "Undefined variable" in str(e) or "not defined" in str(e):
                     return "undefined"
                 raise
-            return self._spry_typeof(val)
+            return self._js_typeof(val)
 
         if isinstance(node, InstanceofExpression):
             val = self._eval(node.operand, env)
@@ -2962,7 +2962,10 @@ class Interpreter:
             if prop == "isEmpty":
                 return len(obj) == 0
             if prop == "push":
-                return lambda item: obj.append(item)
+                def _list_push(*items: Any, _lst=obj) -> int:
+                    _lst.extend(items)
+                    return len(_lst)
+                return _list_push
             if prop == "pop":
                 return lambda: obj.pop() if obj else None
             if prop == "includes":
@@ -4780,7 +4783,7 @@ class Interpreter:
         return {"type": "credit", "account": account, "amount": amount}
 
     def _spry_typeof(self, val: Any) -> str:
-        """Return the SpryCode type name of a value."""
+        """Return the SpryCode type name of a value (used for SpryCode-style type checks)."""
         if isinstance(val, _SpryUndefinedType):
             return "undefined"
         if val is None:
@@ -4826,6 +4829,31 @@ class Interpreter:
         if callable(val):
             return "Function"
         return type(val).__name__
+
+    def _js_typeof(self, val: Any) -> str:
+        """Return the JS-standard typeof string (lowercase) — used by the ``typeof`` operator."""
+        if isinstance(val, _SpryUndefinedType):
+            return "undefined"
+        if val is None:
+            return "object"  # JS quirk: typeof null === 'object'
+        if isinstance(val, bool):
+            return "boolean"
+        if isinstance(val, (int, float)):
+            return "number"
+        if isinstance(val, str):
+            return "string"
+        if isinstance(val, SprySymbol):
+            return "symbol"
+        # All callables that aren't object-like instances
+        if isinstance(val, (SpryFunction, SpryLambda, SpryMultiLambda, SpryClass,
+                             BoundMethod, DictBoundMethod)):
+            return "function"
+        if callable(val) and not isinstance(val, (SpryInstance, SpryErrorObject,
+                                                   SprySet, SpryMap, SpryGenerator,
+                                                   SpryPromise, SpryProxy, SpryRegex)):
+            return "function"
+        # Anything else is 'object'
+        return "object"
 
     def _eval_type_cast(self, node: TypeCastExpression, env: Environment) -> Any:
         """Evaluate `expr as TypeName` — convert value to the target type."""
@@ -9637,6 +9665,9 @@ class SpryErrorObject:
             return self.stack
         if prop == "cause":
             return self.cause
+        if prop == "constructor":
+            # JS: err.constructor.name === error type name
+            return {"name": self.name}
         if prop == "toString":
             return lambda: f"{self.name}: {self.message}"
         raise SpryRuntimeError(f"Error has no property {prop!r}", None)

@@ -119,7 +119,7 @@ class Coll {
 let c = new Coll()
 let v = typeof c[Symbol.iterator]
 """)
-    assert i.globals.get("v") == "Function"
+    assert i.globals.get("v") == "function"
 
 
 def test_class_computed_method_callable() -> None:
@@ -223,22 +223,22 @@ def test_typeof_undeclared_returns_undefined() -> None:
 
 def test_typeof_null_returns_null() -> None:
     i = run("let v = typeof null")
-    assert i.globals.get("v") == "Null"
+    assert i.globals.get("v") == "object"
 
 
 def test_typeof_number_returns_int() -> None:
     i = run("let v = typeof 42")
-    assert i.globals.get("v") == "Int"
+    assert i.globals.get("v") == "number"
 
 
 def test_typeof_string_returns_text() -> None:
     i = run('let v = typeof "hello"')
-    assert i.globals.get("v") == "Text"
+    assert i.globals.get("v") == "string"
 
 
 def test_typeof_declared_null_is_null() -> None:
     i = run("let x = null\nlet v = typeof x")
-    assert i.globals.get("v") == "Null"
+    assert i.globals.get("v") == "object"
 
 
 # ---------------------------------------------------------------------------

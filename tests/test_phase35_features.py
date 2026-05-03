@@ -470,11 +470,11 @@ let v = arr.length
 class TestPromiseWithResolvers:
     def test_returns_object_with_keys(self) -> None:
         i = run("let r = Promise.withResolvers(); let v = typeof r.resolve")
-        assert val(i) == "Function"
+        assert val(i) == "function"
 
     def test_has_reject_key(self) -> None:
         i = run("let r = Promise.withResolvers(); let v = typeof r.reject")
-        assert val(i) == "Function"
+        assert val(i) == "function"
 
     def test_resolve_fulfils_promise(self) -> None:
         src = """

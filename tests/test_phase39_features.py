@@ -335,7 +335,7 @@ class TestUndefinedSentinel:
         assert val("let v = String(null)") == "null"
 
     def test_typeof_null(self):
-        assert val("let v = typeof null") == "Null"
+        assert val("let v = typeof null") == "object"
 
     def test_globalthis_undefined_typeof(self):
         assert val("let v = typeof globalThis.undefined") == "undefined"

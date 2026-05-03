@@ -1802,7 +1802,14 @@ class Parser:
                                and not self._check(TokenType.DEFAULT)
                                and not self._check(TokenType.RBRACE)
                                and not self._at_end()):
-                            # Optionally allow a bare expression as the body of a case
+                            # Skip statement-separator semicolons
+                            while self._check(TokenType.SEMICOLON):
+                                self._advance()
+                            if (self._check(TokenType.CASE)
+                                    or self._check(TokenType.DEFAULT)
+                                    or self._check(TokenType.RBRACE)
+                                    or self._at_end()):
+                                break
                             stmt = self._parse_statement()
                             if stmt is not None:
                                 stmts.append(stmt)
@@ -1824,6 +1831,14 @@ class Parser:
                                and not self._check(TokenType.DEFAULT)
                                and not self._check(TokenType.RBRACE)
                                and not self._at_end()):
+                            # Skip statement-separator semicolons
+                            while self._check(TokenType.SEMICOLON):
+                                self._advance()
+                            if (self._check(TokenType.CASE)
+                                    or self._check(TokenType.DEFAULT)
+                                    or self._check(TokenType.RBRACE)
+                                    or self._at_end()):
+                                break
                             stmt = self._parse_statement()
                             if stmt is not None:
                                 stmts2.append(stmt)
@@ -3349,11 +3364,36 @@ class Parser:
                 self._advance()  # consume '['
                 key_expr = self._parse_expression()
                 self._expect(TokenType.RBRACKET)
-                self._expect(TokenType.COLON)
-                value = self._parse_expression()
-                # Use a placeholder key in pairs; runtime will evaluate key_expr
-                placeholder = f"__computed_{len(entries)}__"
-                entries.append(("__computed__", (key_expr, value)))
+                if self._check(TokenType.LPAREN):
+                    # Computed method shorthand: { [key](...params) { body } }
+                    self._advance()  # consume '('
+                    cmp_params: list[tuple[str, str | None]] = []
+                    cmp_defaults: dict = {}
+                    cmp_rest: str | None = None
+                    while not self._check(TokenType.RPAREN) and not self._at_end():
+                        if self._check(TokenType.ELLIPSIS):
+                            self._advance()
+                            cmp_rest = self._expect_ident().value
+                            break
+                        pname = self._expect_ident().value
+                        if self._match(TokenType.EQ):
+                            cmp_defaults[pname] = self._parse_expression()
+                        cmp_params.append((pname, None))
+                        if not self._match(TokenType.COMMA):
+                            break
+                    self._expect(TokenType.RPAREN)
+                    cmp_body = self._parse_block()
+                    cmp_fn = AnonymousFunctionExpression(
+                        params=cmp_params, return_type=None, body=cmp_body,
+                        defaults=cmp_defaults, rest_param=cmp_rest,
+                        line=key_expr.line, column=key_expr.column,
+                    )
+                    entries.append(("__computed__", (key_expr, cmp_fn)))
+                else:
+                    self._expect(TokenType.COLON)
+                    value = self._parse_expression()
+                    # Use a placeholder key in pairs; runtime will evaluate key_expr
+                    entries.append(("__computed__", (key_expr, value)))
             else:
                 key_tok = self._current()
                 key = self._advance().value

@@ -276,18 +276,20 @@ let v = await p
 
 
 def test_globalthis_undefined_is_none() -> None:
+    from sprycode.interpreter import SPRY_UNDEFINED
     i = run("let v = globalThis.undefined")
-    assert i.globals.get("v") is None
+    assert i.globals.get("v") is SPRY_UNDEFINED
 
 
 def test_globalthis_undefined_comparison() -> None:
+    # JS: undefined == null → True (loose equality)
     i = run("let v = globalThis.undefined == null")
     assert i.globals.get("v") is True
 
 
 def test_globalthis_undefined_typeof() -> None:
     i = run("let v = typeof globalThis.undefined")
-    assert i.globals.get("v") == "Null"
+    assert i.globals.get("v") == "undefined"
 
 
 # ---------------------------------------------------------------------------

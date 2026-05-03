@@ -168,6 +168,46 @@ from .runtime.stdlib import (
 # ---------------------------------------------------------------------------
 
 
+class _SpryUndefinedType:
+    """Singleton sentinel for the JS ``undefined`` value.
+
+    Distinct from ``None`` (which represents ``null``) so that
+    ``String(undefined)`` → ``'undefined'`` and ``typeof undefined`` → ``'undefined'``
+    work correctly when the caller explicitly passes the ``undefined`` global.
+
+    JS loose equality: ``undefined == null`` is ``True``.
+    JS strict equality: ``undefined === null`` is ``False``.
+    """
+
+    _instance: "_SpryUndefinedType | None" = None
+
+    def __new__(cls) -> "_SpryUndefinedType":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __eq__(self, other: object) -> bool:
+        # JS: undefined == null → True, undefined == undefined → True
+        if isinstance(other, _SpryUndefinedType):
+            return True
+        if other is None:
+            return True
+        return False
+
+    def __hash__(self) -> int:
+        return hash(None)
+
+    def __repr__(self) -> str:
+        return "undefined"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+#: The singleton ``undefined`` value used throughout the SpryCode runtime.
+SPRY_UNDEFINED = _SpryUndefinedType()
+
+
 def _strict_eq(left: Any, right: Any) -> bool:
     """Strict equality (===): same type AND same value; objects compared by identity."""
     if type(left) is not type(right):
@@ -444,6 +484,23 @@ class BoundMethod:
 
     def __repr__(self) -> str:
         return f"<bound method {self.fn.name}>"
+
+
+class DictBoundMethod:
+    """A SpryCode function/lambda bound to a plain dict object.
+
+    When a ``SpryFunction`` is accessed as a property of a dict (plain object literal),
+    we wrap it so ``this`` is automatically bound to the dict when the method is called.
+    This gives object-literal methods the same ``this`` binding behaviour as class methods.
+    """
+
+    def __init__(self, obj: dict, fn: Any) -> None:
+        self.obj = obj
+        self.fn = fn
+
+    def __repr__(self) -> str:
+        name = getattr(self.fn, "name", "<anonymous>")
+        return f"<dict method {name}>"
 
 
 class SpryRegex:
@@ -1040,7 +1097,7 @@ class Interpreter:
         env.define("null", None)
         env.define("Infinity", float("inf"))
         env.define("NaN", float("nan"))
-        env.define("undefined", None)  # JS-compat alias for null
+        env.define("undefined", SPRY_UNDEFINED)  # JS-compat undefined sentinel
 
         # Environment and formatting
         env.define("env", lambda key, default=None: os.environ.get(str(key), default))
@@ -1160,7 +1217,7 @@ class Interpreter:
         env.define("Reflect", _ReflectNamespace())
 
         # globalThis — reference to the interpreter's global env dict
-        env.define("globalThis", {"__type__": "GlobalThis", "undefined": None})
+        env.define("globalThis", {"__type__": "GlobalThis", "undefined": SPRY_UNDEFINED})
 
         # structuredClone — deep clone that handles SpryMap, SprySet, SpryDate, dict, list
         def _structured_clone(val: Any) -> Any:
@@ -1312,6 +1369,8 @@ class Interpreter:
 
     def _builtin_str(self, value: Any) -> str:
         """Convert any SpryCode value to a string."""
+        if isinstance(value, _SpryUndefinedType):
+            return "undefined"
         if value is None:
             return "null"
         if isinstance(value, bool):
@@ -1491,7 +1550,7 @@ class Interpreter:
                 if setter_key in obj:
                     setter_fn = obj[setter_key]
                     if isinstance(setter_fn, SpryFunction):
-                        self._call_function(setter_fn, [value], node)
+                        self._call_dict_bound_method(setter_fn, obj, [value], node)
                         return None
                     elif callable(setter_fn):
                         try:
@@ -2060,6 +2119,8 @@ class Interpreter:
                     raise SpryRuntimeError(str(e), node)
             if isinstance(callee, BoundMethod):
                 return self._call_bound_method(callee, args, node)
+            if isinstance(callee, DictBoundMethod):
+                return self._call_dict_bound_method(callee.fn, callee.obj, args, node)
             if isinstance(callee, SpryFunction):
                 return self._call_function(callee, args, node)
             if isinstance(callee, SpryLambda):
@@ -2419,6 +2480,9 @@ class Interpreter:
         if isinstance(callee, BoundMethod):
             return self._call_bound_method(callee, args, node)
 
+        if isinstance(callee, DictBoundMethod):
+            return self._call_dict_bound_method(callee.fn, callee.obj, args, node)
+
         if isinstance(callee, SpryFunction):
             return self._call_function(callee, args, node)
 
@@ -2534,8 +2598,9 @@ class Interpreter:
         obj = self._eval(node.object, env)
         prop = node.property
 
-        if obj is None:
-            err_msg = f"Cannot read properties of null (reading '{prop}')"
+        if obj is None or isinstance(obj, _SpryUndefinedType):
+            noun = "null" if obj is None else "undefined"
+            err_msg = f"Cannot read properties of {noun} (reading '{prop}')"
             raise SpryUserError(SpryErrorObject("TypeError", err_msg))
 
         return self._eval_member_on(obj, prop, node)
@@ -2722,14 +2787,19 @@ class Interpreter:
             if getter_key in obj:
                 getter_fn = obj[getter_key]
                 if isinstance(getter_fn, SpryFunction):
-                    return self._call_function(getter_fn, [], node)
+                    # Inject this = obj so getters can access object properties
+                    return self._call_dict_bound_method(getter_fn, obj, [], node)
                 elif callable(getter_fn):
                     try:
                         return getter_fn()
                     except Exception as e:
                         raise SpryRuntimeError(str(e), node)
             if prop in obj:
-                return obj[prop]
+                val = obj[prop]
+                # Bind 'this' for SpryFunction and SpryLambda stored as object methods
+                if isinstance(val, SpryFunction):
+                    return DictBoundMethod(obj, val)
+                return val
             # Built-in dict properties/methods
             if prop == "keys":
                 return list(obj.keys())
@@ -3172,7 +3242,11 @@ class Interpreter:
                         import re as _re
                         result = _re.split(sep.pattern.pattern, _obj)
                     elif isinstance(sep, str):
-                        result = _obj.split(sep)
+                        if sep == "":
+                            # JS/TS: "hello".split("") → ['h', 'e', 'l', 'l', 'o']
+                            result = list(_obj)
+                        else:
+                            result = _obj.split(sep)
                     else:
                         result = _obj.split(str(sep))
                     if limit is not None:
@@ -4595,6 +4669,8 @@ class Interpreter:
 
     def _spry_typeof(self, val: Any) -> str:
         """Return the SpryCode type name of a value."""
+        if isinstance(val, _SpryUndefinedType):
+            return "undefined"
         if val is None:
             return "Null"
         if isinstance(val, bool):
@@ -5300,6 +5376,50 @@ class Interpreter:
 
         return return_val
 
+    def _call_dict_bound_method(self, fn: "SpryFunction", obj: dict,
+                                args: list, node: "Node") -> Any:
+        """Call a SpryFunction with ``this`` bound to a plain dict object.
+
+        Used for object-literal shorthand methods and getter/setter functions
+        stored in a dict so that ``this.x`` inside the method resolves to the dict.
+        """
+        child = fn.closure.child()
+        child.define("self", obj, mutable=False)
+        child.define("this", obj, mutable=False)
+
+        required = [
+            p for p, _ in fn.params
+            if p not in fn.defaults and not p.startswith("__destruct__") and not p.startswith("__array_destruct__")
+        ]
+        if len(args) < len(required):
+            raise SpryRuntimeError(
+                f"Function {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
+            )
+
+        for i, (pname, _ptype) in enumerate(fn.params):
+            if i < len(args):
+                child.define(pname, args[i], mutable=False)
+            elif pname in fn.defaults:
+                child.define(pname, self._eval(fn.defaults[pname], fn.closure), mutable=False)
+            else:
+                child.define(pname, None, mutable=False)
+
+        if fn.rest_param is not None:
+            child.define(fn.rest_param, list(args[len(fn.params):]), mutable=False)
+
+        return_val = None
+        try:
+            self._exec_block(fn.body, child)
+        except ReturnSignal as r:
+            return_val = r.value
+
+        # Sync back mutated dict properties (this.x = val style)
+        # Walk the child env to detect property writes applied via MemberAssignment.
+        # We don't sync local variables back to the dict — only explicit this.x = val
+        # assignments already wrote directly into obj via MemberAssignment.
+
+        return return_val
+
     # ------------------------------------------------------------------
     # Tests
     # ------------------------------------------------------------------
@@ -5474,6 +5594,8 @@ class Interpreter:
         return type(value).__name__
 
     def _truthy(self, value: Any) -> bool:
+        if isinstance(value, _SpryUndefinedType):
+            return False
         if value is None:
             return False
         if isinstance(value, bool):
@@ -5659,6 +5781,20 @@ class _ArrayNamespace:
 
     def of(self, *args: Any) -> list:
         """Create an array from arguments: Array.of(1, 2, 3) → [1, 2, 3]."""
+        return list(args)
+
+    def __call__(self, *args: Any) -> list:
+        """Array(n) → sparse array of length n; Array(a, b, c) → [a, b, c].
+
+        Matches JS semantics:
+        - Single integer arg → list of that length filled with None.
+        - Multiple args → list of those values.
+        """
+        if len(args) == 1 and isinstance(args[0], (int, float)) and not isinstance(args[0], bool):
+            n = int(args[0])
+            if n < 0:
+                raise SpryRuntimeError(f"Invalid array length: {n}", None)
+            return [None] * n
         return list(args)
 
     def __repr__(self) -> str:
@@ -7192,6 +7328,8 @@ class _StringNamespace:
 
     def __call__(self, val: Any) -> str:
         """String(x) — convert x to a string."""
+        if isinstance(val, _SpryUndefinedType):
+            return "undefined"
         if val is None:
             return "null"
         if isinstance(val, bool):

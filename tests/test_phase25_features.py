@@ -37,11 +37,6 @@ def val(interp: Interpreter, name: str) -> object:
     return interp.globals.get(name)
 
 
-def eval_expr(src: str) -> object:
-    """Evaluate a single expression and return the result."""
-    return run(f"let _result = {src}").globals.get("_result")
-
-
 # ===========================================================================
 # Arrow function body assignment
 # ===========================================================================
@@ -51,21 +46,8 @@ class TestArrowBodyAssignment:
 
     def test_index_assignment_in_arrow_body(self):
         """Arrow function body can assign through an index expression."""
-        globals_ = run(
-            "let arr = [0, 0, 0];"
-            "let f = i => arr[i] = i * 2;"
-            "f(1);"
-        ).globals
-        assert globals_["arr"] == [0, 2, 0]
-
-    def test_index_assignment_in_arrow_body(self):
-        """Arrow function body can assign through an index expression."""
-        globals_ = run(
-            "let arr = [0, 0, 0];"
-            "let f = i => arr[i] = i * 2;"
-            "f(1);"
-        ).globals
-        assert globals_["arr"] == [0, 2, 0]
+        i = run("let arr = [0, 0, 0]\nlet f = idx => arr[idx] = idx * 2\nf(1)")
+        assert val(i, "arr") == [0, 2, 0]
 
     def test_single_param_simple_assignment(self):
         i = run("var a = 0\nlet f = v => a = v\nf(42)")

@@ -2191,8 +2191,21 @@ class Parser:
                 name=expr.name, op=op, value=value, line=expr.line, column=expr.column
             )
 
-        if self._current().type in _compound_ops and isinstance(expr, MemberExpression):
-            op = _compound_ops[self._current().type]
+        # Compound member assignments: obj.prop += value
+        # Restricted to the operator set that the interpreter's CompoundMemberAssignment supports.
+        _member_compound_ops = {
+            TokenType.PLUS_EQ: "+",
+            TokenType.MINUS_EQ: "-",
+            TokenType.STAR_EQ: "*",
+            TokenType.SLASH_EQ: "/",
+            TokenType.AMP_EQ: "&",
+            TokenType.PIPE_EQ: "|",
+            TokenType.CARET_EQ: "^",
+            TokenType.LSHIFT_EQ: "<<",
+            TokenType.RSHIFT_EQ: ">>",
+        }
+        if self._current().type in _member_compound_ops and isinstance(expr, MemberExpression):
+            op = _member_compound_ops[self._current().type]
             self._advance()
             value = self._parse_null_coalesce()
             return CompoundMemberAssignment(

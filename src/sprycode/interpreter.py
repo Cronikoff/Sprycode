@@ -3957,11 +3957,14 @@ class Interpreter:
     def _exec_class(self, node: ClassDeclaration, env: Environment) -> Any:
         # Resolve superclass, if any
         superclass: SpryClass | None = None
+        builtin_error_super: "_ErrorNamespace | None" = None
         if node.superclass is not None:
             try:
                 sc = env.get(node.superclass)
                 if isinstance(sc, SpryClass):
                     superclass = sc
+                elif isinstance(sc, _ErrorNamespace):
+                    builtin_error_super = sc
             except SpryRuntimeError:
                 pass
 
@@ -3978,14 +3981,9 @@ class Interpreter:
         cls = SpryClass(name=node.name, body=node.body, closure=env, superclass=superclass)
         # Attach mixin classes so _construct_class can use them
         cls._mixins = mixin_classes  # type: ignore[attr-defined]
-        # If superclass is a built-in error namespace (e.g. Error, TypeError), record it
-        if node.superclass is not None and superclass is None:
-            try:
-                sc = env.get(node.superclass)
-                if isinstance(sc, _ErrorNamespace):
-                    cls._builtin_error_superclass = sc  # type: ignore[attr-defined]
-            except SpryRuntimeError:
-                pass
+        # Record built-in error superclass (e.g. Error, TypeError) for instanceof checks
+        if builtin_error_super is not None:
+            cls._builtin_error_superclass = builtin_error_super  # type: ignore[attr-defined]
         env.define(node.name, cls, mutable=False)
         return None
 

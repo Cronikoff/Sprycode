@@ -2431,18 +2431,20 @@ class Interpreter:
                 return _list_reduce
             if prop == "reduceRight":
                 def _list_reduce_right(fn: Any, initial: Any = _SENTINEL) -> Any:
-                    items = list(reversed(obj))
+                    n = len(obj)
                     if initial is _SENTINEL:
-                        if not items:
+                        if n == 0:
                             raise SpryRuntimeError("reduceRight of empty array with no initial value", node)
-                        acc = items[0]
-                        items = items[1:]
+                        acc = obj[n - 1]
+                        start_idx = n - 2
                     else:
                         acc = initial
-                    for i, item in enumerate(items):
+                        start_idx = n - 1
+                    for idx in range(start_idx, -1, -1):
+                        item = obj[idx]
                         arity = getattr(fn, "_spry_arity", 1)
                         if arity > 1:
-                            acc = fn(acc, item, len(obj) - 1 - i, obj)
+                            acc = fn(acc, item, idx, obj)
                         else:
                             acc = fn(acc, item)
                     return acc

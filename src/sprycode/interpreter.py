@@ -133,6 +133,7 @@ from .ast_nodes import (
     AwaitExpression,
     OptionalCallExpression,
     ComputedMethodDeclaration,
+    SequenceExpression,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -1966,6 +1967,12 @@ class Interpreter:
                     return val._value
                 raise SpryRuntimeError(str(val._error) if val._error else "Promise rejected", node)
             return val
+
+        if isinstance(node, SequenceExpression):
+            result = None
+            for expr in node.expressions:
+                result = self._eval(expr, env)
+            return result
 
         if isinstance(node, MemberExpression):
             return self._eval_member(node, env)
@@ -4134,18 +4141,19 @@ class Interpreter:
 
     def _exec_switch(self, node: SwitchStatement, env: Environment) -> Any:
         subject_val = self._eval(node.subject, env)
-        for case in node.cases:
-            case_val = self._eval(case.value, env)
-            if subject_val == case_val:
-                try:
-                    return self._exec_block(case.body, env)
-                except BreakSignal:
-                    return None
-        if node.default_body is not None:
-            try:
-                return self._exec_block(node.default_body, env)
-            except BreakSignal:
-                return None
+        found = False
+        try:
+            for case in node.cases:
+                if not found:
+                    case_val = self._eval(case.value, env)
+                    if subject_val == case_val:
+                        found = True
+                if found:
+                    self._exec_block(case.body, env)
+            if not found and node.default_body is not None:
+                self._exec_block(node.default_body, env)
+        except BreakSignal:
+            pass
         return None
 
     def _eval_postfix(self, node: PostfixExpression, env: Environment) -> Any:

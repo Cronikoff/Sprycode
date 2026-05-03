@@ -984,3 +984,9 @@ class ComputedMethodDeclaration(Node):
     is_async: bool = False
     defaults: dict = field(default_factory=dict)
     rest_param: "str | None" = None
+
+
+@dataclass
+class SequenceExpression(Node):
+    """(a, b, c) — evaluates each expression, returns value of the last."""
+    expressions: list["Node"] = field(default_factory=list)

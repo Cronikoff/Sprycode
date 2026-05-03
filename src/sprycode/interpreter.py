@@ -3279,7 +3279,12 @@ class Interpreter:
             if prop in ("round",):
                 return round(obj)
             if prop == "toExponential":
-                return lambda digits=6: f"{float(obj):.{int(digits)}e}"
+                def _to_exp(digits: int = 6, _obj: Any = obj) -> str:
+                    import re as _re
+                    result = f"{float(_obj):.{int(digits)}e}"
+                    # JS uses e+4 not e+04 — strip leading zero from exponent
+                    return _re.sub(r"e([+-])0+(\d)", lambda m: f"e{m.group(1)}{m.group(2)}", result)
+                return _to_exp
             if prop == "sign":
                 return 1 if obj > 0 else (-1 if obj < 0 else 0)
             if prop == "trunc":
@@ -4049,7 +4054,11 @@ class Interpreter:
                 if vname in child_env._vars:
                     child_env._vars[vname] = vval
             if node.update is not None:
-                self._eval(node.update, child_env)
+                if isinstance(node.update, Block):
+                    for upd_node in node.update.body:
+                        self._eval(upd_node, child_env)
+                else:
+                    self._eval(node.update, child_env)
         return None
 
     def _exec_while(self, node: WhileStatement, env: Environment) -> Any:
@@ -4300,6 +4309,8 @@ class Interpreter:
             return "Generator"
         if isinstance(val, SpryPromise):
             return "Promise"
+        if isinstance(val, SpryProxy):
+            return "Object"  # JS: typeof proxy === typeof target
         if isinstance(val, (SpryFunction, SpryLambda, SpryMultiLambda)):
             return "Function"
         if isinstance(val, SprySymbol):
@@ -5506,8 +5517,8 @@ class _ObjectNamespace:
 class _NumberNamespace:
     """Number global namespace — Number.isInteger(), Number.isNaN(), Number.isFinite(), etc."""
 
-    MAX_VALUE: float = float("inf")
-    MIN_VALUE: float = float("-inf")
+    MAX_VALUE: float = 1.7976931348623157e+308   # largest finite float64
+    MIN_VALUE: float = 5e-324                    # smallest positive float64 (JS Number.MIN_VALUE)
     MAX_SAFE_INTEGER: int = 2 ** 53 - 1
     MIN_SAFE_INTEGER: int = -(2 ** 53 - 1)
     POSITIVE_INFINITY: float = float("inf")
@@ -7911,6 +7922,12 @@ class SpryProxy:
     def __repr__(self) -> str:
         target = object.__getattribute__(self, '_target')
         return f"Proxy({target!r})"
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._spry_get_prop(str(key) if not isinstance(key, str) else key)
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._spry_set_prop(str(key) if not isinstance(key, str) else key, value)
 
 
 class _ProxyNamespace:

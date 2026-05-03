@@ -719,7 +719,11 @@ class Parser:
         handler: Block | None = None
         if self._check(TokenType.CATCH):
             self._advance()
+            # Support both: catch e { ... }  and  catch (e) { ... }
+            has_paren = self._match(TokenType.LPAREN)
             err_name = self._expect_ident().value
+            if has_paren:
+                self._expect(TokenType.RPAREN)
             handler = self._parse_block()
         # optional finally block
         finally_block: Block | None = None
@@ -1077,6 +1081,8 @@ class Parser:
         if self._check(TokenType.AWAIT):
             self._advance()  # consume 'await'
             is_async = True
+        # Optional parentheses around the for-loop header: for (...) { }
+        has_paren = self._match(TokenType.LPAREN)
         # Support: for [a, b] in/of ... — list destructuring
         if self._check(TokenType.LBRACKET):
             self._advance()  # consume '['
@@ -1091,6 +1097,8 @@ class Parser:
             else:
                 self._expect(TokenType.IN)
             iterable = self._parse_value_expression()
+            if has_paren:
+                self._expect(TokenType.RPAREN)
             body = self._parse_block()
             return ForStatement(
                 var=dest_vars[0] if dest_vars else "_",
@@ -1113,6 +1121,8 @@ class Parser:
             else:
                 self._expect(TokenType.IN)
             iterable = self._parse_value_expression()
+            if has_paren:
+                self._expect(TokenType.RPAREN)
             body = self._parse_block()
             synth_var = "__obj_destruct__:" + ",".join(obj_dest_vars)
             return ForStatement(
@@ -1145,7 +1155,18 @@ class Parser:
                 if self._match(TokenType.SEMICOLON):
                     condition = self._parse_value_expression()
                     self._expect(TokenType.SEMICOLON)
-                    update = self._parse_expr_or_assignment()
+                    # Support comma-separated updates: i++, j--
+                    update: Node = self._parse_expr_or_assignment()
+                    if self._check(TokenType.COMMA):
+                        update_nodes: list[Node] = [update]
+                        while self._match(TokenType.COMMA):
+                            update_nodes.append(self._parse_expr_or_assignment())
+                        update = Block(
+                            body=update_nodes,
+                            line=update_nodes[0].line, column=update_nodes[0].column,
+                        )
+                    if has_paren:
+                        self._expect(TokenType.RPAREN)
                     body = self._parse_block()
                     return ForCStyleStatement(
                         init=init_stmt, condition=condition, update=update, body=body,
@@ -1171,6 +1192,8 @@ class Parser:
             else:
                 self._expect(TokenType.IN)
             iterable = self._parse_value_expression()
+            if has_paren:
+                self._expect(TokenType.RPAREN)
             body = self._parse_block()
             return ForStatement(
                 var=synth_name,
@@ -1192,6 +1215,8 @@ class Parser:
             else:
                 self._expect(TokenType.IN)
             iterable = self._parse_value_expression()
+            if has_paren:
+                self._expect(TokenType.RPAREN)
             body = self._parse_block()
             return ForStatement(
                 var=synth_name2,
@@ -1221,6 +1246,8 @@ class Parser:
             from .ast_nodes import BinaryExpression
             iterable = BinaryExpression(op="..", left=iterable, right=end_expr,
                                         line=iterable.line, column=iterable.column)
+        if has_paren:
+            self._expect(TokenType.RPAREN)
         body = self._parse_block()
         all_vars = [var_tok.value] + extra_vars
         return ForStatement(

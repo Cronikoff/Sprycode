@@ -302,7 +302,7 @@ class MathHelper {
 }
 let v = MathHelper.pi
 """)
-    assert abs(i.globals.get("v") - 3.14159) < 1e-9
+    assert i.globals.get("v") == pytest.approx(3.14159)
 
 
 def test_class_static_getter_computed() -> None:

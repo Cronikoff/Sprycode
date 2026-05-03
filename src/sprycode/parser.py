@@ -125,6 +125,7 @@ from .ast_nodes import (
     AwaitExpression,
     OptionalCallExpression,
     ComputedMethodDeclaration,
+    SequenceExpression,
 )
 from .lexer import Token, TokenType
 
@@ -349,16 +350,18 @@ class Parser:
             return self._parse_while()
         if tok.type == TokenType.BREAK:
             self._advance()
-            # Optional label: break outer
+            # Optional label: break outer  (only if label is on the same line)
             label = None
-            if self._check(TokenType.IDENTIFIER) and not self._at_end():
+            if (self._check(TokenType.IDENTIFIER) and not self._at_end()
+                    and self._current().line == tok.line):
                 label = self._advance().value
             return BreakStatement(label=label, line=tok.line, column=tok.column)
         if tok.type == TokenType.CONTINUE:
             self._advance()
-            # Optional label: continue outer
+            # Optional label: continue outer  (only if label is on the same line)
             label = None
-            if self._check(TokenType.IDENTIFIER) and not self._at_end():
+            if (self._check(TokenType.IDENTIFIER) and not self._at_end()
+                    and self._current().line == tok.line):
                 label = self._advance().value
             return ContinueStatement(label=label, line=tok.line, column=tok.column)
         if tok.type == TokenType.CREATE:
@@ -2925,9 +2928,17 @@ class Parser:
                                                line=tok.line, column=tok.column)
             except Exception:
                 pass
-            # Not a lambda — restore and parse as grouped expression
+            # Not a lambda — restore and parse as grouped expression or comma expression
             self.pos = saved_pos
             expr = self._parse_expr_or_assignment()
+            if self._check(TokenType.COMMA):
+                # Comma operator: (a, b, c) — evaluates all, returns last
+                expressions = [expr]
+                while self._match(TokenType.COMMA):
+                    expressions.append(self._parse_expr_or_assignment())
+                self._expect(TokenType.RPAREN)
+                return SequenceExpression(expressions=expressions,
+                                          line=tok.line, column=tok.column)
             self._expect(TokenType.RPAREN)
             return expr
 

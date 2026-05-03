@@ -1483,6 +1483,9 @@ class Interpreter:
                         return None
                 obj.set(node.property, value)
             elif isinstance(obj, dict):
+                # Check for frozen object — silently ignore writes (JS non-strict behavior)
+                if obj.get("__spry_frozen__"):
+                    return None
                 # Check for setter
                 setter_key = f"__setter__{node.property}"
                 if setter_key in obj:
@@ -2532,7 +2535,8 @@ class Interpreter:
         prop = node.property
 
         if obj is None:
-            raise SpryRuntimeError(f"Cannot access property {prop!r} on null", node)
+            err_msg = f"Cannot read properties of null (reading '{prop}')"
+            raise SpryUserError(SpryErrorObject("TypeError", err_msg))
 
         return self._eval_member_on(obj, prop, node)
 
@@ -4669,6 +4673,17 @@ class Interpreter:
 
     def _spry_instanceof(self, val: Any, type_name: str) -> bool:
         """Return True if val is an instance of the named SpryCode type."""
+        # SpryErrorObject: check .name and walk the error hierarchy
+        if isinstance(val, SpryErrorObject):
+            _error_hierarchy = {
+                "TypeError", "RangeError", "SyntaxError", "ReferenceError",
+                "EvalError", "URIError",
+            }
+            if type_name == "Error":
+                return True
+            if type_name == val.name:
+                return True
+            return False
         # SpryInstance: check the class name and walk the superclass chain
         if isinstance(val, SpryInstance):
             cls: SpryClass | None = val.cls
@@ -8000,10 +8015,20 @@ class SpryWeakMap:
 
 
 class _WeakMapNamespace:
-    """WeakMap global namespace — WeakMap.new()."""
+    """WeakMap global namespace — WeakMap.new() or new WeakMap()."""
 
-    def new(self) -> SpryWeakMap:
-        return SpryWeakMap()
+    def __call__(self, iterable: Any = None) -> SpryWeakMap:
+        wm = SpryWeakMap()
+        if iterable is not None:
+            for entry in iterable:
+                if hasattr(entry, '__iter__'):
+                    pair = list(entry)
+                    if len(pair) >= 2:
+                        wm.set(pair[0], pair[1])
+        return wm
+
+    def new(self, iterable: Any = None) -> SpryWeakMap:
+        return self.__call__(iterable)
 
     def __repr__(self) -> str:
         return "WeakMap"
@@ -8030,10 +8055,17 @@ class SpryWeakSet:
 
 
 class _WeakSetNamespace:
-    """WeakSet global namespace — WeakSet.new()."""
+    """WeakSet global namespace — WeakSet.new() or new WeakSet()."""
 
-    def new(self) -> SpryWeakSet:
-        return SpryWeakSet()
+    def __call__(self, iterable: Any = None) -> SpryWeakSet:
+        ws = SpryWeakSet()
+        if iterable is not None:
+            for key in iterable:
+                ws.add(key)
+        return ws
+
+    def new(self, iterable: Any = None) -> SpryWeakSet:
+        return self.__call__(iterable)
 
     def __repr__(self) -> str:
         return "WeakSet"

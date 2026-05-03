@@ -231,6 +231,18 @@ class Parser:
         TokenType.MAP_TYPE,      # "Map" — used as global namespace identifier
         TokenType.MONEY_TYPE,    # "Money" — used as class/identifier name
         TokenType.LOG,           # "log" — usable as variable/function/parameter name
+        # SpryCode-specific keywords commonly used as field/property names in class bodies
+        # and object literals (e.g. `static timeout = 5000`, `{ retry: 3 }`)
+        TokenType.TIMEOUT,       # "timeout"
+        TokenType.SLEEP,         # "sleep"
+        TokenType.RETRY,         # "retry"
+        TokenType.SCHEDULE,      # "schedule"
+        TokenType.DAILY,         # "daily"
+        TokenType.FRAUD,         # "fraud"
+        TokenType.REASON,        # "reason"
+        TokenType.CASE,          # "case"
+        TokenType.SCOPE,         # "scope"
+        TokenType.WEBSOCKET,     # "websocket"
     })
 
     def _expect_ident(self) -> Token:
@@ -475,6 +487,22 @@ class Parser:
                 body.append(stmt)
         self._expect(TokenType.RBRACE)
         return Block(body=body, line=tok.line, column=tok.column)
+
+    def _parse_block_or_stmt(self) -> Block:
+        """Parse either a brace-enclosed block or a single statement.
+
+        Supports JS-style single-statement if/else/while bodies without braces:
+          if (cond) return x
+          if (cond) throw new Error('msg')
+          while (cond) x++
+        Always returns a Block (wrapping a single statement in a one-element block).
+        """
+        if self._check(TokenType.LBRACE):
+            return self._parse_block()
+        stmt = self._parse_statement()
+        tok = self._current()
+        return Block(body=[stmt] if stmt is not None else [],
+                     line=tok.line, column=tok.column)
 
     # ------------------------------------------------------------------
     # Top-level declarations
@@ -738,7 +766,11 @@ class Parser:
     def _parse_if(self) -> IfStatement:
         tok = self._expect(TokenType.IF)
         condition = self._parse_expression()
-        then_block = self._parse_block()
+        then_block = self._parse_block_or_stmt()
+        # Consume optional trailing semicolons before `else` so that
+        # `if (c) return x; else return y` is parsed correctly.
+        while self._check(TokenType.SEMICOLON):
+            self._advance()
         else_block = None
         if self._match(TokenType.ELSE):
             if self._check(TokenType.IF):
@@ -746,7 +778,7 @@ class Parser:
                 nested = self._parse_if()
                 else_block = Block(body=[nested], line=nested.line, column=nested.column)
             else:
-                else_block = self._parse_block()
+                else_block = self._parse_block_or_stmt()
         return IfStatement(
             condition=condition,
             then_block=then_block,
@@ -1317,7 +1349,7 @@ class Parser:
     def _parse_while(self) -> WhileStatement:
         tok = self._expect(TokenType.WHILE)
         condition = self._parse_value_expression()
-        body = self._parse_block()
+        body = self._parse_block_or_stmt()
         return WhileStatement(
             condition=condition, body=body,
             line=tok.line, column=tok.column,

@@ -218,5 +218,4 @@ let v = Counter.get()"""
 def test_static_field_increment_returns_old():
     src = "class C { static var n = 5 }\nlet v = C.n++"
     i = run(src)
-    assert v(i) == 5
-    assert i.globals.get("v") == 5
+    assert v(i) == 5  # postfix returns old value; C.n is now 6

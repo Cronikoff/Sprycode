@@ -234,7 +234,7 @@ class TestCallableConverters:
 
     def test_string_null(self):
         i = run("let r = String(null)")
-        assert val(i, "r") == ""
+        assert val(i, "r") == "null"
 
     def test_string_bool_true(self):
         i = run("let r = String(true)")

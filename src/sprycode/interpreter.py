@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 
 _SENTINEL = object()  # Used as a default "not provided" sentinel
+_MAX_FLAT_DEPTH = 10_000  # Effective limit for array.flat(Infinity)
 
 from .ast_nodes import (
     AdapterDeclaration,
@@ -2738,7 +2739,7 @@ class Interpreter:
                 def _flat_with_depth(depth: Any = 1) -> list:
                     d = depth
                     if isinstance(d, float):
-                        d = 10000 if math.isinf(d) else int(d)
+                        d = _MAX_FLAT_DEPTH if math.isinf(d) else int(d)
                     else:
                         d = int(d)
                     return _do_flat(obj, d)
@@ -6477,7 +6478,7 @@ class _StringNamespace:
     def __call__(self, val: Any) -> str:
         """String(x) — convert x to a string."""
         if val is None:
-            return ""
+            return "null"
         if isinstance(val, bool):
             return "true" if val else "false"
         if isinstance(val, float):

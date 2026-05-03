@@ -154,7 +154,7 @@ class TestToExponential:
         # Should produce e+6, not e+06
         assert 'e+' in val(i, "v") or 'e-' in val(i, "v")
         exp_part = val(i, "v").split('e')[1]
-        # No leading zero in exponent  
+        # No leading zero in exponent
         assert not exp_part.lstrip('+-').startswith('0') or len(exp_part.lstrip('+-')) == 1
 
 

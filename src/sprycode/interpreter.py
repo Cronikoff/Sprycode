@@ -1003,14 +1003,24 @@ class Interpreter:
         # globalThis — reference to the interpreter's global env dict
         env.define("globalThis", {"__type__": "GlobalThis", "undefined": None})
 
-        # structuredClone — deep clone via json round-trip
+        # structuredClone — deep clone that handles SpryMap, SprySet, dict, list
         def _structured_clone(val: Any) -> Any:
-            import json as _json
-            import copy
-            try:
-                return _json.loads(_json.dumps(val, default=lambda o: None))
-            except (TypeError, ValueError):
-                return copy.deepcopy(val)
+            if isinstance(val, SpryMap):
+                new_map = SpryMap()
+                for k, v in val._data.items():
+                    new_map.spry_set(_structured_clone(k), _structured_clone(v))
+                return new_map
+            if isinstance(val, SprySet):
+                new_set = SprySet()
+                for item in val._data:
+                    new_set.add(_structured_clone(item))
+                return new_set
+            if isinstance(val, dict):
+                return {k: _structured_clone(v) for k, v in val.items()}
+            if isinstance(val, list):
+                return [_structured_clone(item) for item in val]
+            # Primitives (int, float, str, bool, None) are immutable — return as-is
+            return val
         env.define("structuredClone", _structured_clone)
 
         # queueMicrotask — executes fn immediately (synchronous SpryCode model)
@@ -1268,6 +1278,9 @@ class Interpreter:
     def _exec(self, node: Node, env: Environment) -> Any:  # noqa: C901
         if isinstance(node, Program):
             return self._exec_block_stmts(node.body, env)
+
+        if isinstance(node, Block):
+            return self._exec_block(node, env.child())
 
         if isinstance(node, AppDeclaration):
             self._app_name = node.name
@@ -2055,6 +2068,17 @@ class Interpreter:
                         if cls is target:
                             return True
                         cls = cls.superclass
+                    return False
+                # Also handle: val instanceof Error (where Error is _ErrorNamespace)
+                if isinstance(target, _ErrorNamespace):
+                    if isinstance(val, SpryErrorObject):
+                        return True
+                    if isinstance(val, SpryInstance):
+                        cls_check: SpryClass | None = val.cls
+                        while cls_check is not None:
+                            if getattr(cls_check, '_builtin_error_superclass', None) is target:
+                                return True
+                            cls_check = cls_check.superclass
                     return False
             except SpryRuntimeError:
                 pass
@@ -4283,11 +4307,14 @@ class Interpreter:
     def _exec_class(self, node: ClassDeclaration, env: Environment) -> Any:
         # Resolve superclass, if any
         superclass: SpryClass | None = None
+        _builtin_err_ns: "_ErrorNamespace | None" = None
         if node.superclass is not None:
             try:
                 sc = env.get(node.superclass)
                 if isinstance(sc, SpryClass):
                     superclass = sc
+                elif isinstance(sc, _ErrorNamespace):
+                    _builtin_err_ns = sc
             except SpryRuntimeError:
                 pass
 
@@ -4304,21 +4331,28 @@ class Interpreter:
         cls = SpryClass(name=node.name, body=node.body, closure=env, superclass=superclass)
         # Attach mixin classes so _construct_class can use them
         cls._mixins = mixin_classes  # type: ignore[attr-defined]
+        if _builtin_err_ns is not None:
+            cls._builtin_error_superclass = _builtin_err_ns  # type: ignore[attr-defined]
         env.define(node.name, cls, mutable=False)
         return None
 
     def _eval_class_expression(self, node: "ClassExpression", env: Environment) -> SpryClass:
         """Evaluate a class expression — creates a SpryClass but does NOT bind it to a name."""
         superclass: SpryClass | None = None
+        _builtin_err_ns: "_ErrorNamespace | None" = None
         if node.superclass is not None:
             try:
                 sc = env.get(node.superclass)
                 if isinstance(sc, SpryClass):
                     superclass = sc
+                elif isinstance(sc, _ErrorNamespace):
+                    _builtin_err_ns = sc
             except SpryRuntimeError:
                 pass
         cls = SpryClass(name=node.name, body=node.body, closure=env, superclass=superclass)
         cls._mixins = []  # type: ignore[attr-defined]
+        if _builtin_err_ns is not None:
+            cls._builtin_error_superclass = _builtin_err_ns  # type: ignore[attr-defined]
         return cls
 
     def _eval_super(self, node: SuperExpression, env: Environment) -> Any:
@@ -4332,6 +4366,14 @@ class Interpreter:
             raise SpryRuntimeError("'super' used outside of a class instance", node)
         parent = self_val.cls.superclass
         if parent is None:
+            # Check for builtin error superclass — super(msg) sets error fields
+            builtin_err = getattr(self_val.cls, '_builtin_error_superclass', None)
+            if builtin_err is not None:
+                args_vals = [self._eval(a, env) for a in node.args]
+                msg = str(args_vals[0]) if args_vals else ""
+                self_val.fields["message"] = msg
+                self_val.fields["name"] = self_val.cls.name
+                self_val.fields["stack"] = f"{self_val.cls.name}: {msg}"
             return None  # no superclass — silently ignore
         # Find parent's init and call it with evaluated args
         args_vals = [self._eval(a, env) for a in node.args]
@@ -4370,6 +4412,23 @@ class Interpreter:
 
         parent = current_cls.superclass if isinstance(current_cls, SpryClass) else None
         if parent is None:
+            # Check for builtin error superclass — super.init(msg) sets error fields
+            builtin_err = getattr(current_cls, '_builtin_error_superclass', None) if isinstance(current_cls, SpryClass) else None
+            if builtin_err is not None and prop == "init":
+                def _builtin_error_init(*args: Any) -> None:
+                    msg = str(args[0]) if args else ""
+                    self_val.fields["message"] = msg
+                    self_val.fields["name"] = self_val.cls.name
+                    self_val.fields["stack"] = f"{self_val.cls.name}: {msg}"
+                    try:
+                        inst_env = self_val.fields.get("__instance_env__")
+                        if inst_env is not None:
+                            inst_env.assign("message", msg)
+                            inst_env.assign("name", self_val.cls.name)
+                            inst_env.assign("stack", f"{self_val.cls.name}: {msg}")
+                    except Exception:
+                        pass
+                return _builtin_error_init
             raise SpryRuntimeError(f"No superclass to access 'super.{prop}'", node)
 
         # Walk up the ancestor chain to find the method
@@ -4403,6 +4462,18 @@ class Interpreter:
             for k, v in super_inst.fields.items():
                 fields[k] = v
                 instance_env.define(k, v, mutable=True)
+
+        # If class extends a builtin error type, pre-populate error fields
+        builtin_err = getattr(cls, '_builtin_error_superclass', None)
+        if builtin_err is not None:
+            fields["message"] = ""
+            fields["name"] = cls.name
+            fields["stack"] = f"{cls.name}: "
+            fields["cause"] = None
+            instance_env.define("message", "", mutable=True)
+            instance_env.define("name", cls.name, mutable=True)
+            instance_env.define("stack", f"{cls.name}: ", mutable=True)
+            instance_env.define("cause", None, mutable=True)
 
         # Apply mixin classes: inject their fields/methods
         for mixin_cls in getattr(cls, "_mixins", []):

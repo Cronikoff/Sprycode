@@ -228,6 +228,7 @@ class Parser:
         TokenType.TIME_TYPE,     # "Time"
         TokenType.DATETIME_TYPE, # "DateTime"
         TokenType.MAP_TYPE,      # "Map" — used as global namespace identifier
+        TokenType.MONEY_TYPE,    # "Money" — used as class/identifier name
     })
 
     def _expect_ident(self) -> Token:
@@ -1557,16 +1558,20 @@ class Parser:
                     case_body = self._parse_block()
                 else:
                     self._expect(TokenType.COLON)
-                    stmts: list[Node] = []
-                    while (not self._check(TokenType.CASE)
-                           and not self._check(TokenType.DEFAULT)
-                           and not self._check(TokenType.RBRACE)
-                           and not self._at_end()):
-                        # Optionally allow a bare expression as the body of a case
-                        stmt = self._parse_statement()
-                        if stmt is not None:
-                            stmts.append(stmt)
-                    case_body = Block(body=stmts, line=case_tok.line, column=case_tok.column)
+                    # If body starts with '{', treat it as a brace-delimited block
+                    if self._check(TokenType.LBRACE):
+                        case_body = self._parse_block()
+                    else:
+                        stmts: list[Node] = []
+                        while (not self._check(TokenType.CASE)
+                               and not self._check(TokenType.DEFAULT)
+                               and not self._check(TokenType.RBRACE)
+                               and not self._at_end()):
+                            # Optionally allow a bare expression as the body of a case
+                            stmt = self._parse_statement()
+                            if stmt is not None:
+                                stmts.append(stmt)
+                        case_body = Block(body=stmts, line=case_tok.line, column=case_tok.column)
                 cases.append(SwitchCase(value=value, body=case_body,
                                         line=case_tok.line, column=case_tok.column))
             elif self._check(TokenType.DEFAULT):
@@ -1575,14 +1580,18 @@ class Parser:
                     default_body = self._parse_block()
                 else:
                     self._expect(TokenType.COLON)
-                    stmts2: list[Node] = []
-                    while (not self._check(TokenType.CASE)
-                           and not self._check(TokenType.RBRACE)
-                           and not self._at_end()):
-                        stmt = self._parse_statement()
-                        if stmt is not None:
-                            stmts2.append(stmt)
-                    default_body = Block(body=stmts2, line=def_tok.line, column=def_tok.column)
+                    # If body starts with '{', treat it as a brace-delimited block
+                    if self._check(TokenType.LBRACE):
+                        default_body = self._parse_block()
+                    else:
+                        stmts2: list[Node] = []
+                        while (not self._check(TokenType.CASE)
+                               and not self._check(TokenType.RBRACE)
+                               and not self._at_end()):
+                            stmt = self._parse_statement()
+                            if stmt is not None:
+                                stmts2.append(stmt)
+                        default_body = Block(body=stmts2, line=def_tok.line, column=def_tok.column)
             else:
                 break
         self._expect(TokenType.RBRACE)
@@ -1936,6 +1945,75 @@ class Parser:
     # Expression / Assignment
     # ------------------------------------------------------------------
 
+    def _parse_lambda_body(self) -> Node:
+        """Parse a lambda body expression: handles assignments but stops before |> pipelines.
+        
+        Unlike _parse_expr_or_assignment (which calls _parse_pipeline and thus consumes |>),
+        this uses _parse_null_coalesce as base so pipelines after the lambda remain independent.
+        """
+        expr = self._parse_null_coalesce()
+
+        # Simple assignment: name = value
+        if self._check(TokenType.EQ) and isinstance(expr, Identifier):
+            self._advance()
+            value = self._parse_null_coalesce()
+            return Assignment(
+                name=expr.name, value=value, line=expr.line, column=expr.column
+            )
+
+        # Member assignment: obj.prop = value  (incl. self.prop = value)
+        if self._check(TokenType.EQ) and isinstance(expr, MemberExpression):
+            self._advance()
+            value = self._parse_null_coalesce()
+            return MemberAssignment(
+                object=expr.object, property=expr.property, value=value,
+                line=expr.line, column=expr.column,
+            )
+
+        # Index assignment: arr[i] = value
+        if self._check(TokenType.EQ) and isinstance(expr, IndexExpression):
+            self._advance()
+            value = self._parse_null_coalesce()
+            return IndexAssignment(
+                object=expr.object, index=expr.index, value=value,
+                line=expr.line, column=expr.column,
+            )
+
+        # Compound assignments: name += value, etc.
+        _compound_ops = {
+            TokenType.PLUS_EQ: "+",
+            TokenType.MINUS_EQ: "-",
+            TokenType.STAR_EQ: "*",
+            TokenType.SLASH_EQ: "/",
+            TokenType.PERCENT_EQ: "%",
+            TokenType.AMP_EQ: "&",
+            TokenType.PIPE_EQ: "|",
+            TokenType.CARET_EQ: "^",
+            TokenType.LSHIFT_EQ: "<<",
+            TokenType.RSHIFT_EQ: ">>",
+            TokenType.AND_AND_EQ: "&&",
+            TokenType.OR_OR_EQ: "||",
+            TokenType.STAR_STAR_EQ: "**",
+        }
+        if self._current().type in _compound_ops and isinstance(expr, Identifier):
+            op = _compound_ops[self._current().type]
+            self._advance()
+            value = self._parse_null_coalesce()
+            return CompoundAssignment(
+                name=expr.name, op=op, value=value, line=expr.line, column=expr.column
+            )
+
+        if self._current().type in _compound_ops and isinstance(expr, MemberExpression):
+            op = _compound_ops[self._current().type]
+            self._advance()
+            value = self._parse_null_coalesce()
+            return CompoundMemberAssignment(
+                object=expr.object, property=expr.property, op=op, value=value,
+                line=expr.line, column=expr.column,
+            )
+
+        return expr
+
     def _parse_expr_or_assignment(self) -> Node:
         expr = self._parse_pipeline()
 
@@ -2198,7 +2276,7 @@ class Parser:
         if self._check(TokenType.LBRACE):
             body: Node = self._parse_block()
         else:
-            body = self._parse_null_coalesce()
+            body = self._parse_lambda_body()
         return MultiParamLambda(params=params, body=body, line=tok.line, column=tok.column)
 
     def _parse_lambda(self) -> LambdaExpression:
@@ -2210,7 +2288,7 @@ class Parser:
             body: Node = self._parse_block()
         else:
             # Lambda body must NOT consume pipeline operators (|>) at this level.
-            body = self._parse_null_coalesce()
+            body = self._parse_lambda_body()
         return LambdaExpression(param=param, body=body, line=tok.line, column=tok.column)
 
     def _parse_null_coalesce(self) -> Node:
@@ -2671,7 +2749,7 @@ class Parser:
                         if self._check(TokenType.LBRACE):
                             body: Node = self._parse_block()
                         else:
-                            body = self._parse_null_coalesce()
+                            body = self._parse_lambda_body()
                         if len(params) == 0:
                             # Zero-arg lambda: () => expr  — modelled as MultiParamLambda
                             # with an empty params list (no binding needed on call)
@@ -2818,7 +2896,7 @@ class Parser:
                 if self._check(TokenType.LBRACE):
                     body: Node = self._parse_block()
                 else:
-                    body = self._parse_expression()
+                    body = self._parse_lambda_body()
                 return LambdaExpression(param=tok.value, body=body, line=tok.line, column=tok.column)
             return Identifier(name=tok.value, line=tok.line, column=tok.column)
 
@@ -2941,7 +3019,7 @@ class Parser:
                             rest_param = self._expect_ident().value
                             break
                         pname = self._expect_ident().value
-                        if self._match(TokenType.EQUALS):
+                        if self._match(TokenType.EQ):
                             defaults[pname] = self._parse_expression()
                         params.append((pname, None))
                         if not self._match(TokenType.COMMA):

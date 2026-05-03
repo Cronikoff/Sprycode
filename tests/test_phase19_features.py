@@ -350,7 +350,8 @@ let v = dv.getInt32(0)
     def test_repr(self):
         from sprycode.interpreter import SprySharedArrayBuffer
         sab = SprySharedArrayBuffer(4)
-        assert "4" in repr(sab)
+        assert sab.byteLength == 4
+        assert "SharedArrayBuffer" in repr(sab)
 
 
 # ===========================================================================

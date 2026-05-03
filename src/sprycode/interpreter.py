@@ -7961,7 +7961,7 @@ class SpryUint8ClampedArray(SpryTypedArray):
                          byte_offset=byte_offset, _buffer=_buffer)
 
     def _coerce(self, v: Any) -> int:
-        n = int(v) if not isinstance(v, float) else round(v)
+        n = round(v) if isinstance(v, float) else int(v)
         return max(0, min(255, n))
 
     def subarray(self, start: Any = 0, end: Any = None) -> "SpryUint8ClampedArray":
@@ -8000,7 +8000,7 @@ class _TypedArrayNamespace:
         try:
             return getattr(self, prop)
         except AttributeError:
-            raise AttributeError(prop)
+            raise SpryRuntimeError(f"{self._type_name} has no property {prop!r}", None)
 
     def __getattr__(self, prop: str) -> Any:
         if prop == "from":

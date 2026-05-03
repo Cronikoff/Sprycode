@@ -122,6 +122,9 @@ from .ast_nodes import (
     GetterDeclaration,
     SetterDeclaration,
     TaggedTemplateExpression,
+    AwaitExpression,
+    OptionalCallExpression,
+    ComputedMethodDeclaration,
 )
 from .lexer import Token, TokenType
 
@@ -1067,6 +1070,10 @@ class Parser:
 
     def _parse_for(self) -> "ForStatement | ForCStyleStatement":
         tok = self._expect(TokenType.FOR)
+        is_async = False
+        if self._check(TokenType.AWAIT):
+            self._advance()  # consume 'await'
+            is_async = True
         # Support: for [a, b] in/of ... — list destructuring
         if self._check(TokenType.LBRACKET):
             self._advance()  # consume '['
@@ -1086,6 +1093,7 @@ class Parser:
                 var=dest_vars[0] if dest_vars else "_",
                 vars=dest_vars,
                 iterable=iterable, body=body,
+                is_async=is_async,
                 line=tok.line, column=tok.column,
             )
         # Support: for {x, y} in/of ... — object destructuring
@@ -1108,6 +1116,7 @@ class Parser:
                 var=synth_var,
                 vars=[synth_var],
                 iterable=iterable, body=body,
+                is_async=is_async,
                 line=tok.line, column=tok.column,
             )
         # C-style: for var i = 0; i < 5; i++ { ... }
@@ -1155,6 +1164,7 @@ class Parser:
             var=var_tok.value,
             vars=all_vars,
             iterable=iterable, body=body,
+            is_async=is_async,
             line=tok.line, column=tok.column,
         )
 
@@ -1384,6 +1394,34 @@ class Parser:
                     continue
             if (cur.type == TokenType.IDENTIFIER and cur.value == "static"):
                 next_tok = self._peek(1)
+                # static get propName() { ... } or static set propName(v) { ... }
+                if (next_tok.type == TokenType.IDENTIFIER
+                        and next_tok.value in ("get", "set")
+                        and self._peek(2).type in self._IDENTIFIER_LIKE):
+                    self._advance()  # consume 'static'
+                    accessor_tok = self._advance()  # consume 'get' or 'set'
+                    if accessor_tok.value == "get":
+                        name_tok = self._expect_ident()
+                        self._expect(TokenType.LPAREN)
+                        self._expect(TokenType.RPAREN)
+                        if self._check(TokenType.ARROW):
+                            self._advance()
+                            self._parse_type_name()
+                        getter_body = self._parse_block()
+                        body.append(GetterDeclaration(name=f"__static__{name_tok.value}",
+                                                      body=getter_body,
+                                                      line=cur.line, column=cur.column))
+                    else:  # set
+                        name_tok = self._expect_ident()
+                        self._expect(TokenType.LPAREN)
+                        param_tok = self._expect_ident()
+                        self._expect(TokenType.RPAREN)
+                        setter_body = self._parse_block()
+                        body.append(SetterDeclaration(name=f"__static__{name_tok.value}",
+                                                      param=param_tok.value,
+                                                      body=setter_body,
+                                                      line=cur.line, column=cur.column))
+                    continue
                 if next_tok.type in self._IDENTIFIER_LIKE or next_tok.type == TokenType.FN:
                     self._advance()  # consume 'static'
                     if self._check(TokenType.FN):
@@ -1403,6 +1441,32 @@ class Parser:
                         column=cur.column,
                     ))
                     continue
+            # Computed method: [Symbol.iterator]() { ... }
+            if self._check(TokenType.LBRACKET):
+                self._advance()  # consume '['
+                key_expr = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                self._expect(TokenType.LPAREN)
+                comp_params: list[tuple[str, str | None]] = []
+                comp_defaults: dict = {}
+                comp_rest: str | None = None
+                while not self._check(TokenType.RPAREN) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        comp_rest = self._expect_ident().value
+                        break
+                    pname = self._expect_ident().value
+                    comp_params.append((pname, None))
+                    if not self._match(TokenType.COMMA):
+                        break
+                self._expect(TokenType.RPAREN)
+                comp_body = self._parse_block()
+                body.append(ComputedMethodDeclaration(
+                    key=key_expr, params=comp_params, body=comp_body,
+                    defaults=comp_defaults, rest_param=comp_rest,
+                    line=cur.line, column=cur.column,
+                ))
+                continue
             stmt = self._parse_statement()
             if stmt is not None:
                 body.append(stmt)
@@ -2353,7 +2417,13 @@ class Parser:
             elif self._check(TokenType.QUESTION_DOT):
                 # Optional chaining: obj?.prop
                 qt = self._advance()
-                if self._check(TokenType.LBRACKET):
+                if self._check(TokenType.LPAREN):
+                    # Optional call: fn?.() — call fn only if non-null
+                    self._advance()  # consume '('
+                    args = self._parse_arg_list()
+                    self._expect(TokenType.RPAREN)
+                    expr = OptionalCallExpression(callee=expr, args=args, line=qt.line, column=qt.column)
+                elif self._check(TokenType.LBRACKET):
                     # Optional index: arr?.[i]
                     self._advance()  # consume [
                     index = self._parse_expression()
@@ -2712,10 +2782,11 @@ class Parser:
             self._advance()
             return Identifier(name=tok.value, line=tok.line, column=tok.column)
 
-        # await expr — synchronous passthrough (SpryCode doesn't have real async at runtime)
+        # await expr — unwrap SpryPromise; synchronous passthrough for non-Promise values
         if tok.type == TokenType.AWAIT:
             self._advance()
-            return self._parse_postfix()
+            operand = self._parse_postfix()
+            return AwaitExpression(operand=operand, line=tok.line, column=tok.column)
 
         # result ok <expr>  or  result fail <expr>
         if tok.type == TokenType.RESULT:
@@ -2824,7 +2895,40 @@ class Parser:
             else:
                 key_tok = self._current()
                 key = self._advance().value
-                if self._check(TokenType.LPAREN):
+                # Object getter: get propName() { ... }
+                if (key in ("get", "set")
+                        and self._current().type in self._IDENTIFIER_LIKE
+                        and not self._check(TokenType.COLON)
+                        and not self._check(TokenType.LPAREN)
+                        and not self._check(TokenType.COMMA)
+                        and not self._check(TokenType.RBRACE)):
+                    accessor_kind = key
+                    name_tok2 = self._expect_ident()
+                    self._expect(TokenType.LPAREN)
+                    if accessor_kind == "get":
+                        self._expect(TokenType.RPAREN)
+                        acc_body = self._parse_block()
+                        fn_val = AnonymousFunctionExpression(
+                            params=[], return_type=None, body=acc_body,
+                            defaults={}, rest_param=None,
+                            line=name_tok2.line, column=name_tok2.column,
+                        )
+                        getter_key = f"__getter__{name_tok2.value}"
+                        pairs[getter_key] = fn_val
+                        entries.append((getter_key, fn_val))
+                    else:  # set
+                        param_name = self._expect_ident().value
+                        self._expect(TokenType.RPAREN)
+                        acc_body = self._parse_block()
+                        fn_val = AnonymousFunctionExpression(
+                            params=[(param_name, None)], return_type=None, body=acc_body,
+                            defaults={}, rest_param=None,
+                            line=name_tok2.line, column=name_tok2.column,
+                        )
+                        setter_key = f"__setter__{name_tok2.value}"
+                        pairs[setter_key] = fn_val
+                        entries.append((setter_key, fn_val))
+                elif self._check(TokenType.LPAREN):
                     # Method shorthand: { greet(x) { return x } }
                     self._advance()  # consume '('
                     params: list[tuple[str, str | None]] = []
@@ -2849,13 +2953,17 @@ class Parser:
                         defaults=defaults, rest_param=rest_param,
                         line=key_tok.line, column=key_tok.column,
                     )
+                    pairs[key] = value
+                    entries.append((key, value))
                 elif self._match(TokenType.COLON):
                     value = self._parse_expression()
+                    pairs[key] = value
+                    entries.append((key, value))
                 else:
                     # Shorthand: { name } → { name: name }
                     value = Identifier(name=key, line=key_tok.line, column=key_tok.column)
-                pairs[key] = value
-                entries.append((key, value))
+                    pairs[key] = value
+                    entries.append((key, value))
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACE)

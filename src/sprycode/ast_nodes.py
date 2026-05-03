@@ -570,6 +570,7 @@ class ForStatement(Node):
     iterable: Node | None = None
     body: Block | None = None
     label: str | None = None  # set by LabeledStatement when wrapping this loop
+    is_async: bool = False  # for await...of loops
 
 
 @dataclass
@@ -951,3 +952,29 @@ class ClassExpression(Node):
     name: str = "anonymous"
     superclass: str | None = None
     body: "Block | None" = None
+
+
+@dataclass
+class AwaitExpression(Node):
+    """await <expr> — unwraps SpryPromise; synchronous passthrough in SpryCode."""
+    operand: "Node | None" = None
+
+
+@dataclass
+class OptionalCallExpression(Node):
+    """fn?.() — calls fn only if it is not null/None; returns null otherwise."""
+    callee: "Node | None" = None
+    args: list = field(default_factory=list)
+
+
+@dataclass
+class ComputedMethodDeclaration(Node):
+    """[Symbol.iterator]() { ... } — class method with computed name."""
+    key: "Node | None" = None        # expression yielding the key
+    params: list = field(default_factory=list)
+    body: "Block | None" = None
+    is_static: bool = False
+    is_generator: bool = False
+    is_async: bool = False
+    defaults: dict = field(default_factory=dict)
+    rest_param: "str | None" = None

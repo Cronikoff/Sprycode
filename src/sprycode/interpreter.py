@@ -129,6 +129,9 @@ from .ast_nodes import (
     GetterDeclaration,
     SetterDeclaration,
     TaggedTemplateExpression,
+    AwaitExpression,
+    OptionalCallExpression,
+    ComputedMethodDeclaration,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -428,9 +431,12 @@ class BoundMethod:
 class SpryRegex:
     """Runtime representation of a regex literal (compiled re pattern)."""
 
-    def __init__(self, pattern: "re.Pattern[str]", global_flag: bool = False) -> None:
+    def __init__(self, pattern: "re.Pattern[str]", global_flag: bool = False,
+                 flags_str: str = "") -> None:
         self.pattern = pattern
         self.global_flag = global_flag
+        self.flags_str = flags_str  # original JS flag string e.g. "gi"
+        self.lastIndex = 0  # for global/sticky exec iteration
 
     def test(self, text: str) -> bool:
         return bool(self.pattern.search(text))
@@ -443,7 +449,17 @@ class SpryRegex:
         return SpryRegexMatch(groups, m.start(), text)
 
     def exec(self, text: str) -> Any:
-        return self.match(text)
+        if self.global_flag and self.lastIndex > 0:
+            m = self.pattern.search(text, self.lastIndex)
+        else:
+            m = self.pattern.search(text)
+        if m is None:
+            self.lastIndex = 0
+            return None
+        if self.global_flag:
+            self.lastIndex = m.end()
+        groups = [m.group(0)] + list(m.groups())
+        return SpryRegexMatch(groups, m.start(), text)
 
     def replace(self, text: str, replacement: str, count: int = 1) -> str:
         actual_count = 0 if self.global_flag else count
@@ -984,7 +1000,7 @@ class Interpreter:
         env.define("Reflect", _ReflectNamespace())
 
         # globalThis — reference to the interpreter's global env dict
-        env.define("globalThis", {"__type__": "GlobalThis"})
+        env.define("globalThis", {"__type__": "GlobalThis", "undefined": None})
 
         # structuredClone — deep clone via json round-trip
         def _structured_clone(val: Any) -> Any:
@@ -1288,6 +1304,19 @@ class Interpreter:
                         return None
                 obj.set(node.property, value)
             elif isinstance(obj, dict):
+                # Check for setter
+                setter_key = f"__setter__{node.property}"
+                if setter_key in obj:
+                    setter_fn = obj[setter_key]
+                    if isinstance(setter_fn, SpryFunction):
+                        self._call_function(setter_fn, [value], node)
+                        return None
+                    elif callable(setter_fn):
+                        try:
+                            setter_fn(value)
+                        except Exception as e:
+                            raise SpryRuntimeError(str(e), node)
+                        return None
                 obj[node.property] = value
             elif isinstance(obj, SpryClass):
                 obj._static_fields[node.property] = value
@@ -1820,6 +1849,46 @@ class Interpreter:
         if isinstance(node, CallExpression):
             return self._eval_call(node, env)
 
+        if isinstance(node, OptionalCallExpression):
+            callee = self._eval(node.callee, env)
+            if callee is None:
+                return None
+            args: list[Any] = []
+            for a in node.args:
+                if isinstance(a, SpreadElement):
+                    spread_val = self._eval(a.expr, env)
+                    if isinstance(spread_val, (list, tuple)):
+                        args.extend(spread_val)
+                    else:
+                        args.append(spread_val)
+                else:
+                    args.append(self._eval(a, env))
+            py_args = [self._to_py_callable(a, env) for a in args]
+            if isinstance(callee, SpryClass):
+                return self._construct_class(callee, args, node)
+            if callable(callee) and not isinstance(callee, (SpryFunction,)):
+                try:
+                    return callee(*py_args)
+                except Exception as e:
+                    raise SpryRuntimeError(str(e), node)
+            if isinstance(callee, BoundMethod):
+                return self._call_bound_method(callee, args, node)
+            if isinstance(callee, SpryFunction):
+                return self._call_function(callee, args, node)
+            if isinstance(callee, SpryLambda):
+                return self._apply_lambda(callee, args[0] if args else None, env)
+            if isinstance(callee, SpryMultiLambda):
+                return self._apply_multi_lambda(callee, args, env)
+            raise SpryRuntimeError(f"Optional call target is not callable: {type(callee).__name__}", node)
+
+        if isinstance(node, AwaitExpression):
+            val = self._eval(node.operand, env)
+            if isinstance(val, SpryPromise):
+                if val._settled:
+                    return val._value
+                raise SpryRuntimeError(str(val._error) if val._error else "Promise rejected", node)
+            return val
+
         if isinstance(node, MemberExpression):
             return self._eval_member(node, env)
 
@@ -1842,6 +1911,12 @@ class Interpreter:
         if isinstance(node, IndexExpression):
             obj = self._eval(node.object, env)
             idx = self._eval(node.index, env)
+            # SpryInstance indexed with SprySymbol — use string repr as key
+            if isinstance(obj, SpryInstance) and isinstance(idx, SprySymbol):
+                key_str = str(idx)
+                if key_str in obj.fields:
+                    return obj.fields[key_str]
+                raise SpryRuntimeError(f"Key {key_str!r} not found in object", node)
             try:
                 return obj[idx]
             except (KeyError, IndexError, TypeError) as e:
@@ -1917,7 +1992,7 @@ class Interpreter:
             for f in node.flags:
                 re_flags |= flags_map.get(f, 0)
             compiled = re.compile(node.pattern, re_flags)
-            return SpryRegex(compiled, global_flag=is_global)
+            return SpryRegex(compiled, global_flag=is_global, flags_str=node.flags)
 
         if isinstance(node, AnonymousFunctionExpression):
             return SpryFunction(
@@ -1960,7 +2035,12 @@ class Interpreter:
             return self._eval_postfix(node, env)
 
         if isinstance(node, TypeofExpression):
-            val = self._eval(node.operand, env)
+            try:
+                val = self._eval(node.operand, env)
+            except SpryRuntimeError as e:
+                if "Undefined variable" in str(e) or "not defined" in str(e):
+                    return "undefined"
+                raise
             return self._spry_typeof(val)
 
         if isinstance(node, InstanceofExpression):
@@ -2278,7 +2358,7 @@ class Interpreter:
             if prop == "test":
                 return lambda text: obj.test(str(text))
             if prop in ("match", "exec"):
-                return lambda text: obj.match(str(text))
+                return lambda text: obj.exec(str(text))
             if prop == "replace":
                 return lambda text, repl, count=1: obj.replace(str(text), str(repl), count)
             if prop == "replaceAll":
@@ -2290,7 +2370,21 @@ class Interpreter:
             if prop == "source":
                 return obj.pattern.pattern
             if prop == "flags":
-                return obj.pattern.flags
+                return obj.flags_str
+            if prop == "lastIndex":
+                return obj.lastIndex
+            if prop == "global":
+                return obj.global_flag
+            if prop == "ignoreCase":
+                return "i" in obj.flags_str
+            if prop == "multiline":
+                return "m" in obj.flags_str
+            if prop == "sticky":
+                return "y" in obj.flags_str
+            if prop == "unicode":
+                return "u" in obj.flags_str
+            if prop == "dotAll":
+                return "s" in obj.flags_str
             raise SpryRuntimeError(f"Regex has no property {prop!r}", node)
 
         if isinstance(obj, SpryResult):
@@ -2349,6 +2443,17 @@ class Interpreter:
                 return obj.currency
 
         if isinstance(obj, dict):
+            # Check for getter before regular key lookup
+            getter_key = f"__getter__{prop}"
+            if getter_key in obj:
+                getter_fn = obj[getter_key]
+                if isinstance(getter_fn, SpryFunction):
+                    return self._call_function(getter_fn, [], node)
+                elif callable(getter_fn):
+                    try:
+                        return getter_fn()
+                    except Exception as e:
+                        raise SpryRuntimeError(str(e), node)
             if prop in obj:
                 return obj[prop]
             # Built-in dict properties/methods
@@ -2630,11 +2735,18 @@ class Interpreter:
                         else:
                             result_f.append(item)
                     return result_f
+                def _flat_with_depth(depth: Any = 1) -> list:
+                    d = depth
+                    if isinstance(d, float):
+                        d = 10000 if math.isinf(d) else int(d)
+                    else:
+                        d = int(d)
+                    return _do_flat(obj, d)
                 # Return a _CallableList so `list.flat` works as a property (depth=1)
                 # AND `list.flat(depth)` works as a call
                 return _CallableList(
                     _do_flat(obj, 1),
-                    lambda depth=1: _do_flat(obj, int(depth)),
+                    _flat_with_depth,
                 )
             if prop == "shuffle":
                 import random as _random
@@ -3128,6 +3240,17 @@ class Interpreter:
                     if prop not in obj._static_fields:
                         obj._static_fields[prop] = val
                     return obj._static_fields[prop]
+                # Static getter: GetterDeclaration with name __static__<prop>
+                if isinstance(stmt, GetterDeclaration) and stmt.name == f"__static__{prop}":
+                    getter_fn = SpryFunction(
+                        name=f"get_{prop}",
+                        params=[],
+                        body=stmt.body,  # type: ignore
+                        closure=cls_env,
+                        defaults={},
+                        rest_param=None,
+                    )
+                    return self._call_function(getter_fn, [], node)
             raise SpryRuntimeError(f"Class {obj.name!r} has no static member {prop!r}", node)
 
         if isinstance(obj, SpryStruct):
@@ -4334,6 +4457,20 @@ class Interpreter:
                 )
                 fields[f"__setter__{stmt.name}"] = setter_fn
                 instance_env.define(f"__setter__{stmt.name}", setter_fn, mutable=False)
+            elif isinstance(stmt, ComputedMethodDeclaration):
+                # [Symbol.iterator]() { ... } — evaluate key and store method
+                computed_key = self._eval(stmt.key, instance_env)
+                computed_key_str = str(computed_key) if computed_key is not None else "__computed__"
+                fn = SpryFunction(
+                    name=computed_key_str,
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=instance_env,
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                fields[computed_key_str] = fn
+                instance_env.define(computed_key_str, fn, mutable=False)
 
         instance = SpryInstance(cls=cls, fields=fields)
 

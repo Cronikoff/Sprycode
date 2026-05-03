@@ -571,6 +571,8 @@ class ForStatement(Node):
     body: Block | None = None
     label: str | None = None  # set by LabeledStatement when wrapping this loop
     is_async: bool = False  # for await...of loops
+    _list_destruct_node: "Any | None" = None  # for let [a,b] of ...
+    _obj_destruct_node: "Any | None" = None   # for let {a,b} of ...
 
 
 @dataclass

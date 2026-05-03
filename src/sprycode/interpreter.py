@@ -564,6 +564,12 @@ class SpryIterator:
         return f"Iterator({self._items!r})"
 
 
+class _GeneratorThrowSentinel:
+    """Sentinel sent via the generator's send queue to inject an error."""
+    def __init__(self, error: Any) -> None:
+        self.error = error
+
+
 class SpryGenerator:
     """Runtime generator object produced by calling a generator function (fn*).
 
@@ -607,6 +613,9 @@ class SpryGenerator:
         def _yield_hook(value: Any) -> Any:
             yield_q.put(("yield", value))
             sent = send_q.get()
+            if isinstance(sent, _GeneratorThrowSentinel):
+                # Wrap in SpryUserError so the generator's try/catch can handle it
+                raise SpryUserError(sent.error)
             return sent  # becomes the result of the yield expression
 
         # Install thread-local hook so _eval intercepts yield in THIS thread only
@@ -679,9 +688,38 @@ class SpryGenerator:
         self._done = True
         return {"value": val, "done": True}
 
-    def spry_throw(self, error: Any = None) -> None:
-        """Throw an error into the generator."""
-        raise SpryRuntimeError(str(error) if error is not None else "Generator error")
+    def spry_throw(self, error: Any = None) -> dict:
+        """Throw an error into the generator at the current yield point.
+
+        If the generator's try/catch handles the error, the next yielded value
+        is returned as {value, done: False}.  If the error propagates out of the
+        generator entirely, it is re-raised to the caller.
+        """
+        if self._done:
+            raise error if error is not None else SpryRuntimeError("Generator already finished")
+        if not self._started:
+            # Generator hasn't started yet — just raise immediately
+            self._done = True
+            if error is not None:
+                raise error
+            raise SpryRuntimeError("Generator error")
+        # Inject the error via the send queue (wrapped in sentinel)
+        self._send_q.put(_GeneratorThrowSentinel(error))
+        try:
+            kind, val = self._yield_q.get(timeout=10)
+        except Exception:
+            self._done = True
+            return {"value": None, "done": True}
+        if kind == "yield":
+            return {"value": val, "done": False}
+        if kind in ("done", "return"):
+            self._done = True
+            return {"value": val if kind == "return" else None, "done": True}
+        if kind == "error":
+            self._done = True
+            raise val
+        self._done = True
+        return {"value": None, "done": True}
 
     def __repr__(self) -> str:
         return f"<generator {self._fn.name}>"
@@ -2133,6 +2171,11 @@ class Interpreter:
         if op == "+":
             if isinstance(left, (SpryMoney,)) and isinstance(right, (SpryMoney,)):
                 return left + right
+            # When one operand is a string, coerce the other to string (JS-style)
+            if isinstance(left, str) and not isinstance(right, str):
+                right = self._builtin_str(right)
+            elif isinstance(right, str) and not isinstance(left, str):
+                left = self._builtin_str(left)
             return left + right
         if op == "-":
             if isinstance(left, SpryMoney) and isinstance(right, SpryMoney):
@@ -3837,16 +3880,24 @@ class Interpreter:
         # Destructured loop: for i, v in enumerate(list)
         multi_vars = node.vars if node.vars else [node.var]
         destructured = len(multi_vars) > 1
-        # Object destructuring loop: for {x, y} of list
+        # Object destructuring loop: for {x, y} of list  or  for let {x, y} of list
         obj_destruct_vars: list[str] | None = None
-        if len(multi_vars) == 1 and multi_vars[0].startswith("__obj_destruct__:"):
+        list_destruct_node: Any = node._list_destruct_node  # type: ignore[attr-defined]
+        obj_destruct_node: Any = node._obj_destruct_node    # type: ignore[attr-defined]
+        if list_destruct_node is None and len(multi_vars) == 1 and multi_vars[0].startswith("__obj_destruct__:"):
             field_names_str = multi_vars[0][len("__obj_destruct__:"):]
             obj_destruct_vars = [f for f in field_names_str.split(",") if f]
             destructured = False
 
         for item in iterable:
             child = env.child()
-            if obj_destruct_vars is not None:
+            if list_destruct_node is not None:
+                # for let [a, b] of list — bind via list destructure pattern
+                self._apply_list_destructure(list_destruct_node, item if isinstance(item, (list, tuple)) else [item], child, list_destruct_node.mutable)
+            elif obj_destruct_node is not None:
+                # for let {a, b} of list
+                self._apply_object_destructure(obj_destruct_node, item, child, obj_destruct_node.mutable)
+            elif obj_destruct_vars is not None:
                 # Bind object fields as loop variables
                 obj = item if isinstance(item, dict) else (item.fields if isinstance(item, SpryInstance) else {})
                 for fname in obj_destruct_vars:
@@ -4300,6 +4351,9 @@ class Interpreter:
             )
         for i, name in enumerate(node.names):
             item = val[i] if i < len(val) else None
+            # Skip holes: [a, , b] — the comma with no name skips an element
+            if name == "__hole__":
+                continue
             if i in node.nested:
                 # Nested destructuring: [[a, b], c] or [{x}, c]
                 nested_node = node.nested[i]
@@ -5104,9 +5158,12 @@ class _ArrayNamespace:
         elif isinstance(iterable, str):
             result = list(iterable)
         elif isinstance(iterable, dict) and "length" in iterable:
-            # Array-like: {length: N} → [undefined × N]
+            # Array-like: {length: N, "0": x, "1": y, ...}
             n = int(iterable["length"])
-            result = [None] * max(n, 0)
+            result = []
+            for i in range(max(n, 0)):
+                # Try numeric string key first, then integer key
+                result.append(iterable.get(str(i), iterable.get(i, None)))
         else:
             try:
                 result = list(iterable)

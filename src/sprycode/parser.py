@@ -1154,8 +1154,51 @@ class Parser:
             except Exception:
                 self.pos = saved_pos
         # for let x of ... / for var x of ... (skip optional let/var before iterator var)
+        let_var_tok = None
         if self._check(TokenType.LET, TokenType.VAR):
-            self._advance()
+            let_var_tok = self._advance()
+        # Handle array destructure: for let [a, b] of list  or  for [a, b] of list
+        if self._check(TokenType.LBRACKET):
+            dest_tok = let_var_tok if let_var_tok is not None else tok
+            mutable = (let_var_tok is not None and let_var_tok.type == TokenType.VAR)
+            dest_node = self._parse_list_destructure(dest_tok, mutable)
+            dest_node.value = None  # will be filled at runtime
+            synth_name = "__list_destruct_for__:" + ",".join(dest_node.names)
+            if (self._check(TokenType.IDENTIFIER) and self._current().value == "of"):
+                self._advance()
+            else:
+                self._expect(TokenType.IN)
+            iterable = self._parse_value_expression()
+            body = self._parse_block()
+            return ForStatement(
+                var=synth_name,
+                vars=[synth_name],
+                iterable=iterable, body=body,
+                is_async=is_async,
+                _list_destruct_node=dest_node,
+                line=tok.line, column=tok.column,
+            )
+        # Handle object destructure: for let {a, b} of list  or  for {a, b} of list
+        if self._check(TokenType.LBRACE):
+            dest_tok2 = let_var_tok if let_var_tok is not None else tok
+            mutable2 = (let_var_tok is not None and let_var_tok.type == TokenType.VAR)
+            dest_node2 = self._parse_object_destructure(dest_tok2, mutable2)
+            dest_node2.value = None
+            synth_name2 = "__obj_destruct_for__:" + ",".join(dest_node2.names)
+            if (self._check(TokenType.IDENTIFIER) and self._current().value == "of"):
+                self._advance()
+            else:
+                self._expect(TokenType.IN)
+            iterable = self._parse_value_expression()
+            body = self._parse_block()
+            return ForStatement(
+                var=synth_name2,
+                vars=[synth_name2],
+                iterable=iterable, body=body,
+                is_async=is_async,
+                _obj_destruct_node=dest_node2,
+                line=tok.line, column=tok.column,
+            )
         var_tok = self._expect_ident()
         # Destructured: for i, v in enumerate(...)
         extra_vars: list[str] = []
@@ -1736,6 +1779,11 @@ class Parser:
                         self._current(),
                     )
                 break  # rest must be last
+            # Elision / hole: [a, , b] — a comma with no name skips an element
+            if self._check(TokenType.COMMA):
+                names.append("__hole__")
+                self._advance()  # consume the comma
+                continue
             idx = len(names)
             if self._check(TokenType.LBRACKET):
                 # Nested array destructuring: [[a, b], c]

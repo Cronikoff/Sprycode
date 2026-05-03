@@ -273,10 +273,10 @@ class TestJsonParseReviver:
         assert val(i, "v") == [1, 2, 3]
 
     def test_parse_with_reviver_doubles_numbers(self):
-        src = 'let revived = JSON.parse(\'{"x": 5}\', fn(k, v) { v })'
-        # Test without mutation first - just parse
-        i = run('let v = JSON.parse(\'{"x": 5}\')')
-        assert val(i, "v") == {"x": 5}
+        i = run(
+            "let revived = JSON.parse('[1, 2, 3]', fn(k, v) { return v })"
+        )
+        assert val(i, "revived") == [1, 2, 3]
 
     def test_parse_reviver_receives_root(self):
         # Reviver called with "" key for the root value, returns result

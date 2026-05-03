@@ -16,8 +16,7 @@ Covers:
     Both brace and colon styles, default branch with braces
 """
 
-import pytest
-from sprycode.interpreter import Interpreter, SpryRuntimeError
+from sprycode.interpreter import Interpreter
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
 

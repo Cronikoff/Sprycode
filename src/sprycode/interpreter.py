@@ -6790,10 +6790,6 @@ class _CryptoNamespace:
         """Return the SubtleCrypto namespace."""
         return _SubtleCryptoNamespace()
 
-    @property
-    def _subtle(self) -> "_SubtleCryptoNamespace":
-        return _SubtleCryptoNamespace()
-
     def __repr__(self) -> str:
         return "crypto"
 
@@ -8209,7 +8205,7 @@ class _SubtleCryptoNamespace:
     def _to_bytes(self, data: Any) -> bytes:
         if isinstance(data, (bytes, bytearray)):
             return bytes(data)
-        if isinstance(data, SpryArrayBuffer):
+        if isinstance(data, (SpryArrayBuffer, SprySharedArrayBuffer)):
             return bytes(data._data)
         if isinstance(data, SpryTypedArray):
             return bytes(int(x) & 0xFF for x in data._data)
@@ -8242,27 +8238,40 @@ class _SubtleCryptoNamespace:
         return key
 
     def sign(self, algorithm: Any, key: Any, data: Any) -> list:
-        """Stub — HMAC sign using SHA-256."""
+        """Stub — HMAC-SHA256 sign. Requires key.raw to contain the key bytes."""
         import hashlib as _hl
         import hmac as _hmac
         raw = self._to_bytes(data)
-        key_bytes = b"secret"
-        if isinstance(key, dict) and "raw" in key:
-            kb = key["raw"]
-            key_bytes = self._to_bytes(kb)
+        if not isinstance(key, dict) or "raw" not in key:
+            raise SpryRuntimeError(
+                "SubtleCrypto.sign: key must be a dict with a 'raw' property (bytes/list)", None
+            )
+        key_bytes = self._to_bytes(key["raw"])
         return list(_hmac.new(key_bytes, raw, _hl.sha256).digest())
 
     def verify(self, algorithm: Any, key: Any, signature: Any, data: Any) -> bool:
-        """Stub — always returns True for compatibility."""
-        return True
+        """Stub — constant-time HMAC-SHA256 verify. Requires key.raw."""
+        import hashlib as _hl
+        import hmac as _hmac
+        if not isinstance(key, dict) or "raw" not in key:
+            return False
+        raw = self._to_bytes(data)
+        key_bytes = self._to_bytes(key["raw"])
+        expected = _hmac.new(key_bytes, raw, _hl.sha256).digest()
+        sig_bytes = bytes(self._to_bytes(signature))
+        return _hmac.compare_digest(expected, sig_bytes)
 
     def encrypt(self, algorithm: Any, key: Any, data: Any) -> list:
-        """Stub — returns data unchanged."""
-        return list(self._to_bytes(data))
+        """Stub — encryption not implemented; raises to avoid false sense of security."""
+        raise SpryRuntimeError(
+            "SubtleCrypto.encrypt: encryption is not implemented in SpryCode", None
+        )
 
     def decrypt(self, algorithm: Any, key: Any, data: Any) -> list:
-        """Stub — returns data unchanged."""
-        return list(self._to_bytes(data))
+        """Stub — decryption not implemented; raises to avoid false sense of security."""
+        raise SpryRuntimeError(
+            "SubtleCrypto.decrypt: decryption is not implemented in SpryCode", None
+        )
 
     def deriveBits(self, algorithm: Any, key: Any, length: Any) -> list:
         """Stub — returns zero bytes of length bits."""

@@ -114,7 +114,7 @@ let v = key.extractable
     def test_sign_returns_bytes(self):
         i = run("""
 let subtle = crypto.subtle()
-let key = subtle.generateKey("HMAC", true, [])
+let key = { raw: [107, 101, 121] }
 let sig = subtle.sign("HMAC", key, "data")
 let v = len(sig)
 """)
@@ -123,24 +123,25 @@ let v = len(sig)
     def test_verify_returns_bool(self):
         i = run("""
 let subtle = crypto.subtle()
-let v = subtle.verify("HMAC", {}, [], "data")
+let key = { raw: [107, 101, 121] }
+let sig = subtle.sign("HMAC", key, "data")
+let v = subtle.verify("HMAC", key, sig, "data")
 """)
         assert val(i, "v") is True
 
-    def test_encrypt_returns_bytes(self):
-        i = run("""
+    def test_encrypt_raises(self):
+        with pytest.raises(Exception):
+            run("""
 let subtle = crypto.subtle()
-let v = len(subtle.encrypt("AES-GCM", {}, "hello"))
+subtle.encrypt("AES-GCM", {}, "hello")
 """)
-        assert val(i, "v") == 5  # stub returns input as-is
 
-    def test_decrypt_returns_bytes(self):
-        i = run("""
+    def test_decrypt_raises(self):
+        with pytest.raises(Exception):
+            run("""
 let subtle = crypto.subtle()
-let data = [104, 101, 108]
-let v = len(subtle.decrypt("AES-GCM", {}, data))
+subtle.decrypt("AES-GCM", {}, [1,2,3])
 """)
-        assert val(i, "v") == 3
 
     def test_derive_bits(self):
         i = run("""
@@ -236,6 +237,8 @@ class TestFile:
         f = i.globals.get("f")
         assert isinstance(f, SpryFile)
         assert isinstance(f.lastModified, int)
+        assert f.lastModified > 0  # positive timestamp
+        assert f.lastModified > 1_000_000_000_000  # after year 2001 (ms)
 
     def test_file_last_modified_custom(self):
         i = run("let f = File.new([\"hi\"], \"a.txt\", { lastModified: 1000 })\nlet v = f.lastModified")

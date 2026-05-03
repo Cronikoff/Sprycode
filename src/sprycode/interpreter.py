@@ -880,6 +880,7 @@ class Interpreter:
         for _ename in ("Error", "TypeError", "RangeError", "SyntaxError",
                        "ReferenceError", "EvalError", "URIError"):
             env.define(_ename, _ErrorNamespace(_ename))
+        env.define("AggregateError", _AggregateErrorNamespace())
 
         # Date namespace
         env.define("Date", _DateNamespace())
@@ -976,14 +977,20 @@ class Interpreter:
 
         # ArrayBuffer and TypedArrays
         env.define("ArrayBuffer", _ArrayBufferNamespace())
+        env.define("SharedArrayBuffer", _SharedArrayBufferNamespace())
+        env.define("DataView", _DataViewNamespace())
+        env.define("Atomics", _AtomicsNamespace())
         env.define("Int8Array", _TypedArrayNamespace("Int8Array", 1))
         env.define("Uint8Array", _TypedArrayNamespace("Uint8Array", 1))
+        env.define("Uint8ClampedArray", _Uint8ClampedArrayNamespace())
         env.define("Int16Array", _TypedArrayNamespace("Int16Array", 2))
         env.define("Uint16Array", _TypedArrayNamespace("Uint16Array", 2))
         env.define("Int32Array", _TypedArrayNamespace("Int32Array", 4))
         env.define("Uint32Array", _TypedArrayNamespace("Uint32Array", 4))
         env.define("Float32Array", _TypedArrayNamespace("Float32Array", 4))
         env.define("Float64Array", _TypedArrayNamespace("Float64Array", 8))
+        env.define("BigInt64Array", _TypedArrayNamespace("BigInt64Array", 8))
+        env.define("BigUint64Array", _TypedArrayNamespace("BigUint64Array", 8))
 
         # Money helper
         env.define("money", _MoneyHelper())
@@ -3021,9 +3028,11 @@ class Interpreter:
         if isinstance(obj, SpryProxy):
             return obj._spry_get_prop(prop)
 
-        if isinstance(obj, (SpryURL, SpryURLSearchParams, SpryArrayBuffer, SpryTypedArray,
+        if isinstance(obj, (SpryURL, SpryURLSearchParams, SpryArrayBuffer, SprySharedArrayBuffer,
+                             SpryTypedArray, SpryDataView,
                              SpryTextEncoder, SpryTextDecoder,
-                             SpryAbortController, SpryAbortSignal)):
+                             SpryAbortController, SpryAbortSignal,
+                             _AtomicsNamespace)):
             return obj._spry_get_prop(prop)
 
         if isinstance(obj, SpryErrorObject):
@@ -7577,20 +7586,286 @@ class _ArrayBufferNamespace:
         return SpryArrayBuffer(int(byte_length))
 
     def isView(self, obj: Any) -> bool:
-        return isinstance(obj, SpryTypedArray)
+        return isinstance(obj, (SpryTypedArray, SpryDataView))
 
     def __repr__(self) -> str:
         return "ArrayBuffer"
 
 
+# ---------------------------------------------------------------------------
+# SharedArrayBuffer
+# ---------------------------------------------------------------------------
+
+class SprySharedArrayBuffer:
+    """SharedArrayBuffer — like ArrayBuffer but intended for shared use across agents.
+    In SpryCode's single-threaded interpreter, this is functionally equivalent to
+    ArrayBuffer."""
+
+    def __init__(self, byte_length: int) -> None:
+        self._data = bytearray(int(byte_length))
+
+    @property
+    def byteLength(self) -> int:
+        return len(self._data)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "byteLength":
+            return self.byteLength
+        raise SpryRuntimeError(f"SharedArrayBuffer has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"SharedArrayBuffer({self.byteLength})"
+
+
+class _SharedArrayBufferNamespace:
+    def new(self, byte_length: Any) -> SprySharedArrayBuffer:
+        return SprySharedArrayBuffer(int(byte_length))
+
+    def __call__(self, byte_length: Any = 0) -> SprySharedArrayBuffer:
+        return SprySharedArrayBuffer(int(byte_length))
+
+    def __repr__(self) -> str:
+        return "SharedArrayBuffer"
+
+
+# ---------------------------------------------------------------------------
+# DataView
+# ---------------------------------------------------------------------------
+
+import struct as _struct_mod
+
+
+class SpryDataView:
+    """DataView — read/write typed data at byte offsets in an ArrayBuffer."""
+
+    def __init__(self, buffer: Any, byte_offset: Any = 0, byte_length: Any = None) -> None:
+        if not isinstance(buffer, (SpryArrayBuffer, SprySharedArrayBuffer)):
+            raise SpryRuntimeError("DataView requires an ArrayBuffer or SharedArrayBuffer", None)
+        self._buffer = buffer
+        self._byte_offset = int(byte_offset)
+        buf_len = len(buffer._data)
+        if byte_length is None:
+            self._byte_length = buf_len - self._byte_offset
+        else:
+            self._byte_length = int(byte_length)
+
+    @property
+    def buffer(self) -> Any:
+        return self._buffer
+
+    @property
+    def byteOffset(self) -> int:
+        return self._byte_offset
+
+    @property
+    def byteLength(self) -> int:
+        return self._byte_length
+
+    def _read(self, fmt: str, byte_offset: Any, little_endian: Any = False) -> Any:
+        off = self._byte_offset + int(byte_offset)
+        size = _struct_mod.calcsize(fmt)
+        raw = bytes(self._buffer._data[off:off + size])
+        order = "<" if little_endian else ">"
+        return _struct_mod.unpack(order + fmt, raw)[0]
+
+    def _write(self, fmt: str, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        off = self._byte_offset + int(byte_offset)
+        size = _struct_mod.calcsize(fmt)
+        order = "<" if little_endian else ">"
+        raw = _struct_mod.pack(order + fmt, value)
+        self._buffer._data[off:off + size] = raw
+
+    def getInt8(self, byte_offset: Any) -> int:
+        return self._read("b", byte_offset)
+
+    def getUint8(self, byte_offset: Any) -> int:
+        return self._read("B", byte_offset)
+
+    def getInt16(self, byte_offset: Any, little_endian: Any = False) -> int:
+        return self._read("h", byte_offset, little_endian)
+
+    def getUint16(self, byte_offset: Any, little_endian: Any = False) -> int:
+        return self._read("H", byte_offset, little_endian)
+
+    def getInt32(self, byte_offset: Any, little_endian: Any = False) -> int:
+        return self._read("i", byte_offset, little_endian)
+
+    def getUint32(self, byte_offset: Any, little_endian: Any = False) -> int:
+        return self._read("I", byte_offset, little_endian)
+
+    def getFloat32(self, byte_offset: Any, little_endian: Any = False) -> float:
+        return float(self._read("f", byte_offset, little_endian))
+
+    def getFloat64(self, byte_offset: Any, little_endian: Any = False) -> float:
+        return float(self._read("d", byte_offset, little_endian))
+
+    def getBigInt64(self, byte_offset: Any, little_endian: Any = False) -> int:
+        return self._read("q", byte_offset, little_endian)
+
+    def getBigUint64(self, byte_offset: Any, little_endian: Any = False) -> int:
+        return self._read("Q", byte_offset, little_endian)
+
+    def setInt8(self, byte_offset: Any, value: Any) -> None:
+        self._write("b", byte_offset, int(value))
+
+    def setUint8(self, byte_offset: Any, value: Any) -> None:
+        self._write("B", byte_offset, int(value) & 0xFF)
+
+    def setInt16(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("h", byte_offset, int(value), little_endian)
+
+    def setUint16(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("H", byte_offset, int(value) & 0xFFFF, little_endian)
+
+    def setInt32(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("i", byte_offset, int(value), little_endian)
+
+    def setUint32(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("I", byte_offset, int(value) & 0xFFFFFFFF, little_endian)
+
+    def setFloat32(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("f", byte_offset, float(value), little_endian)
+
+    def setFloat64(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("d", byte_offset, float(value), little_endian)
+
+    def setBigInt64(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("q", byte_offset, int(value), little_endian)
+
+    def setBigUint64(self, byte_offset: Any, value: Any, little_endian: Any = False) -> None:
+        self._write("Q", byte_offset, int(value), little_endian)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods = {
+            "buffer": self.buffer, "byteOffset": self.byteOffset, "byteLength": self.byteLength,
+            "getInt8": self.getInt8, "getUint8": self.getUint8,
+            "getInt16": self.getInt16, "getUint16": self.getUint16,
+            "getInt32": self.getInt32, "getUint32": self.getUint32,
+            "getFloat32": self.getFloat32, "getFloat64": self.getFloat64,
+            "getBigInt64": self.getBigInt64, "getBigUint64": self.getBigUint64,
+            "setInt8": self.setInt8, "setUint8": self.setUint8,
+            "setInt16": self.setInt16, "setUint16": self.setUint16,
+            "setInt32": self.setInt32, "setUint32": self.setUint32,
+            "setFloat32": self.setFloat32, "setFloat64": self.setFloat64,
+            "setBigInt64": self.setBigInt64, "setBigUint64": self.setBigUint64,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        raise SpryRuntimeError(f"DataView has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"DataView(byteLength={self._byte_length})"
+
+
+class _DataViewNamespace:
+    """DataView global namespace."""
+
+    def new(self, buffer: Any, byte_offset: Any = 0, byte_length: Any = None) -> SpryDataView:
+        return SpryDataView(buffer, byte_offset, byte_length)
+
+    def __call__(self, buffer: Any, byte_offset: Any = 0, byte_length: Any = None) -> SpryDataView:
+        return SpryDataView(buffer, byte_offset, byte_length)
+
+    def __repr__(self) -> str:
+        return "DataView"
+
+
+# ---------------------------------------------------------------------------
+# Atomics
+# ---------------------------------------------------------------------------
+
+class _AtomicsNamespace:
+    """Atomics — atomic operations on integer TypedArrays.
+    In SpryCode's single-threaded interpreter, these are synchronous."""
+
+    def load(self, arr: Any, index: Any) -> Any:
+        return arr.get(index)
+
+    def store(self, arr: Any, index: Any, value: Any) -> Any:
+        arr.set(index, value)
+        return value
+
+    def add(self, arr: Any, index: Any, value: Any) -> Any:
+        old = arr.get(index)
+        arr.set(index, int(old) + int(value))
+        return old
+
+    def sub(self, arr: Any, index: Any, value: Any) -> Any:
+        old = arr.get(index)
+        arr.set(index, int(old) - int(value))
+        return old
+
+    def and_(self, arr: Any, index: Any, value: Any) -> Any:
+        old = arr.get(index)
+        arr.set(index, int(old) & int(value))
+        return old
+
+    def or_(self, arr: Any, index: Any, value: Any) -> Any:
+        old = arr.get(index)
+        arr.set(index, int(old) | int(value))
+        return old
+
+    def xor(self, arr: Any, index: Any, value: Any) -> Any:
+        old = arr.get(index)
+        arr.set(index, int(old) ^ int(value))
+        return old
+
+    def exchange(self, arr: Any, index: Any, value: Any) -> Any:
+        old = arr.get(index)
+        arr.set(index, value)
+        return old
+
+    def compareExchange(self, arr: Any, index: Any, expected_value: Any, replacement_value: Any) -> Any:
+        current = arr.get(index)
+        if current == expected_value:
+            arr.set(index, replacement_value)
+        return current
+
+    def isLockFree(self, size: Any) -> bool:
+        return int(size) in (1, 2, 4, 8)
+
+    def wait(self, arr: Any, index: Any, value: Any, timeout: Any = None) -> str:
+        """Stub — returns 'not-equal' if value doesn't match, 'ok' otherwise."""
+        current = arr.get(index)
+        if current != value:
+            return "not-equal"
+        return "ok"
+
+    def notify(self, arr: Any, index: Any, count: Any = None) -> int:
+        """Stub — returns 0 (no waiting agents in single-threaded environment)."""
+        return 0
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _map = {
+            "load": self.load, "store": self.store,
+            "add": self.add, "sub": self.sub,
+            "and": self.and_, "or": self.or_, "xor": self.xor,
+            "exchange": self.exchange, "compareExchange": self.compareExchange,
+            "isLockFree": self.isLockFree, "wait": self.wait, "notify": self.notify,
+        }
+        if prop in _map:
+            return _map[prop]
+        try:
+            return getattr(self, prop)
+        except AttributeError:
+            raise SpryRuntimeError(f"Atomics has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "Atomics"
+
+
 class SpryTypedArray:
     """Fixed-size typed array."""
 
-    def __init__(self, type_name: str, element_size: int, length_or_buffer: Any) -> None:
+    def __init__(self, type_name: str, element_size: int, length_or_buffer: Any,
+                 byte_offset: int = 0, _buffer: Any = None) -> None:
         self._type_name = type_name
         self._element_size = element_size
-        if isinstance(length_or_buffer, SpryArrayBuffer):
+        self._byte_offset = byte_offset
+        self._backing_buffer: Any = _buffer  # SpryArrayBuffer or None
+        if isinstance(length_or_buffer, (SpryArrayBuffer, SprySharedArrayBuffer)):
             length = len(length_or_buffer._data) // element_size
+            self._backing_buffer = length_or_buffer
         elif isinstance(length_or_buffer, list):
             length = len(length_or_buffer)
         else:
@@ -7599,7 +7874,11 @@ class SpryTypedArray:
         if isinstance(length_or_buffer, list):
             for i, v in enumerate(length_or_buffer):
                 if i < length:
-                    self._data[i] = v
+                    self._data[i] = self._coerce(v)
+
+    def _coerce(self, v: Any) -> Any:
+        """Coerce a value for storage (clamped arrays override this)."""
+        return v
 
     @property
     def length(self) -> int:
@@ -7609,11 +7888,23 @@ class SpryTypedArray:
     def byteLength(self) -> int:
         return len(self._data) * self._element_size
 
+    @property
+    def byteOffset(self) -> int:
+        return self._byte_offset
+
+    @property
+    def buffer(self) -> Any:
+        if self._backing_buffer is not None:
+            return self._backing_buffer
+        # Create a synthetic buffer on demand
+        buf = SpryArrayBuffer(self.byteLength)
+        return buf
+
     def get(self, index: Any) -> Any:
         return self._data[int(index)]
 
     def set(self, index: Any, value: Any) -> None:
-        self._data[int(index)] = value
+        self._data[int(index)] = self._coerce(value)
 
     def toList(self) -> list:
         return list(self._data)
@@ -7621,14 +7912,17 @@ class SpryTypedArray:
     def fill(self, value: Any, start: Any = 0, end: Any = None) -> "SpryTypedArray":
         s = int(start)
         e = len(self._data) if end is None else int(end)
+        cv = self._coerce(value)
         for i in range(s, e):
-            self._data[i] = value
+            self._data[i] = cv
         return self
 
     def subarray(self, start: Any = 0, end: Any = None) -> "SpryTypedArray":
         s = int(start)
         e = len(self._data) if end is None else int(end)
-        result = SpryTypedArray(self._type_name, self._element_size, e - s)
+        result = SpryTypedArray(self._type_name, self._element_size, e - s,
+                                byte_offset=self._byte_offset + s * self._element_size,
+                                _buffer=self._backing_buffer)
         result._data = self._data[s:e]
         return result
 
@@ -7637,6 +7931,12 @@ class SpryTypedArray:
             return self.length
         if prop == "byteLength":
             return self.byteLength
+        if prop == "byteOffset":
+            return self.byteOffset
+        if prop == "buffer":
+            return self.buffer
+        if prop == "BYTES_PER_ELEMENT":
+            return self._element_size
         if prop == "get":
             return self.get
         if prop == "set":
@@ -7653,10 +7953,35 @@ class SpryTypedArray:
         return f"{self._type_name}({self._data!r})"
 
 
+class SpryUint8ClampedArray(SpryTypedArray):
+    """Uint8ClampedArray — clamps values to [0, 255]."""
+
+    def __init__(self, length_or_buffer: Any, byte_offset: int = 0, _buffer: Any = None) -> None:
+        super().__init__("Uint8ClampedArray", 1, length_or_buffer,
+                         byte_offset=byte_offset, _buffer=_buffer)
+
+    def _coerce(self, v: Any) -> int:
+        n = int(v) if not isinstance(v, float) else round(v)
+        return max(0, min(255, n))
+
+    def subarray(self, start: Any = 0, end: Any = None) -> "SpryUint8ClampedArray":
+        s = int(start)
+        e = len(self._data) if end is None else int(end)
+        result = SpryUint8ClampedArray(e - s,
+                                       byte_offset=self._byte_offset + s,
+                                       _buffer=self._backing_buffer)
+        result._data = self._data[s:e]
+        return result
+
+
 class _TypedArrayNamespace:
     def __init__(self, type_name: str, element_size: int) -> None:
         self._type_name = type_name
         self._element_size = element_size
+
+    @property
+    def BYTES_PER_ELEMENT(self) -> int:
+        return self._element_size
 
     def new(self, length_or_buffer: Any = 0) -> SpryTypedArray:
         return SpryTypedArray(self._type_name, self._element_size, length_or_buffer)
@@ -7669,6 +7994,14 @@ class _TypedArrayNamespace:
     def of(self, *args: Any) -> SpryTypedArray:
         return SpryTypedArray(self._type_name, self._element_size, list(args))
 
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "BYTES_PER_ELEMENT":
+            return self._element_size
+        try:
+            return getattr(self, prop)
+        except AttributeError:
+            raise AttributeError(prop)
+
     def __getattr__(self, prop: str) -> Any:
         if prop == "from":
             return self.from_
@@ -7678,17 +8011,53 @@ class _TypedArrayNamespace:
         return self._type_name
 
 
+class _Uint8ClampedArrayNamespace:
+    """Uint8ClampedArray global namespace."""
+
+    BYTES_PER_ELEMENT: int = 1
+
+    def new(self, length_or_buffer: Any = 0) -> SpryUint8ClampedArray:
+        return SpryUint8ClampedArray(length_or_buffer)
+
+    def from_(self, iterable: Any) -> SpryUint8ClampedArray:
+        items = list(iterable)
+        arr = SpryUint8ClampedArray(len(items))
+        for i, v in enumerate(items):
+            arr.set(i, v)
+        return arr
+
+    def of(self, *args: Any) -> SpryUint8ClampedArray:
+        arr = SpryUint8ClampedArray(len(args))
+        for i, v in enumerate(args):
+            arr.set(i, v)
+        return arr
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "BYTES_PER_ELEMENT":
+            return 1
+        raise AttributeError(prop)
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "from":
+            return self.from_
+        raise AttributeError(prop)
+
+    def __repr__(self) -> str:
+        return "Uint8ClampedArray"
+
+
 # ---------------------------------------------------------------------------
 # Error types
 # ---------------------------------------------------------------------------
 
 class SpryErrorObject:
-    """A structured error object with message, name, and optional stack."""
+    """A structured error object with message, name, optional stack, and optional cause."""
 
-    def __init__(self, name: str, message: str) -> None:
+    def __init__(self, name: str, message: str, cause: Any = None) -> None:
         self.name = name
         self.message = str(message)
         self.stack = f"{name}: {message}"
+        self.cause = cause
 
     def _spry_get_prop(self, prop: str) -> Any:
         if prop == "name":
@@ -7697,6 +8066,8 @@ class SpryErrorObject:
             return self.message
         if prop == "stack":
             return self.stack
+        if prop == "cause":
+            return self.cause
         if prop == "toString":
             return lambda: f"{self.name}: {self.message}"
         raise SpryRuntimeError(f"Error has no property {prop!r}", None)
@@ -7714,11 +8085,58 @@ class _ErrorNamespace:
     def __init__(self, name: str) -> None:
         self._name = name
 
-    def __call__(self, message: Any = "") -> SpryErrorObject:
-        return SpryErrorObject(self._name, str(message))
+    def __call__(self, message: Any = "", options: Any = None) -> SpryErrorObject:
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SpryErrorObject(self._name, str(message), cause=cause)
 
-    def new(self, message: Any = "") -> SpryErrorObject:
-        return SpryErrorObject(self._name, str(message))
+    def new(self, message: Any = "", options: Any = None) -> SpryErrorObject:
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SpryErrorObject(self._name, str(message), cause=cause)
 
     def __repr__(self) -> str:
         return self._name
+
+
+# ---------------------------------------------------------------------------
+# AggregateError
+# ---------------------------------------------------------------------------
+
+class SpryAggregateError(SpryErrorObject):
+    """AggregateError — an error that wraps multiple errors."""
+
+    def __init__(self, errors: list, message: str = "", cause: Any = None) -> None:
+        super().__init__("AggregateError", message, cause=cause)
+        self.errors = errors if isinstance(errors, list) else list(errors)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "errors":
+            return self.errors
+        return super()._spry_get_prop(prop)
+
+    def __repr__(self) -> str:
+        return f"AggregateError: {self.message} ({len(self.errors)} error(s))"
+
+
+class _AggregateErrorNamespace:
+    """AggregateError global."""
+
+    def __call__(self, errors: Any = None, message: Any = "", options: Any = None) -> SpryAggregateError:
+        errs = list(errors) if errors is not None else []
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SpryAggregateError(errs, str(message), cause=cause)
+
+    def new(self, errors: Any = None, message: Any = "", options: Any = None) -> SpryAggregateError:
+        errs = list(errors) if errors is not None else []
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SpryAggregateError(errs, str(message), cause=cause)
+
+    def __repr__(self) -> str:
+        return "AggregateError"

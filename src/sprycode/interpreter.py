@@ -4414,6 +4414,19 @@ class Interpreter:
 
     def _spry_instanceof(self, val: Any, type_name: str) -> bool:
         """Return True if val is an instance of the named SpryCode type."""
+        # SpryInstance: check the class name and walk the superclass chain
+        if isinstance(val, SpryInstance):
+            cls: SpryClass | None = val.cls
+            while cls is not None:
+                if cls.name == type_name:
+                    return True
+                # Check if this class extends a built-in error namespace
+                builtin_err = getattr(cls, "_builtin_error_superclass", None)
+                if builtin_err is not None and isinstance(builtin_err, _ErrorNamespace):
+                    if builtin_err._name == type_name:
+                        return True
+                cls = cls.superclass
+            return False
         actual = self._spry_typeof(val)
         # Normalize aliases
         aliases: dict[str, list[str]] = {

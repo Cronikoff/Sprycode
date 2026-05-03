@@ -2812,11 +2812,11 @@ class Parser:
             self._advance()  # consume 'class'
             name = "anonymous"
             if self._current().type in self._IDENTIFIER_LIKE:
-                name = self._expect_ident("Expected class expression name").value
+                name = self._expect_ident().value
             superclass: str | None = None
             if self._check(TokenType.EXTENDS):
                 self._advance()
-                superclass = self._expect_ident("Expected superclass name after 'extends'").value
+                superclass = self._expect_ident().value
             body = self._parse_block()
             return ClassExpression(name=name, superclass=superclass, body=body, line=tok.line, column=tok.column)
 

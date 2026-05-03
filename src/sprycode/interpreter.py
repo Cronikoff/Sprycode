@@ -273,6 +273,9 @@ class Environment:
             return self.parent.has(name)
         return False
 
+    def __getitem__(self, name: str) -> Any:
+        return self.get(name)
+
     def child(self) -> "Environment":
         return Environment(parent=self)
 
@@ -2462,6 +2465,43 @@ class Interpreter:
                 return len(obj._data) == 0
             raise SpryRuntimeError(f"Map has no property {prop!r}", node)
 
+        if isinstance(obj, SprySet):
+            if prop == "size":
+                return obj.size
+            if prop == "has":
+                return obj.has
+            if prop == "add":
+                return obj.add
+            if prop == "delete":
+                return obj.delete
+            if prop == "clear":
+                return obj.clear
+            if prop == "toList":
+                return obj.toList
+            if prop == "values":
+                return obj.values
+            if prop == "keys":
+                return obj.keys
+            if prop == "entries":
+                return obj.entries
+            if prop == "forEach":
+                return obj.forEach
+            if prop == "union":
+                return obj.union
+            if prop == "intersection":
+                return obj.intersection
+            if prop == "difference":
+                return obj.difference
+            if prop == "symmetricDifference":
+                return obj.symmetricDifference
+            if prop == "isSubsetOf":
+                return obj.isSubsetOf
+            if prop == "isSupersetOf":
+                return obj.isSupersetOf
+            if prop == "isDisjointFrom":
+                return obj.isDisjointFrom
+            raise SpryRuntimeError(f"Set has no property {prop!r}", node)
+
         if isinstance(obj, SpryWebSocket):
             if prop == "send":
                 return lambda msg: obj.send(msg)
@@ -3088,11 +3128,11 @@ class Interpreter:
                 import re as _re
                 def _str_match(pattern: Any, _obj: str = obj) -> Any:
                     if isinstance(pattern, SpryRegex):
-                        m = pattern.pattern.search(_obj)
-                        if m is None:
+                        matches = list(pattern.pattern.finditer(_obj))
+                        if not matches:
                             return None
-                        groups = [m.group(0)] + list(m.groups())
-                        return SpryRegexMatch(groups, m.start(), _obj)
+                        all_groups = [m.group(0) for m in matches]
+                        return SpryRegexMatch(all_groups, matches[0].start(), _obj)
                     pat, flags, _g = _parse_regex_pattern(str(pattern))
                     return _re.findall(pat, _obj, flags) or None
                 return _str_match
@@ -4141,16 +4181,13 @@ class Interpreter:
 
     def _exec_switch(self, node: SwitchStatement, env: Environment) -> Any:
         subject_val = self._eval(node.subject, env)
-        found = False
         try:
             for case in node.cases:
-                if not found:
-                    case_val = self._eval(case.value, env)
-                    if subject_val == case_val:
-                        found = True
-                if found:
+                case_val = self._eval(case.value, env)
+                if subject_val == case_val:
                     self._exec_block(case.body, env)
-            if not found and node.default_body is not None:
+                    return None
+            if node.default_body is not None:
                 self._exec_block(node.default_body, env)
         except BreakSignal:
             pass
@@ -7943,6 +7980,9 @@ class _ProxyNamespace:
 
     def __init__(self, interp: Any) -> None:
         self._interp = interp
+
+    def __call__(self, target: Any, handler: Any = None) -> SpryProxy:
+        return SpryProxy(target, handler or {}, self._interp)
 
     def new(self, target: Any, handler: Any = None) -> SpryProxy:
         return SpryProxy(target, handler or {}, self._interp)

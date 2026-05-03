@@ -262,7 +262,7 @@ class TestStringMethods:
 class TestNumberMethods:
     def test_toExponential(self):
         i = run("let v = (1234.5).toExponential(2)")
-        assert val(i, "v") == "1.23e+03"
+        assert val(i, "v") == "1.23e+3"
 
     def test_sign_positive(self):
         i = run("let v = (5).sign")

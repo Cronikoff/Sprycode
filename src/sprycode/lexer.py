@@ -230,6 +230,8 @@ class TokenType(Enum):
     PERCENT = auto()
     EQ_EQ = auto()
     BANG_EQ = auto()
+    EQ_EQ_EQ = auto()   # ===
+    BANG_EQ_EQ = auto() # !==
     LT = auto()
     GT = auto()
     LT_EQ = auto()
@@ -458,7 +460,6 @@ KEYWORDS: dict[str, TokenType] = {
     "List": TokenType.LIST_TYPE,
     "Map": TokenType.MAP_TYPE,
     "Stream": TokenType.STREAM_TYPE,
-    "Event": TokenType.EVENT_TYPE,
 }
 
 
@@ -631,15 +632,23 @@ class Lexer:
                 continue
 
             if ch == "=" and self._peek() == "=":
-                self._advance()
-                self._advance()
-                yield Token(TokenType.EQ_EQ, "==", line, col)
+                self._advance()  # consume 1st =
+                self._advance()  # consume 2nd =
+                if self._current() == "=":
+                    self._advance()  # consume 3rd =
+                    yield Token(TokenType.EQ_EQ_EQ, "===", line, col)
+                else:
+                    yield Token(TokenType.EQ_EQ, "==", line, col)
                 continue
 
             if ch == "!" and self._peek() == "=":
-                self._advance()
-                self._advance()
-                yield Token(TokenType.BANG_EQ, "!=", line, col)
+                self._advance()  # consume !
+                self._advance()  # consume 1st =
+                if self._current() == "=":
+                    self._advance()  # consume 2nd =
+                    yield Token(TokenType.BANG_EQ_EQ, "!==", line, col)
+                else:
+                    yield Token(TokenType.BANG_EQ, "!=", line, col)
                 continue
 
             if ch == "<" and self._peek() == "=":
@@ -982,9 +991,12 @@ class Lexer:
         """Scan a backtick template literal: `Hello, ${name}!` → FSTRING token.
 
         Converts ${...} interpolation to {...} (matching f-string format).
+        The token value is stored as `processed\x00raw` so tagged templates
+        (e.g. String.raw) can access the unescaped original text.
         """
         self._advance()  # consume opening `
         value = ""
+        raw_value = ""
         while self.pos < len(self.source):
             ch = self._current()
             if ch == "\\":
@@ -993,18 +1005,24 @@ class Lexer:
                 escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\",
                               "`": "`", "$": "$"}
                 value += escape_map.get(esc, esc)
+                raw_value += "\\" + esc  # preserve the literal backslash sequence
             elif ch == "`":
                 self._advance()
                 break
             elif ch == "$" and self._peek() == "{":
                 # ${expr} → {expr}
                 self._advance()  # skip $
-                value += self._advance()  # include {
+                brace = self._advance()  # include {
+                value += brace
+                raw_value += brace
             else:
-                value += self._advance()
+                ch_val = self._advance()
+                value += ch_val
+                raw_value += ch_val
         else:
             raise LexerError("Unterminated template literal", line, col)
-        yield Token(TokenType.FSTRING, value, line, col)
+        # Store as processed\x00raw so tagged templates can access original
+        yield Token(TokenType.FSTRING, value + "\x00" + raw_value, line, col)
 
     def _scan_number(self, line: int, col: int) -> Iterator[Token]:
         # Check for 0x, 0b, 0o prefix literals

@@ -986,7 +986,4 @@ class ComputedMethodDeclaration(Node):
     rest_param: "str | None" = None
 
 
-@dataclass
-class SequenceExpression(Node):
-    """(a, b, c) — evaluates each expression, returns value of the last."""
-    expressions: list["Node"] = field(default_factory=list)
+

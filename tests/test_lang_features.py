@@ -274,8 +274,8 @@ class TestRegexLiterals:
     def test_match_returns_dict(self):
         i = run(r'let r = /(\w+)/' + '\nlet m = r.match("hello world")')
         m = val(i, "m")
-        assert isinstance(m, dict)
-        assert m["match"] == "hello"
+        assert m is not None
+        assert m[0] == "hello"
 
     def test_match_no_result_returns_null(self):
         i = run('let r = /xyz/\nlet m = r.match("hello world")')

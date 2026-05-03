@@ -95,12 +95,14 @@ class FunctionDeclaration(Node):
     defaults: dict[str, "Node"] = field(default_factory=dict)  # param -> default expr
     rest_param: str | None = None  # name of the ...rest parameter
     is_generator: bool = False     # fn* generator function
+    is_async: bool = False         # async fn — wraps return in SpryPromise
 
 
 @dataclass
 class YieldStatement(Node):
-    """yield [<value>]"""
+    """yield [<value>]  or  yield* <iterable>"""
     value: "Node | None" = None
+    delegate: bool = False  # True for yield*
 
 
 @dataclass
@@ -569,6 +571,9 @@ class ForStatement(Node):
     iterable: Node | None = None
     body: Block | None = None
     label: str | None = None  # set by LabeledStatement when wrapping this loop
+    is_async: bool = False  # for await...of loops
+    _list_destruct_node: "Any | None" = None  # for let [a,b] of ...
+    _obj_destruct_node: "Any | None" = None   # for let {a,b} of ...
 
 
 @dataclass
@@ -735,6 +740,7 @@ class ListDestructure(Node):
     mutable: bool = False
     rest_name: str | None = None  # name of the ...rest element, if any
     defaults: dict[str, "Node"] = field(default_factory=dict)  # name -> default expr
+    nested: dict[int, "Node"] = field(default_factory=dict)  # index -> nested destructure node
 
 
 @dataclass
@@ -746,6 +752,7 @@ class ObjectDestructure(Node):
     value: Node | None = None
     mutable: bool = False
     defaults: dict[str, "Node"] = field(default_factory=dict)  # name/alias -> default expr
+    rest_name: str | None = None  # ...rest element, if any
 
 
 @dataclass
@@ -837,6 +844,13 @@ class OptionalMemberExpression(Node):
     """obj?.prop  — returns null if obj is null/None"""
     object: Node | None = None
     property: str = ""
+
+
+@dataclass
+class OptionalIndexExpression(Node):
+    """obj?.[index]  — returns null if obj is null/None"""
+    object: Node | None = None
+    index: Node | None = None
 
 
 @dataclass
@@ -934,4 +948,45 @@ class ResultLiteral(Node):
 class TaggedTemplateExpression(Node):
     """tag`template ${expr}` — a tagged template literal call"""
     tag: "Node | None" = None       # the tag function expression
-    template: str = ""              # the raw template string (like FStringExpression.raw_template)
+    template: str = ""              # the processed template string (escape sequences resolved)
+    raw_template: str = ""          # the raw template string (escape sequences preserved)
+
+
+@dataclass
+class ClassExpression(Node):
+    """Anonymous/named class expression: let X = class Foo { ... }"""
+    name: str = "anonymous"
+    superclass: str | None = None
+    body: "Block | None" = None
+
+
+@dataclass
+class AwaitExpression(Node):
+    """await <expr> — unwraps SpryPromise; synchronous passthrough in SpryCode."""
+    operand: "Node | None" = None
+
+
+@dataclass
+class OptionalCallExpression(Node):
+    """fn?.() — calls fn only if it is not null/None; returns null otherwise."""
+    callee: "Node | None" = None
+    args: list = field(default_factory=list)
+
+
+@dataclass
+class ComputedMethodDeclaration(Node):
+    """[Symbol.iterator]() { ... } — class method with computed name."""
+    key: "Node | None" = None        # expression yielding the key
+    params: list = field(default_factory=list)
+    body: "Block | None" = None
+    is_static: bool = False
+    is_generator: bool = False
+    is_async: bool = False
+    defaults: dict = field(default_factory=dict)
+    rest_param: "str | None" = None
+
+
+@dataclass
+class SequenceExpression(Node):
+    """(a, b, c) — evaluates each expression, returns value of the last."""
+    expressions: list["Node"] = field(default_factory=list)

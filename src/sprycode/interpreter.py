@@ -2465,6 +2465,43 @@ class Interpreter:
                 return len(obj._data) == 0
             raise SpryRuntimeError(f"Map has no property {prop!r}", node)
 
+        if isinstance(obj, SprySet):
+            if prop == "size":
+                return obj.size
+            if prop == "has":
+                return obj.has
+            if prop == "add":
+                return obj.add
+            if prop == "delete":
+                return obj.delete
+            if prop == "clear":
+                return obj.clear
+            if prop == "toList":
+                return obj.toList
+            if prop == "values":
+                return obj.values
+            if prop == "keys":
+                return obj.keys
+            if prop == "entries":
+                return obj.entries
+            if prop == "forEach":
+                return obj.forEach
+            if prop == "union":
+                return obj.union
+            if prop == "intersection":
+                return obj.intersection
+            if prop == "difference":
+                return obj.difference
+            if prop == "symmetricDifference":
+                return obj.symmetricDifference
+            if prop == "isSubsetOf":
+                return obj.isSubsetOf
+            if prop == "isSupersetOf":
+                return obj.isSupersetOf
+            if prop == "isDisjointFrom":
+                return obj.isDisjointFrom
+            raise SpryRuntimeError(f"Set has no property {prop!r}", node)
+
         if isinstance(obj, SpryWebSocket):
             if prop == "send":
                 return lambda msg: obj.send(msg)
@@ -7943,6 +7980,9 @@ class _ProxyNamespace:
 
     def __init__(self, interp: Any) -> None:
         self._interp = interp
+
+    def __call__(self, target: Any, handler: Any = None) -> SpryProxy:
+        return SpryProxy(target, handler or {}, self._interp)
 
     def new(self, target: Any, handler: Any = None) -> SpryProxy:
         return SpryProxy(target, handler or {}, self._interp)

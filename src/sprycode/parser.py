@@ -230,6 +230,7 @@ class Parser:
         TokenType.DATETIME_TYPE, # "DateTime"
         TokenType.MAP_TYPE,      # "Map" — used as global namespace identifier
         TokenType.MONEY_TYPE,    # "Money" — used as class/identifier name
+        TokenType.LOG,           # "log" — usable as variable/function/parameter name
     })
 
     def _expect_ident(self) -> Token:
@@ -302,7 +303,17 @@ class Parser:
         if tok.type == TokenType.TRANSACTION:
             return self._parse_transaction()
         if tok.type == TokenType.LOG:
-            return self._parse_log()
+            # Only parse as a log statement when followed by a message-producing token.
+            # When followed by `.`, `(`, operators, etc. treat `log` as an identifier.
+            _LOG_MSG_START = {
+                TokenType.STRING, TokenType.FSTRING, TokenType.NUMBER,
+                TokenType.IDENTIFIER, TokenType.LBRACKET, TokenType.LBRACE,
+                TokenType.BOOL,
+                TokenType.INFO, TokenType.WARN, TokenType.ERROR,
+                TokenType.MINUS, TokenType.NOT,
+            }
+            if self._peek().type in _LOG_MSG_START:
+                return self._parse_log()
         if tok.type == TokenType.MOVE:
             return self._parse_move()
         if tok.type == TokenType.COPY:
@@ -795,7 +806,7 @@ class Parser:
     def _parse_log(self) -> LogStatement:
         tok = self._expect(TokenType.LOG)
         level_tok = self._current()
-        if level_tok.type in (TokenType.INFO, TokenType.WARN, TokenType.ERROR, TokenType.IDENTIFIER):
+        if level_tok.type in (TokenType.INFO, TokenType.WARN, TokenType.ERROR):
             self._advance()
             level = level_tok.value
         else:
@@ -3025,7 +3036,27 @@ class Parser:
             return self._parse_parse_stmt()
         # Statement keywords that can appear in lambda bodies / expression context
         if tok.type == TokenType.LOG:
-            return self._parse_log()
+            # `log` as a statement keyword: only when followed by a message expression.
+            # When followed by `.`, `(`, operators, etc. `log` is treated as an identifier.
+            _LOG_ARG_START = {
+                TokenType.STRING, TokenType.FSTRING, TokenType.NUMBER,
+                TokenType.IDENTIFIER, TokenType.LBRACKET, TokenType.LBRACE,
+                TokenType.BOOL,
+                TokenType.INFO, TokenType.WARN, TokenType.ERROR,
+                TokenType.MINUS, TokenType.NOT,
+            }
+            if self._peek().type in _LOG_ARG_START:
+                return self._parse_log()
+            # Otherwise: treat as identifier
+            self._advance()
+            if self._check(TokenType.FAT_ARROW):
+                self._advance()
+                if self._check(TokenType.LBRACE):
+                    body: Node = self._parse_block()
+                else:
+                    body = self._parse_lambda_body()
+                return LambdaExpression(param="log", body=body, line=tok.line, column=tok.column)
+            return Identifier(name="log", line=tok.line, column=tok.column)
         if tok.type == TokenType.VALIDATE:
             return self._parse_validate()
         if tok.type == TokenType.REDACT:

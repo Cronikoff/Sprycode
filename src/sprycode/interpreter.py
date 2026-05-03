@@ -253,6 +253,9 @@ class Environment:
             return self.parent.has(name)
         return False
 
+    def __getitem__(self, name: str) -> Any:
+        return self.get(name)
+
     def child(self) -> "Environment":
         return Environment(parent=self)
 
@@ -925,6 +928,13 @@ class Interpreter:
 
         # structuredClone — deep clone via json round-trip
         def _structured_clone(val: Any) -> Any:
+            if isinstance(val, SpryMap):
+                result = SpryMap()
+                for k, v in val._data.items():
+                    result._data[k] = _structured_clone(v)
+                return result
+            if isinstance(val, SprySet):
+                return SprySet([_structured_clone(item) for item in val._data])
             import json as _json
             import copy
             try:
@@ -3775,6 +3785,18 @@ class Interpreter:
 
     def _spry_instanceof(self, val: Any, type_name: str) -> bool:
         """Return True if val is an instance of the named SpryCode type."""
+        # SpryInstance: walk the class hierarchy (including built-in error superclass)
+        if isinstance(val, SpryInstance):
+            cls: SpryClass | None = val.cls
+            while cls is not None:
+                if cls.name == type_name:
+                    return True
+                builtin_super = getattr(cls, "_builtin_error_superclass", None)
+                if builtin_super is not None and builtin_super == type_name:
+                    return True
+                cls = cls.superclass
+            return False
+
         actual = self._spry_typeof(val)
         # Normalize aliases
         aliases: dict[str, list[str]] = {
@@ -3936,11 +3958,14 @@ class Interpreter:
     def _exec_class(self, node: ClassDeclaration, env: Environment) -> Any:
         # Resolve superclass, if any
         superclass: SpryClass | None = None
+        builtin_error_superclass: str | None = None
         if node.superclass is not None:
             try:
                 sc = env.get(node.superclass)
                 if isinstance(sc, SpryClass):
                     superclass = sc
+                elif isinstance(sc, _ErrorNamespace):
+                    builtin_error_superclass = sc._name
             except SpryRuntimeError:
                 pass
 
@@ -3957,6 +3982,8 @@ class Interpreter:
         cls = SpryClass(name=node.name, body=node.body, closure=env, superclass=superclass)
         # Attach mixin classes so _construct_class can use them
         cls._mixins = mixin_classes  # type: ignore[attr-defined]
+        if builtin_error_superclass is not None:
+            cls._builtin_error_superclass = builtin_error_superclass  # type: ignore[attr-defined]
         env.define(node.name, cls, mutable=False)
         return None
 

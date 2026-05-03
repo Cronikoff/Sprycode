@@ -738,11 +738,23 @@ class Parser:
         handler: Block | None = None
         if self._check(TokenType.CATCH):
             self._advance()
-            # Support both: catch e { ... }  and  catch (e) { ... }
+            # Support:
+            #   catch e { ... }         — bare identifier
+            #   catch (e) { ... }       — parenthesised identifier
+            #   catch { ... }           — no binding (optional catch binding, ES2019)
             has_paren = self._match(TokenType.LPAREN)
-            err_name = self._expect_ident().value
             if has_paren:
-                self._expect(TokenType.RPAREN)
+                if self._check(TokenType.RPAREN):
+                    # catch () { ... } — empty parens, no binding
+                    self._advance()
+                    err_name = ""
+                else:
+                    err_name = self._expect_ident().value
+                    self._expect(TokenType.RPAREN)
+            elif not self._check(TokenType.LBRACE):
+                # bare identifier: catch e { ... }
+                err_name = self._expect_ident().value
+            # else: catch { ... } — no binding at all
             handler = self._parse_block()
         # optional finally block
         finally_block: Block | None = None

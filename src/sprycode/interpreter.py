@@ -1682,7 +1682,8 @@ class Interpreter:
                     err_val = ue.value
                     if isinstance(err_val, dict) and "message" not in err_val:
                         err_val = {**err_val, "message": ue.message}
-                    child.define(node.error_name, err_val, mutable=False)
+                    if node.error_name:
+                        child.define(node.error_name, err_val, mutable=False)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = ue
@@ -1690,7 +1691,8 @@ class Interpreter:
                 if node.handler is not None:
                     child = env.child()
                     err_val = SpryResult(ok=False, error=str(e))
-                    child.define(node.error_name, err_val, mutable=False)
+                    if node.error_name:
+                        child.define(node.error_name, err_val, mutable=False)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = e
@@ -2758,7 +2760,8 @@ class Interpreter:
                     obj.update(other)
                     return obj
                 return _dict_assign
-            raise SpryRuntimeError(f"Key {prop!r} not found in object", node)
+            # JS-compat: accessing a missing property returns None (undefined)
+            return None
 
         if isinstance(obj, list):
             if prop == "length":
@@ -2798,14 +2801,26 @@ class Interpreter:
                     return sorted(_o, key=functools.cmp_to_key(comparator))
                 return _CallableList(sorted(obj), _sorted_fn)
             if prop == "indexOf":
-                return lambda item: obj.index(item) if item in obj else -1
-            if prop == "lastIndexOf":
-                def _last_index_of(item: Any, _o: list = obj) -> int:
-                    for _i in range(len(_o) - 1, -1, -1):
+                def _list_index_of(item: Any, from_index: int = 0, _o: list = obj) -> int:
+                    start = int(from_index) if from_index else 0
+                    if start < 0:
+                        start = max(0, len(_o) + start)
+                    for _i in range(start, len(_o)):
                         if _o[_i] == item:
                             return _i
                     return -1
-                return _last_index_of
+                return _list_index_of
+            if prop == "lastIndexOf":
+                def _list_last_index_of(item: Any, from_index: Any = None, _o: list = obj) -> int:
+                    end = len(_o) - 1 if from_index is None else int(from_index)
+                    if end < 0:
+                        end = len(_o) + end
+                    end = min(end, len(_o) - 1)
+                    for _i in range(end, -1, -1):
+                        if _o[_i] == item:
+                            return _i
+                    return -1
+                return _list_last_index_of
             if prop == "find":
                 return lambda pred: next((x for x in obj if self._truthy(pred(x))), None)
             if prop == "filter":
@@ -3205,9 +3220,17 @@ class Interpreter:
             if prop == "isNotEmpty":
                 return len(obj) > 0
             if prop == "indexOf":
-                return lambda sub: obj.find(sub)
+                def _str_index_of(sub: str, from_index: int = 0, _s: str = obj) -> int:
+                    start = max(0, int(from_index)) if from_index else 0
+                    return _s.find(str(sub), start)
+                return _str_index_of
             if prop == "lastIndexOf":
-                return lambda sub: obj.rfind(sub)
+                def _str_last_index_of(sub: str, from_index: Any = None, _s: str = obj) -> int:
+                    if from_index is None:
+                        return _s.rfind(str(sub))
+                    end = int(from_index) + len(str(sub))
+                    return _s.rfind(str(sub), 0, end)
+                return _str_last_index_of
             if prop == "at":
                 return lambda n: obj[int(n)] if -len(obj) <= int(n) < len(obj) else None
             if prop == "charAt":
@@ -3428,11 +3451,34 @@ class Interpreter:
             if prop in ("round",):
                 return round(obj)
             if prop == "toExponential":
-                def _to_exp(digits: int = 6, _obj: Any = obj) -> str:
+                def _to_exp(digits: Any = None, _obj: Any = obj) -> str:
                     import re as _re
-                    result = f"{float(_obj):.{int(digits)}e}"
+                    fval = float(_obj)
+                    if digits is None:
+                        # No-arg: minimum digits needed (JS semantics) via repr shortest form
+                        if fval == 0.0:
+                            return "0e+0"
+                        _sign = "-" if fval < 0 else ""
+                        _r = repr(abs(fval))
+                        if "e" in _r:
+                            _mantissa_s, _exp_s = _r.split("e")
+                            _exp_n = int(_exp_s)
+                        else:
+                            _int_p, _frac_p = _r.split(".") if "." in _r else (_r, "")
+                            if _int_p == "0":
+                                _leading = len(_frac_p) - len(_frac_p.lstrip("0"))
+                                _exp_n = -(_leading + 1)
+                                _sig = _frac_p.lstrip("0")
+                            else:
+                                _exp_n = len(_int_p) - 1
+                                _sig = (_int_p + _frac_p).rstrip("0")
+                            _mantissa_s = _sig[0] + ("." + _sig[1:] if len(_sig) > 1 else "")
+                        _esign = "+" if _exp_n >= 0 else "-"
+                        return f"{_sign}{_mantissa_s}e{_esign}{abs(_exp_n)}"
+                    else:
+                        raw = f"{fval:.{int(digits)}e}"
                     # JS uses e+4 not e+04 — strip leading zero from exponent
-                    return _re.sub(r"e([+-])0+(\d)", lambda m: f"e{m.group(1)}{m.group(2)}", result)
+                    return _re.sub(r"e([+-])0+(\d)", lambda m: f"e{m.group(1)}{m.group(2)}", raw)
                 return _to_exp
             if prop == "sign":
                 return 1 if obj > 0 else (-1 if obj < 0 else 0)
@@ -5472,8 +5518,11 @@ class _JsonNamespace:
             return str(o)
 
         indent_val = int(indent) if indent is not None else None
+        # Use compact separators (no spaces) when no indent — matches JS JSON.stringify behavior
+        separators = (',', ':') if indent_val is None else None
         try:
-            return _json.dumps(value, indent=indent_val, ensure_ascii=False, default=_default)
+            return _json.dumps(value, indent=indent_val, separators=separators,
+                               ensure_ascii=False, default=_default)
         except (TypeError, ValueError) as e:
             raise ValueError(f"JSON.stringify error: {e}") from e
 
@@ -7197,9 +7246,13 @@ class SpryWeakRef:
 
 
 class _WeakRefNamespace:
-    """WeakRef.new(obj) creates a weak reference wrapper."""
+    """WeakRef.new(obj) / new WeakRef(obj) creates a weak reference wrapper."""
 
     def new(self, target: Any) -> SpryWeakRef:
+        return SpryWeakRef(target)
+
+    def __call__(self, target: Any) -> SpryWeakRef:
+        """Support: new WeakRef(obj) / WeakRef(obj) call syntax."""
         return SpryWeakRef(target)
 
     def __repr__(self) -> str:
@@ -8158,6 +8211,10 @@ class _FinalizationRegistryNamespace:
     def new(self, callback: Any) -> SpryFinalizationRegistry:
         return SpryFinalizationRegistry(callback)
 
+    def __call__(self, callback: Any) -> SpryFinalizationRegistry:
+        """Support: new FinalizationRegistry(fn) / FinalizationRegistry(fn) call syntax."""
+        return SpryFinalizationRegistry(callback)
+
     def __repr__(self) -> str:
         return "FinalizationRegistry"
 
@@ -8367,9 +8424,13 @@ class SpryURL:
 
 
 class _URLNamespace:
-    """URL global namespace — URL.new(href)."""
+    """URL global namespace — URL.new(href) / new URL(href)."""
 
     def new(self, href: Any) -> SpryURL:
+        return SpryURL(str(href))
+
+    def __call__(self, href: Any) -> SpryURL:
+        """Support: new URL(href) / URL(href) call syntax."""
         return SpryURL(str(href))
 
     def canParse(self, href: Any) -> bool:

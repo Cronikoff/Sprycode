@@ -179,7 +179,7 @@ class TestJSONNamespace:
 
     def test_stringify_list(self):
         i = run('let v = JSON.stringify([1, 2, 3])')
-        assert val(i, "v") == "[1, 2, 3]"
+        assert val(i, "v") == "[1,2,3]"
 
     def test_stringify_string(self):
         i = run('let v = JSON.stringify("hello")')

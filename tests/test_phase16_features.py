@@ -453,7 +453,7 @@ class TestJsonStringify3Args:
 
     def test_stringify_no_indent(self):
         result = val('let v = JSON.stringify({a: 1})')
-        assert result == '{"a": 1}'
+        assert result == '{"a":1}'
 
     def test_lowercase_json_stringify_3args(self):
         result = val('let v = json.stringify({a: 1}, null, 2)')

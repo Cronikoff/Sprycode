@@ -1487,16 +1487,20 @@ class Parser:
                     case_body = self._parse_block()
                 else:
                     self._expect(TokenType.COLON)
-                    stmts: list[Node] = []
-                    while (not self._check(TokenType.CASE)
-                           and not self._check(TokenType.DEFAULT)
-                           and not self._check(TokenType.RBRACE)
-                           and not self._at_end()):
-                        # Optionally allow a bare expression as the body of a case
-                        stmt = self._parse_statement()
-                        if stmt is not None:
-                            stmts.append(stmt)
-                    case_body = Block(body=stmts, line=case_tok.line, column=case_tok.column)
+                    if self._check(TokenType.LBRACE):
+                        # Brace-style body: case 1: { ... }
+                        case_body = self._parse_block()
+                    else:
+                        stmts: list[Node] = []
+                        while (not self._check(TokenType.CASE)
+                               and not self._check(TokenType.DEFAULT)
+                               and not self._check(TokenType.RBRACE)
+                               and not self._at_end()):
+                            # Optionally allow a bare expression as the body of a case
+                            stmt = self._parse_statement()
+                            if stmt is not None:
+                                stmts.append(stmt)
+                        case_body = Block(body=stmts, line=case_tok.line, column=case_tok.column)
                 cases.append(SwitchCase(value=value, body=case_body,
                                         line=case_tok.line, column=case_tok.column))
             elif self._check(TokenType.DEFAULT):
@@ -1505,14 +1509,17 @@ class Parser:
                     default_body = self._parse_block()
                 else:
                     self._expect(TokenType.COLON)
-                    stmts2: list[Node] = []
-                    while (not self._check(TokenType.CASE)
-                           and not self._check(TokenType.RBRACE)
-                           and not self._at_end()):
-                        stmt = self._parse_statement()
-                        if stmt is not None:
-                            stmts2.append(stmt)
-                    default_body = Block(body=stmts2, line=def_tok.line, column=def_tok.column)
+                    if self._check(TokenType.LBRACE):
+                        default_body = self._parse_block()
+                    else:
+                        stmts2: list[Node] = []
+                        while (not self._check(TokenType.CASE)
+                               and not self._check(TokenType.RBRACE)
+                               and not self._at_end()):
+                            stmt = self._parse_statement()
+                            if stmt is not None:
+                                stmts2.append(stmt)
+                        default_body = Block(body=stmts2, line=def_tok.line, column=def_tok.column)
             else:
                 break
         self._expect(TokenType.RBRACE)

@@ -27,6 +27,7 @@ from .ast_nodes import (
     AtomicStatement,
     BinaryExpression,
     Block,
+    DeclarationList,
     BoolLiteral,
     BreakStatement,
     CallExpression,
@@ -1606,6 +1607,12 @@ class Interpreter:
         if isinstance(node, Block):
             return self._exec_block(node, env.child())
 
+        if isinstance(node, DeclarationList):
+            # Multiple declarations from `var a=1, b=2` — execute in CURRENT env (no new scope)
+            for stmt in node.body:
+                self._exec(stmt, env)
+            return None
+
         if isinstance(node, AppDeclaration):
             self._app_name = node.name
             self._app_version = node.version
@@ -2197,7 +2204,7 @@ class Interpreter:
 
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
-            if callee is None:
+            if callee is None or callee is SPRY_UNDEFINED:
                 return None
             args: list[Any] = []
             for a in node.args:
@@ -2620,12 +2627,11 @@ class Interpreter:
             raise SpryRuntimeError(
                 f"Function {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
             )
-        if fn.rest_param is None and len(args) > total_positional:
-            raise SpryRuntimeError(
-                f"Function {fn.name!r} expects at most {total_positional} args, got {len(args)}", node
-            )
+        # Extra args are silently ignored (JS semantics: callers may pass more args than declared)
 
         child = fn.closure.child()
+        # Always define `arguments` (JS semantics: every function has access to all passed args)
+        child.define("arguments", list(args), mutable=False)
 
         for i, (pname, _ptype) in enumerate(fn.params):
             # Dict destructuring param: __destruct__:a,b
@@ -3335,6 +3341,10 @@ class Interpreter:
             if prop == "trimStart":
                 return obj.lstrip()
             if prop == "trimEnd":
+                return obj.rstrip()
+            if prop == "trimLeft":
+                return obj.lstrip()
+            if prop == "trimRight":
                 return obj.rstrip()
             if prop == "split":
                 def _str_split(sep: Any = " ", limit: Any = None, _obj: str = obj) -> list:
@@ -4495,7 +4505,7 @@ class Interpreter:
         """Execute C-style for loop: for var i = 0; i < n; i++ { ... }"""
         child_env = env.child()
         if node.init is not None:
-            if isinstance(node.init, Block):
+            if isinstance(node.init, (Block, DeclarationList)):
                 for stmt in node.init.body:
                     # In C-style for-loop init, both `let` and `const` produce LetDeclaration
                     # nodes but must be mutable (JS semantics: loop counter is reassignable)
@@ -4509,6 +4519,8 @@ class Interpreter:
                 # nodes but are treated as mutable loop counters here (JS semantics for for-loop vars)
                 val = self._eval(node.init.value, child_env) if node.init.value is not None else None
                 child_env.define(node.init.name, val, mutable=True)
+            elif isinstance(node.init, NullLiteral):
+                pass  # empty init: for (;;) or for (;cond;update)
             else:
                 self._exec(node.init, child_env)
         max_iterations = 100_000
@@ -5440,6 +5452,8 @@ class Interpreter:
             raise SpryRuntimeError(
                 f"Method {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
             )
+        # Define `arguments` so methods can introspect all passed args (JS semantics)
+        child.define("arguments", list(args), mutable=False)
 
         for i, (pname, _ptype) in enumerate(fn.params):
             if pname.startswith("__destruct__:"):

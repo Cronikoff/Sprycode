@@ -53,6 +53,12 @@ class Block(Node):
 
 
 @dataclass
+class DeclarationList(Node):
+    """A list of declarations from ``var a=1, b=2`` — executed in the *current* env (no new scope)."""
+    body: list[Node] = field(default_factory=list)
+
+
+@dataclass
 class LetDeclaration(Node):
     """let <name>[: <type>] = <value>"""
     name: str = ""

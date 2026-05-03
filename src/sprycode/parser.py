@@ -126,6 +126,7 @@ from .ast_nodes import (
     OptionalCallExpression,
     ComputedMethodDeclaration,
     SequenceExpression,
+    DeclarationList,
 )
 from .lexer import Token, TokenType
 
@@ -529,53 +530,99 @@ class Parser:
             tok = self._expect(TokenType.LET)
         # Check for list destructuring: let [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
-            return self._parse_list_destructure(tok, mutable=False)
+            first: Node = self._parse_list_destructure(tok, mutable=False)
         # Check for object destructuring: let {a, b} = expr
-        if self._check(TokenType.LBRACE):
-            return self._parse_object_destructure(tok, mutable=False)
-        name_tok = self._expect_ident()
-        type_annotation = None
-        if self._match(TokenType.COLON):
-            type_annotation = self._parse_type_name()
-        value = None
-        if self._match(TokenType.EQ):
-            value = self._parse_expression()
-        return LetDeclaration(
-            name=name_tok.value,
-            type_annotation=type_annotation,
-            value=value,
-            line=tok.line,
-            column=tok.column,
-        )
+        elif self._check(TokenType.LBRACE):
+            first = self._parse_object_destructure(tok, mutable=False)
+        else:
+            name_tok = self._expect_ident()
+            type_annotation = None
+            if self._match(TokenType.COLON):
+                type_annotation = self._parse_type_name()
+            value = None
+            if self._match(TokenType.EQ):
+                value = self._parse_expression()
+            first = LetDeclaration(
+                name=name_tok.value,
+                type_annotation=type_annotation,
+                value=value,
+                line=tok.line,
+                column=tok.column,
+            )
+        # Multiple declarations: let a = 1, b = 2, c = 3
+        if self._check(TokenType.COMMA):
+            decls: list[Node] = [first]
+            while self._match(TokenType.COMMA):
+                if self._check(TokenType.LBRACKET):
+                    decls.append(self._parse_list_destructure(tok, mutable=False))
+                elif self._check(TokenType.LBRACE):
+                    decls.append(self._parse_object_destructure(tok, mutable=False))
+                else:
+                    n_tok = self._expect_ident()
+                    t_ann = None
+                    if self._match(TokenType.COLON):
+                        t_ann = self._parse_type_name()
+                    v_node = None
+                    if self._match(TokenType.EQ):
+                        v_node = self._parse_expression()
+                    decls.append(LetDeclaration(
+                        name=n_tok.value, type_annotation=t_ann, value=v_node,
+                        line=n_tok.line, column=n_tok.column,
+                    ))
+            return DeclarationList(body=decls, line=tok.line, column=tok.column)
+        return first
 
     def _parse_var(self) -> Node:
         tok = self._expect(TokenType.VAR)
         # Check for list destructuring: var [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
-            return self._parse_list_destructure(tok, mutable=True)
+            first_v: Node = self._parse_list_destructure(tok, mutable=True)
         # Check for object destructuring: var {a, b} = expr
-        if self._check(TokenType.LBRACE):
-            return self._parse_object_destructure(tok, mutable=True)
-        # Private field: var #name = value
-        if self._check(TokenType.PRIVATE_IDENT):
-            priv_tok = self._advance()
-            name = f"__private__{priv_tok.value}"
+        elif self._check(TokenType.LBRACE):
+            first_v = self._parse_object_destructure(tok, mutable=True)
         else:
-            name_tok = self._expect_ident()
-            name = name_tok.value
-        type_annotation = None
-        if self._match(TokenType.COLON):
-            type_annotation = self._parse_type_name()
-        value = None
-        if self._match(TokenType.EQ):
-            value = self._parse_expression()
-        return VarDeclaration(
-            name=name,
-            type_annotation=type_annotation,
-            value=value,
-            line=tok.line,
-            column=tok.column,
-        )
+            # Private field: var #name = value
+            if self._check(TokenType.PRIVATE_IDENT):
+                priv_tok = self._advance()
+                name = f"__private__{priv_tok.value}"
+            else:
+                name_tok = self._expect_ident()
+                name = name_tok.value
+            type_annotation = None
+            if self._match(TokenType.COLON):
+                type_annotation = self._parse_type_name()
+            value = None
+            if self._match(TokenType.EQ):
+                value = self._parse_expression()
+            first_v = VarDeclaration(
+                name=name,
+                type_annotation=type_annotation,
+                value=value,
+                line=tok.line,
+                column=tok.column,
+            )
+        # Multiple declarations: var a = 1, b = 2, c = 3
+        if self._check(TokenType.COMMA):
+            decls_v: list[Node] = [first_v]
+            while self._match(TokenType.COMMA):
+                if self._check(TokenType.LBRACKET):
+                    decls_v.append(self._parse_list_destructure(tok, mutable=True))
+                elif self._check(TokenType.LBRACE):
+                    decls_v.append(self._parse_object_destructure(tok, mutable=True))
+                else:
+                    n_tok2 = self._expect_ident()
+                    t_ann2 = None
+                    if self._match(TokenType.COLON):
+                        t_ann2 = self._parse_type_name()
+                    v_node2 = None
+                    if self._match(TokenType.EQ):
+                        v_node2 = self._parse_expression()
+                    decls_v.append(VarDeclaration(
+                        name=n_tok2.value, type_annotation=t_ann2, value=v_node2,
+                        line=n_tok2.line, column=n_tok2.column,
+                    ))
+            return DeclarationList(body=decls_v, line=tok.line, column=tok.column)
+        return first_v
 
     def _parse_fn(self, is_generator: bool = False, is_async: bool = False) -> FunctionDeclaration:
         if is_generator:
@@ -1247,10 +1294,17 @@ class Parser:
                             stmts.append(LetDeclaration(name=name_tok.value, type_annotation=None, value=val_node, privacy=None, line=name_tok.line, column=name_tok.column))
                     init_stmt = Block(body=stmts, line=stmts[0].line, column=stmts[0].column)
                 if self._match(TokenType.SEMICOLON):
-                    condition = self._parse_value_expression()
+                    # condition may be empty: for (var i=0;; update)
+                    if self._check(TokenType.SEMICOLON):
+                        condition = BoolLiteral(value=True, line=tok.line, column=tok.column)
+                    else:
+                        condition = self._parse_value_expression()
                     self._expect(TokenType.SEMICOLON)
-                    # Support comma-separated updates: i++, j--
-                    update: Node = self._parse_expr_or_assignment()
+                    # Support comma-separated updates: i++, j--  (may also be empty)
+                    if self._check(TokenType.RPAREN):
+                        update: Node = NullLiteral(line=tok.line, column=tok.column)
+                    else:
+                        update = self._parse_expr_or_assignment()
                     if self._check(TokenType.COMMA):
                         update_nodes: list[Node] = [update]
                         while self._match(TokenType.COMMA):
@@ -1270,6 +1324,80 @@ class Parser:
                 self.pos = saved_pos
             except Exception:
                 self.pos = saved_pos
+        # C-style with empty init or expression init: for (;;) { }
+        # or for (; cond; update) { }  or  for (i=0; cond; update) { }
+        # Must be in parentheses to disambiguate from for-in/of.
+        if has_paren:
+            # Empty init: for (; cond ; update)
+            if self._check(TokenType.SEMICOLON):
+                self._advance()  # consume ';'
+                # condition (may be empty too, e.g. for(;;))
+                if self._check(TokenType.SEMICOLON):
+                    cond_node: Node = BoolLiteral(value=True, line=tok.line, column=tok.column)
+                else:
+                    cond_node = self._parse_value_expression()
+                self._expect(TokenType.SEMICOLON)
+                # update (may be empty: for(;;))
+                if self._check(TokenType.RPAREN):
+                    up_node: Node = NullLiteral(line=tok.line, column=tok.column)
+                else:
+                    up_node = self._parse_expr_or_assignment()
+                    if self._check(TokenType.COMMA):
+                        up_nodes: list[Node] = [up_node]
+                        while self._match(TokenType.COMMA):
+                            up_nodes.append(self._parse_expr_or_assignment())
+                        up_node = Block(body=up_nodes, line=up_nodes[0].line, column=up_nodes[0].column)
+                self._expect(TokenType.RPAREN)
+                body_empty = self._parse_block_or_stmt()
+                return ForCStyleStatement(
+                    init=NullLiteral(line=tok.line, column=tok.column),
+                    condition=cond_node,
+                    update=up_node,
+                    body=body_empty,
+                    line=tok.line, column=tok.column,
+                )
+            # Expression/assignment init: for (i=0; cond; update) or for (i++; ...)
+            # Look ahead to see if current position looks like an expression followed by ';'
+            # Use backtracking to avoid mis-parsing a for-in/of loop
+            saved_pos2 = self.pos
+            try:
+                init_expr = self._parse_expr_or_assignment()
+                # If the initializer is actually a comma sequence
+                if self._check(TokenType.COMMA):
+                    init_exprs: list[Node] = [init_expr]
+                    while self._match(TokenType.COMMA):
+                        init_exprs.append(self._parse_expr_or_assignment())
+                    init_expr = Block(body=init_exprs, line=init_exprs[0].line, column=init_exprs[0].column)
+                if self._check(TokenType.SEMICOLON):
+                    self._advance()  # consume first ';'
+                    if self._check(TokenType.SEMICOLON):
+                        # for (init; ; update) — empty condition
+                        cond_e: Node = BoolLiteral(value=True, line=tok.line, column=tok.column)
+                    else:
+                        cond_e = self._parse_value_expression()
+                    self._expect(TokenType.SEMICOLON)
+                    if self._check(TokenType.RPAREN):
+                        up_e: Node = NullLiteral(line=tok.line, column=tok.column)
+                    else:
+                        up_e = self._parse_expr_or_assignment()
+                        if self._check(TokenType.COMMA):
+                            up_es: list[Node] = [up_e]
+                            while self._match(TokenType.COMMA):
+                                up_es.append(self._parse_expr_or_assignment())
+                            up_e = Block(body=up_es, line=up_es[0].line, column=up_es[0].column)
+                    self._expect(TokenType.RPAREN)
+                    body_e = self._parse_block_or_stmt()
+                    return ForCStyleStatement(
+                        init=init_expr,
+                        condition=cond_e,
+                        update=up_e,
+                        body=body_e,
+                        line=tok.line, column=tok.column,
+                    )
+                # Not a C-style semicolon, restore and fall through to for-in/of
+                self.pos = saved_pos2
+            except Exception:
+                self.pos = saved_pos2
         # for let x of ... / for var x of ... (skip optional let/var/const before iterator var)
         let_var_tok = None
         if self._check(TokenType.LET, TokenType.VAR, TokenType.CONST):
@@ -3002,13 +3130,14 @@ class Parser:
                     prop = self._advance().value
                     if self._check(TokenType.LPAREN):
                         # Optional method call: obj?.method(args)
+                        # Parsed as OptionalCallExpression so callee=None short-circuits the call
                         self._advance()
                         args = self._parse_arg_list()
                         self._expect(TokenType.RPAREN)
                         callee = OptionalMemberExpression(
                             object=expr, property=prop, line=qt.line, column=qt.column
                         )
-                        expr = CallExpression(
+                        expr = OptionalCallExpression(
                             callee=callee, args=args, line=qt.line, column=qt.column
                         )
                     else:

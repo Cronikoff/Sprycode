@@ -59,6 +59,15 @@ class TestArrowBodyAssignment:
         ).globals
         assert globals_["arr"] == [0, 2, 0]
 
+    def test_index_assignment_in_arrow_body(self):
+        """Arrow function body can assign through an index expression."""
+        globals_ = run(
+            "let arr = [0, 0, 0];"
+            "let f = i => arr[i] = i * 2;"
+            "f(1);"
+        ).globals
+        assert globals_["arr"] == [0, 2, 0]
+
     def test_single_param_simple_assignment(self):
         i = run("var a = 0\nlet f = v => a = v\nf(42)")
         assert val(i, "a") == 42

@@ -1177,7 +1177,7 @@ class Interpreter:
             if isinstance(val, SpryDate):
                 import datetime as _datetime_mod
                 new_date = object.__new__(SpryDate)
-                new_date._dt = val._dt.replace()  # replace() with no args makes a shallow copy
+                new_date._dt = val._dt.replace()  # replace() with no args copies all datetime fields
                 return new_date
             if isinstance(val, dict):
                 return {k: _structured_clone(v) for k, v in val.items()}
@@ -3676,12 +3676,13 @@ class Interpreter:
             if prop == "reduce":
                 def _iter_reduce(fn: Any, initial: Any = _MISSING, _it: SpryIterator = obj) -> Any:
                     items = _it._items[_it._index:]
+                    has_initial = not isinstance(initial, _Missing)
                     if not items:
-                        if isinstance(initial, _Missing):
+                        if not has_initial:
                             raise SpryRuntimeError("reduce of empty iterator with no initial value", node)
                         return initial
-                    acc = items[0] if isinstance(initial, _Missing) else initial
-                    start = 1 if isinstance(initial, _Missing) else 0
+                    acc = initial if has_initial else items[0]
+                    start = 0 if has_initial else 1
                     for _item in items[start:]:
                         acc = _call_fn(fn, [acc, _item])
                     return acc

@@ -555,9 +555,8 @@ class TestStructuredCloneDate:
 
     def test_clone_date_month(self) -> None:
         src = "let d = Date.new(2024, 6, 15); let d2 = structuredClone(d); let v = d2.getMonth()"
-        # getMonth() returns 0-based month in JS, but SpryDate may use 1-based
-        result = val(src)
-        assert result in (5, 6)  # 5 for 0-based, 6 for 1-based
+        # getMonth() returns 0-based month (JS convention): June is 5
+        assert val(src) == 5
 
     def test_clone_is_independent(self) -> None:
         """Cloned date is a separate object (not the same reference)."""

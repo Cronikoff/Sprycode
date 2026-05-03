@@ -163,6 +163,19 @@ from .runtime.stdlib import (
 # ---------------------------------------------------------------------------
 
 
+def _strict_eq(left: Any, right: Any) -> bool:
+    """Strict equality (===): same type AND same value; objects compared by identity."""
+    if type(left) is not type(right):
+        # Allow numeric interop between int and float (but not bool)
+        if (isinstance(left, (int, float)) and not isinstance(left, bool) and
+                isinstance(right, (int, float)) and not isinstance(right, bool)):
+            return left == right
+        return False
+    if isinstance(left, (dict, list)) or isinstance(left, SpryInstance):
+        return left is right
+    return left == right
+
+
 class ReturnSignal(Exception):
     def __init__(self, value: Any) -> None:
         self.value = value
@@ -1681,7 +1694,7 @@ class Interpreter:
             return self._exec_credit(node, env)
 
         if isinstance(node, YieldStatement):
-            if getattr(node, 'delegate', False):
+            if node.delegate:
                 # yield* iterable — iterate and forward each value via the yield hook
                 iterable = self._eval(node.value, env) if node.value is not None else []
                 yield_hook = getattr(self._tl, "yield_hook", None)
@@ -2020,25 +2033,9 @@ class Interpreter:
         if op == "!=":
             return left != right
         if op == "===":
-            # Strict equality: same type AND same value; objects by identity
-            if type(left) is not type(right):
-                # Allow int/float interop for numbers
-                if isinstance(left, (int, float)) and not isinstance(left, bool) and \
-                        isinstance(right, (int, float)) and not isinstance(right, bool):
-                    return left == right
-                return False
-            if isinstance(left, (dict, list)) or isinstance(left, SpryInstance):
-                return left is right
-            return left == right
+            return _strict_eq(left, right)
         if op == "!==":
-            if type(left) is not type(right):
-                if isinstance(left, (int, float)) and not isinstance(left, bool) and \
-                        isinstance(right, (int, float)) and not isinstance(right, bool):
-                    return left != right
-                return True
-            if isinstance(left, (dict, list)) or isinstance(left, SpryInstance):
-                return left is not right
-            return left != right
+            return not _strict_eq(left, right)
         if op == "<":
             return left < right
         if op == ">":

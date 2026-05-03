@@ -423,7 +423,8 @@ class SpryRegex:
         m = self.pattern.search(text)
         if m is None:
             return None
-        return {"match": m.group(0), "groups": list(m.groups()), "index": m.start()}
+        groups = [m.group(0)] + list(m.groups())
+        return SpryRegexMatch(groups, m.start(), text)
 
     def exec(self, text: str) -> Any:
         return self.match(text)
@@ -440,6 +441,17 @@ class SpryRegex:
 
     def __repr__(self) -> str:
         return f"<regex /{self.pattern.pattern}/>"
+
+
+class SpryRegexMatch(list):
+    """Array-like regex match result: [full, group1, group2, ...] with .index and .input."""
+    def __init__(self, groups: list, index: int, input_str: str) -> None:
+        super().__init__(groups)
+        self.index = index
+        self.input = input_str
+
+    def __repr__(self) -> str:
+        return f"RegexMatch({list(self)!r}, index={self.index})"
 
 
 class SpryWebSocket:
@@ -2723,7 +2735,11 @@ class Interpreter:
                 import re as _re
                 def _str_match(pattern: Any, _obj: str = obj) -> Any:
                     if isinstance(pattern, SpryRegex):
-                        return pattern.pattern.findall(_obj) or None
+                        m = pattern.pattern.search(_obj)
+                        if m is None:
+                            return None
+                        groups = [m.group(0)] + list(m.groups())
+                        return SpryRegexMatch(groups, m.start(), _obj)
                     pat, flags, _g = _parse_regex_pattern(str(pattern))
                     return _re.findall(pat, _obj, flags) or None
                 return _str_match
@@ -3421,6 +3437,8 @@ class Interpreter:
             iterable = iterable._items  # iterate all items
         if isinstance(iterable, SprySet):
             iterable = list(iterable._data)
+        if isinstance(iterable, SpryMap):
+            iterable = [[k, v] for k, v in iterable._data.items()]
         if isinstance(iterable, SpryInstance):
             # Support iterator protocol: instance with next() method
             if "next" in iterable.fields and isinstance(iterable.fields["next"], SpryFunction):
@@ -4576,13 +4594,22 @@ class _JsonNamespace:
         except (TypeError, ValueError) as e:
             raise ValueError(f"JSON.stringify error: {e}") from e
 
-    def parse(self, text: str) -> Any:
+    def parse(self, text: str, reviver: Any = None) -> Any:
         """Parse a JSON string into a SpryCode value."""
         import json as _json
         try:
-            return _json.loads(text)
+            result = _json.loads(text)
         except (TypeError, ValueError) as e:
             raise ValueError(f"JSON.parse error: {e}") from e
+        if reviver is not None and callable(reviver):
+            def _apply_reviver(obj: Any) -> Any:
+                if isinstance(obj, dict):
+                    return {k: reviver(k, _apply_reviver(v)) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [reviver(str(i), _apply_reviver(v)) for i, v in enumerate(obj)]
+                return obj
+            result = reviver("", _apply_reviver(result))
+        return result
 
     def __repr__(self) -> str:
         return "JSON"
@@ -4810,6 +4837,25 @@ class _ObjectNamespace:
                 result[key] = []
             result[key].append(item)
         return result
+
+    def getPrototypeOf(self, obj: Any) -> Any:
+        """Return the prototype of an object (null in SpryCode; objects have no prototype chain)."""
+        return None
+
+    def setPrototypeOf(self, obj: Any, proto: Any) -> Any:
+        """No-op — SpryCode does not support prototype chains."""
+        return obj
+
+    def getOwnPropertySymbols(self, obj: Any) -> list:
+        """Return an empty list — SpryCode does not use Symbol keys on plain objects."""
+        return []
+
+    def getOwnPropertyDescriptors(self, obj: Any) -> dict:
+        """Return descriptors for all own properties."""
+        if isinstance(obj, dict):
+            return {k: {"value": v, "writable": True, "enumerable": True, "configurable": True}
+                    for k, v in obj.items()}
+        return {}
 
     def __getattr__(self, prop: str) -> Any:
         if prop == "is":
@@ -5952,9 +5998,23 @@ class SpryMap:
 class _MapNamespace:
     """Map global namespace — Map.new(), Map.from()."""
 
-    def new(self) -> SpryMap:
-        """Create an empty Map."""
-        return SpryMap()
+    def new(self, entries: Any = None) -> SpryMap:
+        """Create a Map, optionally initialized from [[key,value],...] entries."""
+        m = SpryMap()
+        if entries is not None:
+            if isinstance(entries, list):
+                for pair in entries:
+                    if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                        m.spry_set(pair[0], pair[1])
+            elif isinstance(entries, dict):
+                for k, v in entries.items():
+                    m.spry_set(k, v)
+            elif isinstance(entries, SpryMap):
+                m._data = dict(entries._data)
+        return m
+
+    def __call__(self, entries: Any = None) -> SpryMap:
+        return self.new(entries)
 
     def from_(self, entries: Any) -> SpryMap:
         """Create a Map from a list of [key, value] pairs."""
@@ -6134,7 +6194,17 @@ class _SymbolNamespace:
     def __getattr__(self, prop: str) -> Any:
         if prop == "for":
             return self.for_
+        if prop in self._WELL_KNOWN:
+            sym = SprySymbol(prop)
+            setattr(_SymbolNamespace, prop, sym)
+            return sym
         raise AttributeError(prop)
+
+    _WELL_KNOWN = {
+        "iterator", "asyncIterator", "toPrimitive", "toStringTag",
+        "species", "hasInstance", "isConcatSpreadable", "unscopables",
+        "match", "matchAll", "replace", "search", "split",
+    }
 
     def __repr__(self) -> str:
         return "Symbol"
@@ -7002,26 +7072,36 @@ class _IntlListFormat:
         return f"Intl.ListFormat({self._locale!r})"
 
 
+class _IntlSubNamespace:
+    """Generic wrapper making an Intl sub-class both callable and having .new()."""
+    def __init__(self, cls: type) -> None:
+        self._cls = cls
+
+    def __call__(self, locale: Any = "en-US", options: Any = None) -> Any:
+        return self._cls(str(locale), options)
+
+    def new(self, locale: Any = "en-US", options: Any = None) -> Any:
+        return self._cls(str(locale), options)
+
+    def supportedLocalesOf(self, locales: Any, options: Any = None) -> list:
+        if isinstance(locales, list):
+            return [str(l) for l in locales]
+        return [str(locales)]
+
+    def __repr__(self) -> str:
+        return f"Intl.{self._cls.__name__}"
+
+
 class _IntlNamespace:
     """Intl global namespace."""
 
-    def NumberFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlNumberFormat:
-        return _IntlNumberFormat(str(locale), options)
-
-    def DateTimeFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlDateTimeFormat:
-        return _IntlDateTimeFormat(str(locale), options)
-
-    def Collator(self, locale: Any = "en-US", options: Any = None) -> _IntlCollator:
-        return _IntlCollator(str(locale), options)
-
-    def PluralRules(self, locale: Any = "en-US", options: Any = None) -> _IntlPluralRules:
-        return _IntlPluralRules(str(locale), options)
-
-    def RelativeTimeFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlRelativeTimeFormat:
-        return _IntlRelativeTimeFormat(str(locale), options)
-
-    def ListFormat(self, locale: Any = "en-US", options: Any = None) -> _IntlListFormat:
-        return _IntlListFormat(str(locale), options)
+    def __init__(self) -> None:
+        self.NumberFormat = _IntlSubNamespace(_IntlNumberFormat)
+        self.DateTimeFormat = _IntlSubNamespace(_IntlDateTimeFormat)
+        self.Collator = _IntlSubNamespace(_IntlCollator)
+        self.PluralRules = _IntlSubNamespace(_IntlPluralRules)
+        self.RelativeTimeFormat = _IntlSubNamespace(_IntlRelativeTimeFormat)
+        self.ListFormat = _IntlSubNamespace(_IntlListFormat)
 
     def getCanonicalLocales(self, locales: Any) -> list:
         if isinstance(locales, list):

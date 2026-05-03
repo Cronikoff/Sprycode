@@ -320,7 +320,10 @@ class TestImportAlias:
 class TestRegexLiteralMethods:
     def test_match_basic(self):
         i = run('let v = "hello world".match(/[a-z]+/)')
-        assert val(i, "v") == ["hello", "world"]
+        from sprycode.interpreter import SpryRegexMatch
+        m = val(i, "v")
+        assert isinstance(m, SpryRegexMatch)
+        assert m[0] == "hello"
 
     def test_match_no_match(self):
         i = run('let v = "123".match(/[a-z]+/)')
@@ -328,7 +331,10 @@ class TestRegexLiteralMethods:
 
     def test_match_digits(self):
         i = run('let v = "abc 123 def 456".match(/\\d+/)')
-        assert val(i, "v") == ["123", "456"]
+        from sprycode.interpreter import SpryRegexMatch
+        m = val(i, "v")
+        assert isinstance(m, SpryRegexMatch)
+        assert m[0] == "123"
 
     def test_search_found(self):
         i = run('let v = "hello world".search(/world/)')

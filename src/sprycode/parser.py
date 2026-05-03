@@ -269,6 +269,8 @@ class Parser:
             return self._parse_app()
         if tok.type == TokenType.LET:
             return self._parse_let()
+        if tok.type == TokenType.CONST:
+            return self._parse_let()  # const is an immutable binding, same as let
         if tok.type == TokenType.VAR:
             return self._parse_var()
         if tok.type == TokenType.FN:
@@ -462,7 +464,10 @@ class Parser:
         return AppDeclaration(name=name_tok.value, version=version, line=tok.line, column=tok.column)
 
     def _parse_let(self) -> Node:
-        tok = self._expect(TokenType.LET)
+        if self._check(TokenType.CONST):
+            tok = self._advance()  # consume 'const' (JS-compatible immutable binding, parsed like let)
+        else:
+            tok = self._expect(TokenType.LET)
         # Check for list destructuring: let [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
             return self._parse_list_destructure(tok, mutable=False)
@@ -1147,8 +1152,8 @@ class Parser:
                 line=tok.line, column=tok.column,
             )
         # C-style: for var i = 0; i < 5; i++ { ... }
-        if self._check(TokenType.VAR, TokenType.LET):
-            # Peek ahead: if this is var/let IDENT = expr ; it's C-style
+        if self._check(TokenType.VAR, TokenType.LET, TokenType.CONST):
+            # Peek ahead: if this is var/let/const IDENT = expr ; it's C-style
             saved_pos = self.pos
             try:
                 init_stmt = self._parse_statement()
@@ -1190,9 +1195,9 @@ class Parser:
                 self.pos = saved_pos
             except Exception:
                 self.pos = saved_pos
-        # for let x of ... / for var x of ... (skip optional let/var before iterator var)
+        # for let x of ... / for var x of ... (skip optional let/var/const before iterator var)
         let_var_tok = None
-        if self._check(TokenType.LET, TokenType.VAR):
+        if self._check(TokenType.LET, TokenType.VAR, TokenType.CONST):
             let_var_tok = self._advance()
         # Handle array destructure: for let [a, b] of list  or  for [a, b] of list
         if self._check(TokenType.LBRACKET):
@@ -1441,6 +1446,11 @@ class Parser:
         tok = self._expect(TokenType.LBRACE)
         body: list[Node] = []
         while not self._check(TokenType.RBRACE) and not self._at_end():
+            # Skip statement-separator semicolons inside class bodies
+            while self._check(TokenType.SEMICOLON):
+                self._advance()
+            if self._check(TokenType.RBRACE) or self._at_end():
+                break
             cur = self._current()
             # Contextual `get propName() { ... }`
             if (cur.type == TokenType.IDENTIFIER and cur.value == "get"

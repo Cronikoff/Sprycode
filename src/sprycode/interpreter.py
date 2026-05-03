@@ -4075,7 +4075,18 @@ class Interpreter:
         if node.init is not None:
             if isinstance(node.init, Block):
                 for stmt in node.init.body:
-                    self._exec(stmt, child_env)
+                    # In C-style for-loop init, both `let` and `const` produce LetDeclaration
+                    # nodes but must be mutable (JS semantics: loop counter is reassignable)
+                    if isinstance(stmt, LetDeclaration):
+                        val = self._eval(stmt.value, child_env) if stmt.value is not None else None
+                        child_env.define(stmt.name, val, mutable=True)
+                    else:
+                        self._exec(stmt, child_env)
+            elif isinstance(node.init, LetDeclaration):
+                # let/const in C-style for-loop init: both `let` and `const` produce LetDeclaration
+                # nodes but are treated as mutable loop counters here (JS semantics for for-loop vars)
+                val = self._eval(node.init.value, child_env) if node.init.value is not None else None
+                child_env.define(node.init.name, val, mutable=True)
             else:
                 self._exec(node.init, child_env)
         max_iterations = 100_000
@@ -4661,10 +4672,19 @@ class Interpreter:
             raise SpryRuntimeError("'super' used outside of a class method", node)
         if not isinstance(self_val, SpryInstance):
             raise SpryRuntimeError("'super' used outside of a class instance", node)
-        parent = self_val.cls.superclass
+        # Determine which class we're currently executing in (for deep inheritance chains)
+        try:
+            current_cls = env.get("__current_class__")
+        except SpryRuntimeError:
+            current_cls = self_val.cls
+        parent = current_cls.superclass if isinstance(current_cls, SpryClass) else self_val.cls.superclass
         if parent is None:
             # Check for builtin error superclass — super(msg) sets error fields
-            builtin_err = getattr(self_val.cls, '_builtin_error_superclass', None)
+            builtin_err = (
+                getattr(current_cls, '_builtin_error_superclass', None)
+                if isinstance(current_cls, SpryClass)
+                else getattr(self_val.cls, '_builtin_error_superclass', None)
+            )
             if builtin_err is not None:
                 args_vals = [self._eval(a, env) for a in node.args]
                 msg = str(args_vals[0]) if args_vals else ""
@@ -4672,14 +4692,14 @@ class Interpreter:
                 self_val.fields["name"] = self_val.cls.name
                 self_val.fields["stack"] = f"{self_val.cls.name}: {msg}"
             return None  # no superclass — silently ignore
-        # Find parent's init and call it with evaluated args
+        # Find parent's init / constructor and call it with evaluated args
         args_vals = [self._eval(a, env) for a in node.args]
-        # Look up init in parent
+        # Look up init or constructor in parent
         init_fn = None
         for stmt in parent.body.body:  # type: ignore[union-attr]
-            if isinstance(stmt, FunctionDeclaration) and stmt.name == "init":
+            if isinstance(stmt, FunctionDeclaration) and stmt.name in ("init", "constructor"):
                 init_fn = SpryFunction(
-                    name="init",
+                    name=stmt.name,
                     params=stmt.params,
                     body=stmt.body,  # type: ignore
                     closure=self_val.fields.get("__instance_env__", parent.closure).child(),
@@ -4690,6 +4710,7 @@ class Interpreter:
         if init_fn is None:
             return None
         bm = BoundMethod(instance=self_val, fn=init_fn)
+        bm._defining_class = parent  # type: ignore[attr-defined]
         return self._call_bound_method(bm, args_vals, node)
 
     def _eval_super_member(self, prop: str, env: Environment, node: Node) -> Any:
@@ -4709,9 +4730,9 @@ class Interpreter:
 
         parent = current_cls.superclass if isinstance(current_cls, SpryClass) else None
         if parent is None:
-            # Check for builtin error superclass — super.init(msg) sets error fields
+            # Check for builtin error superclass — super.init(msg) / super.constructor(msg) sets error fields
             builtin_err = getattr(current_cls, '_builtin_error_superclass', None) if isinstance(current_cls, SpryClass) else None
-            if builtin_err is not None and prop == "init":
+            if builtin_err is not None and prop in ("init", "constructor"):
                 def _builtin_error_init(*args: Any) -> None:
                     msg = str(args[0]) if args else ""
                     self_val.fields["message"] = msg
@@ -4861,10 +4882,11 @@ class Interpreter:
                 fields[fname] = new_fn
                 instance.fields[fname] = new_fn
 
-        # Call init() if defined (skip when building inheritance field structure)
+        # Call init() / constructor() if defined (skip when building inheritance field structure)
         if not _for_inheritance:
-            if "init" in fields and isinstance(fields["init"], SpryFunction):
-                self._call_bound_method(BoundMethod(instance=instance, fn=fields["init"]), args, node)
+            ctor_fn = fields.get("init") or fields.get("constructor")
+            if isinstance(ctor_fn, SpryFunction):
+                self._call_bound_method(BoundMethod(instance=instance, fn=ctor_fn), args, node)
             elif args:
                 # Positional-field constructor: Counter(10) → counter.count = 10
                 field_vars = [k for k, v in fields.items() if not callable(v) and not isinstance(v, SpryFunction)]

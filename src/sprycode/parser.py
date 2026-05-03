@@ -433,6 +433,31 @@ class Parser:
             return LabeledStatement(label=label_tok.value, body=body_stmt,
                                     line=label_tok.line, column=label_tok.column)
 
+        # Standalone block statement: { stmt; stmt; ... }
+        # Disambiguate from object literals by peeking at the first token inside.
+        # Treat as block when the first inner token is:
+        #   - a statement keyword (let, var, fn, if, for, while, return, etc.)
+        #   - an identifier/keyword NOT followed by ':' (assignment, not key:value)
+        #   - empty (RBRACE) — an empty block
+        if tok.type == TokenType.LBRACE:
+            _BLOCK_KEYWORDS = {
+                TokenType.LET, TokenType.CONST, TokenType.VAR,
+                TokenType.FN, TokenType.FN_STAR, TokenType.IF, TokenType.FOR,
+                TokenType.WHILE, TokenType.DO, TokenType.RETURN, TokenType.THROW,
+                TokenType.TRY, TokenType.BREAK, TokenType.CONTINUE,
+                TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC,
+            }
+            peek1 = self._peek(1)
+            peek2 = self._peek(2)
+            _is_block = (
+                peek1.type == TokenType.RBRACE                          # empty {}
+                or peek1.type in _BLOCK_KEYWORDS                        # starts with statement kw
+                or (peek1.type in self._IDENTIFIER_LIKE                  # ident not followed by ':'
+                    and peek2.type != TokenType.COLON)
+            )
+            if _is_block:
+                return self._parse_block()
+
         # Expression statement or assignment
         return self._parse_expr_or_assignment()
 
@@ -1556,6 +1581,23 @@ class Parser:
                     continue
             if (cur.type == TokenType.IDENTIFIER and cur.value == "static"):
                 next_tok = self._peek(1)
+                # static { ... } — class static initialization block
+                if next_tok.type == TokenType.LBRACE:
+                    self._advance()  # consume 'static'
+                    static_block = self._parse_block()
+                    # Represent as a FunctionDeclaration named "__static_init__"
+                    body.append(FunctionDeclaration(
+                        name="__static_init__",
+                        params=[],
+                        body=static_block,
+                        defaults={},
+                        rest_param=None,
+                        is_async=False,
+                        is_generator=False,
+                        line=cur.line,
+                        column=cur.column,
+                    ))
+                    continue
                 # static get propName() { ... } or static set propName(v) { ... }
                 if (next_tok.type == TokenType.IDENTIFIER
                         and next_tok.value in ("get", "set")

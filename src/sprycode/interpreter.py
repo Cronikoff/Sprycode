@@ -2290,9 +2290,20 @@ class Interpreter:
         return self._exec(node, env)
 
     def _eval_binary(self, node: BinaryExpression, env: Environment) -> Any:
-        left = self._eval(node.left, env)
-        right = self._eval(node.right, env)
         op = node.op
+        left = self._eval(node.left, env)
+
+        # Short-circuit operators: evaluate right operand lazily
+        if op == "&&":
+            if not self._truthy(left):
+                return left
+            return self._eval(node.right, env)
+        if op == "||":
+            if self._truthy(left):
+                return left
+            return self._eval(node.right, env)
+
+        right = self._eval(node.right, env)
 
         if op == "+":
             if isinstance(left, (SpryMoney,)) and isinstance(right, (SpryMoney,)):
@@ -2341,10 +2352,6 @@ class Interpreter:
             return left <= right
         if op == ">=":
             return left >= right
-        if op == "&&":
-            return self._truthy(left) and self._truthy(right)
-        if op == "||":
-            return self._truthy(left) or self._truthy(right)
         # Bitwise operators
         if op == "&":
             return int(left) & int(right)
@@ -3395,7 +3402,7 @@ class Interpreter:
 
         if isinstance(obj, (int, float)):
             if prop in ("toFixed", "toFixed"):
-                return lambda digits=2: f"{obj:.{int(digits)}f}"
+                return lambda digits=0: f"{obj:.{int(digits)}f}"
             if prop == "toPrecision":
                 def _to_precision(digits: int = 6, _obj: Any = obj) -> str:
                     d = int(digits)
@@ -3810,6 +3817,17 @@ class Interpreter:
             if prop in ("toString", "__str__"):
                 return lambda: repr(obj)
             raise SpryRuntimeError(f"Function has no property {prop!r}", node)
+
+        if isinstance(obj, SprySymbol):
+            if prop == "description":
+                return obj.description
+            if prop in ("toString", "__str__"):
+                _sym_desc = obj.description
+                return lambda _d=_sym_desc: f"Symbol({_d})"
+            if prop == "valueOf":
+                return lambda _s=obj: _s
+            # symbols have no other properties
+            return None
 
         # Try attribute access
         try:
@@ -4665,7 +4683,7 @@ class Interpreter:
                 cls = cls.superclass
             return False
         actual = self._spry_typeof(val)
-        # Normalize aliases
+        # SpryCode-style aliases
         aliases: dict[str, list[str]] = {
             "Number": ["Int", "Float"],
             "Text": ["Text"],
@@ -4677,6 +4695,28 @@ class Interpreter:
         }
         if type_name in aliases:
             return actual in aliases[type_name]
+        # JS-style type-name aliases for primitive/built-in types
+        js_aliases: dict[str, Any] = {
+            "Array": list,
+            "String": str,
+            "Boolean": bool,
+            "Number": (int, float),
+            "Function": (SpryFunction, SpryLambda),
+            "Map": SpryMap,
+            "Set": SprySet,
+            "RegExp": SpryRegex,
+            "Promise": SpryPromise,
+            "Symbol": SprySymbol,
+        }
+        if type_name in js_aliases:
+            py_type = js_aliases[type_name]
+            if isinstance(py_type, tuple):
+                return isinstance(val, py_type) and not isinstance(val, bool)
+            if type_name == "Boolean":
+                return isinstance(val, bool)
+            if type_name == "Number":
+                return isinstance(val, (int, float)) and not isinstance(val, bool)
+            return isinstance(val, py_type)
         return actual == type_name
 
     def _exec_assert(self, node: AssertStatement, env: Environment) -> Any:
@@ -4868,6 +4908,11 @@ class Interpreter:
         if _builtin_err_ns is not None:
             cls._builtin_error_superclass = _builtin_err_ns  # type: ignore[attr-defined]
         env.define(node.name, cls, mutable=False)
+        # Run any static initialization blocks defined in the class body
+        for stmt in node.body.body:
+            if isinstance(stmt, FunctionDeclaration) and stmt.name == "__static_init__":
+                static_env = env.child()
+                self._exec_block(stmt.body, static_env)
         return None
 
     def _eval_class_expression(self, node: "ClassExpression", env: Environment) -> SpryClass:

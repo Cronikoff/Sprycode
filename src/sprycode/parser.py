@@ -1962,6 +1962,42 @@ class Parser:
                         column=cur.column,
                     ))
                     continue
+                # static #field = value  or  static #method() { }
+                if next_tok.type == TokenType.PRIVATE_IDENT:
+                    self._advance()  # consume 'static'
+                    sp_tok = self._advance()  # consume the PRIVATE_IDENT token
+                    sp_name = f"__static_private__{sp_tok.value}"
+                    if self._check(TokenType.LPAREN):
+                        # static #method(...) { ... } — static private method
+                        spm_params, spm_defaults, spm_rest = self._parse_method_params()
+                        if self._check(TokenType.ARROW):
+                            self._advance()
+                            self._parse_type_name()
+                        spm_body = self._parse_block()
+                        body.append(FunctionDeclaration(
+                            name=sp_name,
+                            params=spm_params,
+                            body=spm_body,
+                            defaults=spm_defaults,
+                            rest_param=spm_rest,
+                            is_async=False,
+                            is_generator=False,
+                            line=cur.line,
+                            column=cur.column,
+                        ))
+                    else:
+                        # static #field = value — static private field
+                        sp_value = None
+                        if self._match(TokenType.EQ):
+                            sp_value = self._parse_expression()
+                        body.append(VarDeclaration(
+                            name=sp_name,
+                            type_annotation=None,
+                            value=sp_value,
+                            line=cur.line,
+                            column=cur.column,
+                        ))
+                    continue
             # Computed method: [Symbol.iterator]() { ... }
             if self._check(TokenType.LBRACKET):
                 self._advance()  # consume '['
@@ -1994,6 +2030,27 @@ class Parser:
             ms_is_async = False
             ms_is_gen = False
             cur = self._current()  # refresh after the previous checks may have advanced
+            # #methodName() { ... } — private instance method shorthand
+            if cur.type == TokenType.PRIVATE_IDENT and self._peek(1).type == TokenType.LPAREN:
+                pm_tok = self._advance()  # consume PRIVATE_IDENT
+                pm_name = f"__private__{pm_tok.value}"
+                pm_params, pm_defaults, pm_rest = self._parse_method_params()
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                pm_body = self._parse_block()
+                body.append(FunctionDeclaration(
+                    name=pm_name,
+                    params=pm_params,
+                    body=pm_body,
+                    defaults=pm_defaults,
+                    rest_param=pm_rest,
+                    is_async=False,
+                    is_generator=False,
+                    line=pm_tok.line,
+                    column=pm_tok.column,
+                ))
+                continue
             if cur.type == TokenType.IDENTIFIER and cur.value == "async":
                 # async name() { ... } — look-ahead to confirm it's a method
                 if self._peek(1).type in self._IDENTIFIER_LIKE and self._peek(2).type == TokenType.LPAREN:

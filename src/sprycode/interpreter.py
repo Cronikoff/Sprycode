@@ -2339,6 +2339,11 @@ class Interpreter:
                         spread_val = self._eval(val_node.expr, env)  # type: ignore[union-attr]
                         if isinstance(spread_val, dict):
                             result.update(spread_val)
+                        elif isinstance(spread_val, SpryInstance):
+                            # Spread instance fields (non-private, non-method)
+                            for fname, fval in spread_val.fields.items():
+                                if not fname.startswith("__") and not isinstance(fval, (SpryFunction, BoundMethod)):
+                                    result[fname] = fval
                         else:
                             raise SpryRuntimeError("Object spread requires an object", node)
                     elif key_or_marker == "__computed__":
@@ -4866,13 +4871,9 @@ class Interpreter:
         else:
             iterable = self._eval(node.iterable, env)
 
-        if not isinstance(iterable, range):
-            iterable = self._iter_to_list(iterable, node)
-
-        # Destructured loop: for i, v in enumerate(list)
+        # Determine loop item binder helper
         multi_vars = node.vars if node.vars else [node.var]
         destructured = len(multi_vars) > 1
-        # Object destructuring loop: for {x, y} of list  or  for let {x, y} of list
         obj_destruct_vars: list[str] | None = None
         list_destruct_node: Any = node._list_destruct_node  # type: ignore[attr-defined]
         obj_destruct_node: Any = node._obj_destruct_node    # type: ignore[attr-defined]
@@ -4881,39 +4882,116 @@ class Interpreter:
             obj_destruct_vars = [f for f in field_names_str.split(",") if f]
             destructured = False
 
-        for item in iterable:
-            child = env.child()
+        def _bind_item(child: "Environment", item: Any) -> None:
+            """Bind a single loop item into child env per the destructure pattern."""
             if list_destruct_node is not None:
-                # for let [a, b] of list — bind via list destructure pattern
                 self._apply_list_destructure(list_destruct_node, item if isinstance(item, (list, tuple)) else [item], child, list_destruct_node.mutable)
             elif obj_destruct_node is not None:
-                # for let {a, b} of list
                 self._apply_object_destructure(obj_destruct_node, item, child, obj_destruct_node.mutable)
             elif obj_destruct_vars is not None:
-                # Bind object fields as loop variables
                 obj = item if isinstance(item, dict) else (item.fields if isinstance(item, SpryInstance) else {})
                 for fname in obj_destruct_vars:
                     child.define(fname, obj.get(fname) if isinstance(obj, dict) else None, mutable=False)
             elif destructured:
-                # item should be a list/tuple: [index, value]
                 if isinstance(item, (list, tuple)):
                     for idx, vname in enumerate(multi_vars):
                         child.define(vname, item[idx] if idx < len(item) else None, mutable=False)
                 else:
-                    # fallback: bind first var to item
                     child.define(multi_vars[0], item, mutable=False)
             else:
                 child.define(node.var, item, mutable=False)
+
+        def _exec_body_for_item(item: Any) -> bool:
+            """Execute body for one item. Returns True if we should break."""
+            child = env.child()
+            _bind_item(child, item)
             try:
                 self._exec_block(node.body, child)
             except BreakSignal as bs:
                 if bs.label is None or bs.label == node.label:
-                    break
+                    return True  # break
                 raise
             except ContinueSignal as cs:
                 if cs.label is None or cs.label == node.label:
-                    continue
-                raise
+                    pass  # continue
+                else:
+                    raise
+            return False
+
+        # Helper: call any next() function with no args, returning the result dict
+        def _call_next(next_fn: Any) -> Any:
+            if isinstance(next_fn, (SpryLambda, SpryMultiLambda)):
+                return self._call_value(next_fn, [])
+            if isinstance(next_fn, SpryFunction):
+                return self._call_function(next_fn, [], node)
+            if isinstance(next_fn, BoundMethod):
+                return self._call_bound_method(next_fn, [], node)
+            if isinstance(next_fn, DictBoundMethod):
+                return self._call_dict_method(next_fn, [], node)
+            if callable(next_fn):
+                return next_fn()
+            return None
+
+        def _lazy_iter_dict(iterator: dict) -> bool:
+            """Lazily iterate a JS-style dict iterator {next: fn}. Returns True if done."""
+            next_fn = iterator.get("next")
+            if next_fn is None:
+                return False
+            while True:
+                result = _call_next(next_fn)
+                if not isinstance(result, dict) or result.get("done", False):
+                    break
+                if _exec_body_for_item(result.get("value")):
+                    return True  # broken
+            return False
+
+        # SpryGenerator: iterate lazily to support infinite generators with break
+        if isinstance(iterable, SpryGenerator):
+            while True:
+                result = iterable.next()
+                if result.get("done", False):
+                    break
+                if _exec_body_for_item(result.get("value")):
+                    break
+            return None
+
+        # Dict iterator (has 'next' callable): lazy iteration
+        if isinstance(iterable, dict):
+            next_val = iterable.get("next")
+            if next_val is not None and (
+                callable(next_val)
+                or isinstance(next_val, (DictBoundMethod, SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod))
+            ):
+                _lazy_iter_dict(iterable)
+                return None
+
+        # SpryInstance with [Symbol.iterator]() — lazy iteration
+        if isinstance(iterable, SpryInstance):
+            sym_key = "Symbol('iterator')"
+            if sym_key in iterable.fields:
+                sym_iter_fn = iterable.fields[sym_key]
+                if isinstance(sym_iter_fn, SpryFunction):
+                    bm = BoundMethod(instance=iterable, fn=sym_iter_fn)
+                    iterator = self._call_bound_method(bm, [], node)
+                    if isinstance(iterator, dict):
+                        _lazy_iter_dict(iterator)
+                        return None
+                    # If iterator is itself a SpryGenerator, handle lazily
+                    if isinstance(iterator, SpryGenerator):
+                        while True:
+                            res = iterator.next()
+                            if res.get("done", False):
+                                break
+                            if _exec_body_for_item(res.get("value")):
+                                break
+                        return None
+
+        if not isinstance(iterable, range):
+            iterable = self._iter_to_list(iterable, node)
+
+        for item in iterable:
+            if _exec_body_for_item(item):
+                break
         return None
 
     def _exec_labeled(self, node: LabeledStatement, env: Environment) -> Any:
@@ -5590,6 +5668,21 @@ class Interpreter:
                     rest_param=stmt.rest_param,
                 )
                 cls._static_fields[computed_key_str] = fn
+            # static #field / static #method — store in _static_fields with __private__ prefix
+            elif isinstance(stmt, VarDeclaration) and stmt.name.startswith("__static_private__"):
+                priv_key = "__private__" + stmt.name[len("__static_private__"):]
+                cls._static_fields[priv_key] = self._eval(stmt.value, env) if stmt.value is not None else None
+            elif isinstance(stmt, FunctionDeclaration) and stmt.name.startswith("__static_private__"):
+                priv_key = "__private__" + stmt.name[len("__static_private__"):]
+                fn = SpryFunction(
+                    name=priv_key,
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=env,
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                cls._static_fields[priv_key] = fn
         return None
 
     def _eval_class_expression(self, node: "ClassExpression", env: Environment) -> SpryClass:
@@ -5767,10 +5860,16 @@ class Interpreter:
         # Execute the class body to pick up var/fn declarations (subclass overrides superclass)
         for stmt in cls.body.body:  # type: ignore[union-attr]
             if isinstance(stmt, VarDeclaration):
+                # Skip static private fields — class-level, stored in _static_fields
+                if stmt.name.startswith("__static_private__"):
+                    continue
                 val = self._eval(stmt.value, instance_env) if stmt.value is not None else None
                 fields[stmt.name] = val
                 instance_env.define(stmt.name, val, mutable=True)
             elif isinstance(stmt, FunctionDeclaration):
+                # Skip static private methods and static init — class-level
+                if stmt.name.startswith("__static_private__") or stmt.name == "__static_init__":
+                    continue
                 fn = SpryFunction(
                     name=stmt.name,
                     params=stmt.params,

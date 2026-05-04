@@ -154,6 +154,7 @@ class TryCatchStatement(Node):
     error_name: str = ""
     handler: Block | None = None
     finally_block: "Block | None" = None
+    error_pattern: "Node | None" = None  # ListDestructure/ObjectDestructure for catch ({a,b}) / catch ([a,b])
 
 
 @dataclass

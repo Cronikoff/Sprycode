@@ -912,12 +912,15 @@ class Parser:
         body = self._parse_block()
         # catch is optional if finally is present
         err_name = ""
+        err_pattern = None
         handler: Block | None = None
         if self._check(TokenType.CATCH):
             self._advance()
             # Support:
             #   catch e { ... }         — bare identifier
             #   catch (e) { ... }       — parenthesised identifier
+            #   catch ({a, b}) { ... }  — object destructuring
+            #   catch ([a, b]) { ... }  — array destructuring
             #   catch { ... }           — no binding (optional catch binding, ES2019)
             has_paren = self._match(TokenType.LPAREN)
             if has_paren:
@@ -925,6 +928,16 @@ class Parser:
                     # catch () { ... } — empty parens, no binding
                     self._advance()
                     err_name = ""
+                elif self._check(TokenType.LBRACE):
+                    # catch ({a, b}) { ... } — object destructuring
+                    dummy_tok = self._current()
+                    err_pattern = self._parse_object_destructure(dummy_tok, mutable=True)
+                    self._expect(TokenType.RPAREN)
+                elif self._check(TokenType.LBRACKET):
+                    # catch ([a, b]) { ... } — array destructuring
+                    dummy_tok = self._current()
+                    err_pattern = self._parse_list_destructure(dummy_tok, mutable=True)
+                    self._expect(TokenType.RPAREN)
                 else:
                     err_name = self._expect_ident().value
                     self._expect(TokenType.RPAREN)
@@ -943,6 +956,7 @@ class Parser:
             error_name=err_name,
             handler=handler,
             finally_block=finally_block,
+            error_pattern=err_pattern,
             line=tok.line,
             column=tok.column,
         )

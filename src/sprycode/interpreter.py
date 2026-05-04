@@ -2041,8 +2041,10 @@ class Interpreter:
                     err_val = ue.value
                     if isinstance(err_val, dict) and "message" not in err_val:
                         err_val = {**err_val, "message": ue.message}
-                    if node.error_name:
-                        child.define(node.error_name, err_val, mutable=False)
+                    if node.error_pattern is not None:
+                        self._apply_catch_pattern(node.error_pattern, err_val, child)
+                    elif node.error_name:
+                        child.define(node.error_name, err_val, mutable=True)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = ue
@@ -2050,8 +2052,10 @@ class Interpreter:
                 if node.handler is not None:
                     child = env.child()
                     err_val = SpryResult(ok=False, error=str(e))
-                    if node.error_name:
-                        child.define(node.error_name, err_val, mutable=False)
+                    if node.error_pattern is not None:
+                        self._apply_catch_pattern(node.error_pattern, err_val, child)
+                    elif node.error_name:
+                        child.define(node.error_name, err_val, mutable=True)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = e
@@ -2468,6 +2472,8 @@ class Interpreter:
                 return None
             idx = self._eval(node.index, env)
             try:
+                if isinstance(obj, dict):
+                    return obj.get(idx, SPRY_UNDEFINED)
                 return obj[idx]
             except (KeyError, IndexError, TypeError) as e:
                 raise SpryRuntimeError(f"Index error: {e}", node)
@@ -2514,6 +2520,9 @@ class Interpreter:
                     f"Symbol subscript {idx!r} is not supported on {type(obj).__name__}", node
                 )
             try:
+                if isinstance(obj, dict):
+                    # dict: missing key returns undefined (like JS obj['key'])
+                    return obj.get(idx, SPRY_UNDEFINED)
                 return obj[idx]
             except (KeyError, IndexError, TypeError) as e:
                 raise SpryRuntimeError(f"Index error: {e}", node)
@@ -5642,6 +5651,26 @@ class Interpreter:
             rest_obj = {k: v for k, v in obj.items() if k not in consumed}
             env.define(node.rest_name, rest_obj, mutable=mutable)
         return None
+
+    def _apply_catch_pattern(self, pattern: Any, err_val: Any, env: "Environment") -> None:
+        """Apply a destructuring pattern (ListDestructure/ObjectDestructure) to a catch value."""
+        if isinstance(pattern, ObjectDestructure):
+            # Convert err_val to a dict if it's a SpryInstance or SpryErrorObject
+            if isinstance(err_val, SpryInstance):
+                src = err_val.fields
+            elif isinstance(err_val, SpryErrorObject):
+                src = {"message": err_val.message, "name": err_val.name, "stack": err_val.stack}
+            elif isinstance(err_val, dict):
+                src = err_val
+            else:
+                src = {"message": str(err_val)}
+            self._apply_object_destructure(pattern, src, env, mutable=True)
+        elif isinstance(pattern, ListDestructure):
+            if isinstance(err_val, (list, tuple)):
+                src_list = list(err_val)
+            else:
+                src_list = [err_val]
+            self._apply_list_destructure(pattern, src_list, env, mutable=True)
 
     # ------------------------------------------------------------------
     # File creation / archive

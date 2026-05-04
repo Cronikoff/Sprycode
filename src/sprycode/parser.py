@@ -126,6 +126,7 @@ from .ast_nodes import (
     OptionalCallExpression,
     ComputedMethodDeclaration,
     SequenceExpression,
+    DeclarationList,
 )
 from .lexer import Token, TokenType
 
@@ -231,6 +232,26 @@ class Parser:
         TokenType.MAP_TYPE,      # "Map" — used as global namespace identifier
         TokenType.MONEY_TYPE,    # "Money" — used as class/identifier name
         TokenType.LOG,           # "log" — usable as variable/function/parameter name
+        # SpryCode-specific keywords commonly used as field/property names in class bodies
+        # and object literals (e.g. `static timeout = 5000`, `{ retry: 3 }`)
+        TokenType.TIMEOUT,       # "timeout"
+        TokenType.SLEEP,         # "sleep"
+        TokenType.RETRY,         # "retry"
+        TokenType.SCHEDULE,      # "schedule"
+        TokenType.DAILY,         # "daily"
+        TokenType.FRAUD,         # "fraud"
+        TokenType.REASON,        # "reason"
+        TokenType.CASE,          # "case"
+        TokenType.SCOPE,         # "scope"
+        TokenType.WEBSOCKET,     # "websocket"
+        # Common SpryCode keywords also used as method names in class bodies
+        # and object literals (e.g. class { create() {}, delete() {}, from() {} })
+        TokenType.CREATE,        # "create"
+        TokenType.DELETE,        # "delete"
+        TokenType.FROM,          # "from"
+        TokenType.DEFAULT,       # "default"
+        TokenType.TO,            # "to" — commonly used as variable name in ranges
+        TokenType.STOP,          # "stop" — commonly used as variable name
     })
 
     def _expect_ident(self) -> Token:
@@ -433,6 +454,31 @@ class Parser:
             return LabeledStatement(label=label_tok.value, body=body_stmt,
                                     line=label_tok.line, column=label_tok.column)
 
+        # Standalone block statement: { stmt; stmt; ... }
+        # Disambiguate from object literals by peeking at the first token inside.
+        # Treat as block when the first inner token is:
+        #   - a statement keyword (let, var, fn, if, for, while, return, etc.)
+        #   - an identifier/keyword NOT followed by ':' (assignment, not key:value)
+        #   - empty (RBRACE) — an empty block
+        if tok.type == TokenType.LBRACE:
+            _BLOCK_KEYWORDS = {
+                TokenType.LET, TokenType.CONST, TokenType.VAR,
+                TokenType.FN, TokenType.FN_STAR, TokenType.IF, TokenType.FOR,
+                TokenType.WHILE, TokenType.DO, TokenType.RETURN, TokenType.THROW,
+                TokenType.TRY, TokenType.BREAK, TokenType.CONTINUE,
+                TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC,
+            }
+            peek1 = self._peek(1)
+            peek2 = self._peek(2)
+            _is_block = (
+                peek1.type == TokenType.RBRACE                          # empty {}
+                or peek1.type in _BLOCK_KEYWORDS                        # starts with statement kw
+                or (peek1.type in self._IDENTIFIER_LIKE                  # ident not followed by ':'
+                    and peek2.type != TokenType.COLON)
+            )
+            if _is_block:
+                return self._parse_block()
+
         # Expression statement or assignment
         return self._parse_expr_or_assignment()
 
@@ -450,6 +496,22 @@ class Parser:
                 body.append(stmt)
         self._expect(TokenType.RBRACE)
         return Block(body=body, line=tok.line, column=tok.column)
+
+    def _parse_block_or_stmt(self) -> Block:
+        """Parse either a brace-enclosed block or a single statement.
+
+        Supports JS-style single-statement if/else/while bodies without braces:
+          if (cond) return x
+          if (cond) throw new Error('msg')
+          while (cond) x++
+        Always returns a Block (wrapping a single statement in a one-element block).
+        """
+        if self._check(TokenType.LBRACE):
+            return self._parse_block()
+        stmt = self._parse_statement()
+        tok = self._current()
+        return Block(body=[stmt] if stmt is not None else [],
+                     line=tok.line, column=tok.column)
 
     # ------------------------------------------------------------------
     # Top-level declarations
@@ -470,53 +532,99 @@ class Parser:
             tok = self._expect(TokenType.LET)
         # Check for list destructuring: let [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
-            return self._parse_list_destructure(tok, mutable=False)
+            first: Node = self._parse_list_destructure(tok, mutable=False)
         # Check for object destructuring: let {a, b} = expr
-        if self._check(TokenType.LBRACE):
-            return self._parse_object_destructure(tok, mutable=False)
-        name_tok = self._expect_ident()
-        type_annotation = None
-        if self._match(TokenType.COLON):
-            type_annotation = self._parse_type_name()
-        value = None
-        if self._match(TokenType.EQ):
-            value = self._parse_expression()
-        return LetDeclaration(
-            name=name_tok.value,
-            type_annotation=type_annotation,
-            value=value,
-            line=tok.line,
-            column=tok.column,
-        )
+        elif self._check(TokenType.LBRACE):
+            first = self._parse_object_destructure(tok, mutable=False)
+        else:
+            name_tok = self._expect_ident()
+            type_annotation = None
+            if self._match(TokenType.COLON):
+                type_annotation = self._parse_type_name()
+            value = None
+            if self._match(TokenType.EQ):
+                value = self._parse_expression()
+            first = LetDeclaration(
+                name=name_tok.value,
+                type_annotation=type_annotation,
+                value=value,
+                line=tok.line,
+                column=tok.column,
+            )
+        # Multiple declarations: let a = 1, b = 2, c = 3
+        if self._check(TokenType.COMMA):
+            decls: list[Node] = [first]
+            while self._match(TokenType.COMMA):
+                if self._check(TokenType.LBRACKET):
+                    decls.append(self._parse_list_destructure(tok, mutable=False))
+                elif self._check(TokenType.LBRACE):
+                    decls.append(self._parse_object_destructure(tok, mutable=False))
+                else:
+                    n_tok = self._expect_ident()
+                    t_ann = None
+                    if self._match(TokenType.COLON):
+                        t_ann = self._parse_type_name()
+                    v_node = None
+                    if self._match(TokenType.EQ):
+                        v_node = self._parse_expression()
+                    decls.append(LetDeclaration(
+                        name=n_tok.value, type_annotation=t_ann, value=v_node,
+                        line=n_tok.line, column=n_tok.column,
+                    ))
+            return DeclarationList(body=decls, line=tok.line, column=tok.column)
+        return first
 
     def _parse_var(self) -> Node:
         tok = self._expect(TokenType.VAR)
         # Check for list destructuring: var [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
-            return self._parse_list_destructure(tok, mutable=True)
+            first_v: Node = self._parse_list_destructure(tok, mutable=True)
         # Check for object destructuring: var {a, b} = expr
-        if self._check(TokenType.LBRACE):
-            return self._parse_object_destructure(tok, mutable=True)
-        # Private field: var #name = value
-        if self._check(TokenType.PRIVATE_IDENT):
-            priv_tok = self._advance()
-            name = f"__private__{priv_tok.value}"
+        elif self._check(TokenType.LBRACE):
+            first_v = self._parse_object_destructure(tok, mutable=True)
         else:
-            name_tok = self._expect_ident()
-            name = name_tok.value
-        type_annotation = None
-        if self._match(TokenType.COLON):
-            type_annotation = self._parse_type_name()
-        value = None
-        if self._match(TokenType.EQ):
-            value = self._parse_expression()
-        return VarDeclaration(
-            name=name,
-            type_annotation=type_annotation,
-            value=value,
-            line=tok.line,
-            column=tok.column,
-        )
+            # Private field: var #name = value
+            if self._check(TokenType.PRIVATE_IDENT):
+                priv_tok = self._advance()
+                name = f"__private__{priv_tok.value}"
+            else:
+                name_tok = self._expect_ident()
+                name = name_tok.value
+            type_annotation = None
+            if self._match(TokenType.COLON):
+                type_annotation = self._parse_type_name()
+            value = None
+            if self._match(TokenType.EQ):
+                value = self._parse_expression()
+            first_v = VarDeclaration(
+                name=name,
+                type_annotation=type_annotation,
+                value=value,
+                line=tok.line,
+                column=tok.column,
+            )
+        # Multiple declarations: var a = 1, b = 2, c = 3
+        if self._check(TokenType.COMMA):
+            decls_v: list[Node] = [first_v]
+            while self._match(TokenType.COMMA):
+                if self._check(TokenType.LBRACKET):
+                    decls_v.append(self._parse_list_destructure(tok, mutable=True))
+                elif self._check(TokenType.LBRACE):
+                    decls_v.append(self._parse_object_destructure(tok, mutable=True))
+                else:
+                    n_tok2 = self._expect_ident()
+                    t_ann2 = None
+                    if self._match(TokenType.COLON):
+                        t_ann2 = self._parse_type_name()
+                    v_node2 = None
+                    if self._match(TokenType.EQ):
+                        v_node2 = self._parse_expression()
+                    decls_v.append(VarDeclaration(
+                        name=n_tok2.value, type_annotation=t_ann2, value=v_node2,
+                        line=n_tok2.line, column=n_tok2.column,
+                    ))
+            return DeclarationList(body=decls_v, line=tok.line, column=tok.column)
+        return first_v
 
     def _parse_fn(self, is_generator: bool = False, is_async: bool = False) -> FunctionDeclaration:
         if is_generator:
@@ -713,7 +821,11 @@ class Parser:
     def _parse_if(self) -> IfStatement:
         tok = self._expect(TokenType.IF)
         condition = self._parse_expression()
-        then_block = self._parse_block()
+        then_block = self._parse_block_or_stmt()
+        # Consume optional trailing semicolons before `else` so that
+        # `if (c) return x; else return y` is parsed correctly.
+        while self._check(TokenType.SEMICOLON):
+            self._advance()
         else_block = None
         if self._match(TokenType.ELSE):
             if self._check(TokenType.IF):
@@ -721,7 +833,7 @@ class Parser:
                 nested = self._parse_if()
                 else_block = Block(body=[nested], line=nested.line, column=nested.column)
             else:
-                else_block = self._parse_block()
+                else_block = self._parse_block_or_stmt()
         return IfStatement(
             condition=condition,
             then_block=then_block,
@@ -738,11 +850,23 @@ class Parser:
         handler: Block | None = None
         if self._check(TokenType.CATCH):
             self._advance()
-            # Support both: catch e { ... }  and  catch (e) { ... }
+            # Support:
+            #   catch e { ... }         — bare identifier
+            #   catch (e) { ... }       — parenthesised identifier
+            #   catch { ... }           — no binding (optional catch binding, ES2019)
             has_paren = self._match(TokenType.LPAREN)
-            err_name = self._expect_ident().value
             if has_paren:
-                self._expect(TokenType.RPAREN)
+                if self._check(TokenType.RPAREN):
+                    # catch () { ... } — empty parens, no binding
+                    self._advance()
+                    err_name = ""
+                else:
+                    err_name = self._expect_ident().value
+                    self._expect(TokenType.RPAREN)
+            elif not self._check(TokenType.LBRACE):
+                # bare identifier: catch e { ... }
+                err_name = self._expect_ident().value
+            # else: catch { ... } — no binding at all
             handler = self._parse_block()
         # optional finally block
         finally_block: Block | None = None
@@ -1172,10 +1296,17 @@ class Parser:
                             stmts.append(LetDeclaration(name=name_tok.value, type_annotation=None, value=val_node, privacy=None, line=name_tok.line, column=name_tok.column))
                     init_stmt = Block(body=stmts, line=stmts[0].line, column=stmts[0].column)
                 if self._match(TokenType.SEMICOLON):
-                    condition = self._parse_value_expression()
+                    # condition may be empty: for (var i=0;; update)
+                    if self._check(TokenType.SEMICOLON):
+                        condition = BoolLiteral(value=True, line=tok.line, column=tok.column)
+                    else:
+                        condition = self._parse_value_expression()
                     self._expect(TokenType.SEMICOLON)
-                    # Support comma-separated updates: i++, j--
-                    update: Node = self._parse_expr_or_assignment()
+                    # Support comma-separated updates: i++, j--  (may also be empty)
+                    if self._check(TokenType.RPAREN):
+                        update: Node = NullLiteral(line=tok.line, column=tok.column)
+                    else:
+                        update = self._parse_expr_or_assignment()
                     if self._check(TokenType.COMMA):
                         update_nodes: list[Node] = [update]
                         while self._match(TokenType.COMMA):
@@ -1195,6 +1326,80 @@ class Parser:
                 self.pos = saved_pos
             except Exception:
                 self.pos = saved_pos
+        # C-style with empty init or expression init: for (;;) { }
+        # or for (; cond; update) { }  or  for (i=0; cond; update) { }
+        # Must be in parentheses to disambiguate from for-in/of.
+        if has_paren:
+            # Empty init: for (; cond ; update)
+            if self._check(TokenType.SEMICOLON):
+                self._advance()  # consume ';'
+                # condition (may be empty too, e.g. for(;;))
+                if self._check(TokenType.SEMICOLON):
+                    cond_node: Node = BoolLiteral(value=True, line=tok.line, column=tok.column)
+                else:
+                    cond_node = self._parse_value_expression()
+                self._expect(TokenType.SEMICOLON)
+                # update (may be empty: for(;;))
+                if self._check(TokenType.RPAREN):
+                    up_node: Node = NullLiteral(line=tok.line, column=tok.column)
+                else:
+                    up_node = self._parse_expr_or_assignment()
+                    if self._check(TokenType.COMMA):
+                        up_nodes: list[Node] = [up_node]
+                        while self._match(TokenType.COMMA):
+                            up_nodes.append(self._parse_expr_or_assignment())
+                        up_node = Block(body=up_nodes, line=up_nodes[0].line, column=up_nodes[0].column)
+                self._expect(TokenType.RPAREN)
+                body_empty = self._parse_block_or_stmt()
+                return ForCStyleStatement(
+                    init=NullLiteral(line=tok.line, column=tok.column),
+                    condition=cond_node,
+                    update=up_node,
+                    body=body_empty,
+                    line=tok.line, column=tok.column,
+                )
+            # Expression/assignment init: for (i=0; cond; update) or for (i++; ...)
+            # Look ahead to see if current position looks like an expression followed by ';'
+            # Use backtracking to avoid mis-parsing a for-in/of loop
+            saved_pos2 = self.pos
+            try:
+                init_expr = self._parse_expr_or_assignment()
+                # If the initializer is actually a comma sequence
+                if self._check(TokenType.COMMA):
+                    init_exprs: list[Node] = [init_expr]
+                    while self._match(TokenType.COMMA):
+                        init_exprs.append(self._parse_expr_or_assignment())
+                    init_expr = Block(body=init_exprs, line=init_exprs[0].line, column=init_exprs[0].column)
+                if self._check(TokenType.SEMICOLON):
+                    self._advance()  # consume first ';'
+                    if self._check(TokenType.SEMICOLON):
+                        # for (init; ; update) — empty condition
+                        cond_e: Node = BoolLiteral(value=True, line=tok.line, column=tok.column)
+                    else:
+                        cond_e = self._parse_value_expression()
+                    self._expect(TokenType.SEMICOLON)
+                    if self._check(TokenType.RPAREN):
+                        up_e: Node = NullLiteral(line=tok.line, column=tok.column)
+                    else:
+                        up_e = self._parse_expr_or_assignment()
+                        if self._check(TokenType.COMMA):
+                            up_es: list[Node] = [up_e]
+                            while self._match(TokenType.COMMA):
+                                up_es.append(self._parse_expr_or_assignment())
+                            up_e = Block(body=up_es, line=up_es[0].line, column=up_es[0].column)
+                    self._expect(TokenType.RPAREN)
+                    body_e = self._parse_block_or_stmt()
+                    return ForCStyleStatement(
+                        init=init_expr,
+                        condition=cond_e,
+                        update=up_e,
+                        body=body_e,
+                        line=tok.line, column=tok.column,
+                    )
+                # Not a C-style semicolon, restore and fall through to for-in/of
+                self.pos = saved_pos2
+            except Exception:
+                self.pos = saved_pos2
         # for let x of ... / for var x of ... (skip optional let/var/const before iterator var)
         let_var_tok = None
         if self._check(TokenType.LET, TokenType.VAR, TokenType.CONST):
@@ -1280,7 +1485,7 @@ class Parser:
     def _parse_while(self) -> WhileStatement:
         tok = self._expect(TokenType.WHILE)
         condition = self._parse_value_expression()
-        body = self._parse_block()
+        body = self._parse_block_or_stmt()
         return WhileStatement(
             condition=condition, body=body,
             line=tok.line, column=tok.column,
@@ -1544,6 +1749,23 @@ class Parser:
                     continue
             if (cur.type == TokenType.IDENTIFIER and cur.value == "static"):
                 next_tok = self._peek(1)
+                # static { ... } — class static initialization block
+                if next_tok.type == TokenType.LBRACE:
+                    self._advance()  # consume 'static'
+                    static_block = self._parse_block()
+                    # Represent as a FunctionDeclaration named "__static_init__"
+                    body.append(FunctionDeclaration(
+                        name="__static_init__",
+                        params=[],
+                        body=static_block,
+                        defaults={},
+                        rest_param=None,
+                        is_async=False,
+                        is_generator=False,
+                        line=cur.line,
+                        column=cur.column,
+                    ))
+                    continue
                 # static get propName() { ... } or static set propName(v) { ... }
                 if (next_tok.type == TokenType.IDENTIFIER
                         and next_tok.value in ("get", "set")
@@ -1579,7 +1801,32 @@ class Parser:
                         fn_node = self._parse_fn()
                         body.append(fn_node)
                         continue
+                    if self._check(TokenType.FN_STAR):
+                        fn_node = self._parse_fn(is_generator=True)
+                        body.append(fn_node)
+                        continue
                     name_tok = self._expect_ident()
+                    # static name() { ... } — static method shorthand (no fn keyword)
+                    if self._check(TokenType.LPAREN):
+                        sm_params, sm_defaults, sm_rest = self._parse_method_params()
+                        # optional return type annotation
+                        if self._check(TokenType.ARROW):
+                            self._advance()
+                            self._parse_type_name()
+                        sm_body = self._parse_block()
+                        # Static methods use plain name (same convention as `static fn name()`)
+                        body.append(FunctionDeclaration(
+                            name=name_tok.value,
+                            params=sm_params,
+                            body=sm_body,
+                            defaults=sm_defaults,
+                            rest_param=sm_rest,
+                            is_async=False,
+                            is_generator=False,
+                            line=cur.line,
+                            column=cur.column,
+                        ))
+                        continue
                     value_node = None
                     if self._match(TokenType.EQ):
                         value_node = self._parse_expression()
@@ -1617,11 +1864,105 @@ class Parser:
                     line=cur.line, column=cur.column,
                 ))
                 continue
+            # Method shorthand: name() { ... }  (without fn keyword)
+            # Must come after get/set/fn/static/computed checks to avoid conflicts.
+            # Also handles: async name() { ... } and *name() { ... } generator methods.
+            ms_is_async = False
+            ms_is_gen = False
+            cur = self._current()  # refresh after the previous checks may have advanced
+            if cur.type == TokenType.IDENTIFIER and cur.value == "async":
+                # async name() { ... } — look-ahead to confirm it's a method
+                if self._peek(1).type in self._IDENTIFIER_LIKE and self._peek(2).type == TokenType.LPAREN:
+                    ms_is_async = True
+                    self._advance()  # consume 'async'
+                    cur = self._current()
+            if cur.type == TokenType.STAR:
+                # *name() { ... } — generator method shorthand
+                if self._peek(1).type in self._IDENTIFIER_LIKE and self._peek(2).type == TokenType.LPAREN:
+                    ms_is_gen = True
+                    self._advance()  # consume '*'
+                    cur = self._current()
+            if cur.type in self._IDENTIFIER_LIKE and self._peek(1).type == TokenType.LPAREN:
+                ms_tok = self._advance()
+                ms_params, ms_defaults, ms_rest = self._parse_method_params()
+                # optional return type
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                ms_body = self._parse_block()
+                body.append(FunctionDeclaration(
+                    name=ms_tok.value,
+                    params=ms_params,
+                    body=ms_body,
+                    defaults=ms_defaults,
+                    rest_param=ms_rest,
+                    is_async=ms_is_async,
+                    is_generator=ms_is_gen,
+                    line=ms_tok.line,
+                    column=ms_tok.column,
+                ))
+                continue
             stmt = self._parse_statement()
             if stmt is not None:
                 body.append(stmt)
         self._expect(TokenType.RBRACE)
         return Block(body=body, line=tok.line, column=tok.column)
+
+    def _parse_method_params(self) -> tuple[list[tuple[str, str | None]], dict, str | None]:
+        """Parse ``(params)`` for a class method shorthand.
+
+        Expects the opening ``(`` to be current; consumes up to and including
+        the closing ``)``.  Returns ``(params, defaults, rest_param)``.
+        """
+        self._expect(TokenType.LPAREN)
+        params: list[tuple[str, str | None]] = []
+        defaults: dict = {}
+        rest_param: str | None = None
+        while not self._check(TokenType.RPAREN) and not self._at_end():
+            if self._check(TokenType.ELLIPSIS):
+                self._advance()
+                rest_param = self._expect_ident().value
+                break
+            if self._check(TokenType.LBRACE):
+                param_names = self._parse_dict_destruct_param()
+                params.append(("__destruct__:" + ",".join(param_names), None))
+                if not self._match(TokenType.COMMA):
+                    break
+                continue
+            if self._check(TokenType.LBRACKET):
+                self._advance()
+                arr_names: list[str] = []
+                arr_rest: str | None = None
+                while not self._check(TokenType.RBRACKET) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        arr_rest = self._expect_ident().value
+                        break
+                    arr_names.append(self._expect_ident().value)
+                    if not self._match(TokenType.COMMA):
+                        break
+                self._expect(TokenType.RBRACKET)
+                synth = "__array_destruct__:" + ",".join(arr_names)
+                if arr_rest:
+                    synth += "..." + arr_rest
+                params.append((synth, None))
+                if not self._match(TokenType.COMMA):
+                    break
+                continue
+            pname = self._expect_ident()
+            ptype = None
+            if self._match(TokenType.COLON):
+                ptype = self._parse_type_name()
+            default_expr = None
+            if self._match(TokenType.EQ):
+                default_expr = self._parse_null_coalesce()
+            params.append((pname.value, ptype))
+            if default_expr is not None:
+                defaults[pname.value] = default_expr
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.RPAREN)
+        return params, defaults, rest_param
 
     def _parse_interface(self) -> InterfaceDeclaration:
         tok = self._expect(TokenType.INTERFACE)
@@ -1716,7 +2057,14 @@ class Parser:
                                and not self._check(TokenType.DEFAULT)
                                and not self._check(TokenType.RBRACE)
                                and not self._at_end()):
-                            # Optionally allow a bare expression as the body of a case
+                            # Skip statement-separator semicolons
+                            while self._check(TokenType.SEMICOLON):
+                                self._advance()
+                            if (self._check(TokenType.CASE)
+                                    or self._check(TokenType.DEFAULT)
+                                    or self._check(TokenType.RBRACE)
+                                    or self._at_end()):
+                                break
                             stmt = self._parse_statement()
                             if stmt is not None:
                                 stmts.append(stmt)
@@ -1738,6 +2086,14 @@ class Parser:
                                and not self._check(TokenType.DEFAULT)
                                and not self._check(TokenType.RBRACE)
                                and not self._at_end()):
+                            # Skip statement-separator semicolons
+                            while self._check(TokenType.SEMICOLON):
+                                self._advance()
+                            if (self._check(TokenType.CASE)
+                                    or self._check(TokenType.DEFAULT)
+                                    or self._check(TokenType.RBRACE)
+                                    or self._at_end()):
+                                break
                             stmt = self._parse_statement()
                             if stmt is not None:
                                 stmts2.append(stmt)
@@ -2776,13 +3132,14 @@ class Parser:
                     prop = self._advance().value
                     if self._check(TokenType.LPAREN):
                         # Optional method call: obj?.method(args)
+                        # Parsed as OptionalCallExpression so callee=None short-circuits the call
                         self._advance()
                         args = self._parse_arg_list()
                         self._expect(TokenType.RPAREN)
                         callee = OptionalMemberExpression(
                             object=expr, property=prop, line=qt.line, column=qt.column
                         )
-                        expr = CallExpression(
+                        expr = OptionalCallExpression(
                             callee=callee, args=args, line=qt.line, column=qt.column
                         )
                     else:
@@ -3263,11 +3620,36 @@ class Parser:
                 self._advance()  # consume '['
                 key_expr = self._parse_expression()
                 self._expect(TokenType.RBRACKET)
-                self._expect(TokenType.COLON)
-                value = self._parse_expression()
-                # Use a placeholder key in pairs; runtime will evaluate key_expr
-                placeholder = f"__computed_{len(entries)}__"
-                entries.append(("__computed__", (key_expr, value)))
+                if self._check(TokenType.LPAREN):
+                    # Computed method shorthand: { [key](...params) { body } }
+                    self._advance()  # consume '('
+                    cmp_params: list[tuple[str, str | None]] = []
+                    cmp_defaults: dict = {}
+                    cmp_rest: str | None = None
+                    while not self._check(TokenType.RPAREN) and not self._at_end():
+                        if self._check(TokenType.ELLIPSIS):
+                            self._advance()
+                            cmp_rest = self._expect_ident().value
+                            break
+                        pname = self._expect_ident().value
+                        if self._match(TokenType.EQ):
+                            cmp_defaults[pname] = self._parse_expression()
+                        cmp_params.append((pname, None))
+                        if not self._match(TokenType.COMMA):
+                            break
+                    self._expect(TokenType.RPAREN)
+                    cmp_body = self._parse_block()
+                    cmp_fn = AnonymousFunctionExpression(
+                        params=cmp_params, return_type=None, body=cmp_body,
+                        defaults=cmp_defaults, rest_param=cmp_rest,
+                        line=key_expr.line, column=key_expr.column,
+                    )
+                    entries.append(("__computed__", (key_expr, cmp_fn)))
+                else:
+                    self._expect(TokenType.COLON)
+                    value = self._parse_expression()
+                    # Use a placeholder key in pairs; runtime will evaluate key_expr
+                    entries.append(("__computed__", (key_expr, value)))
             else:
                 key_tok = self._current()
                 key = self._advance().value

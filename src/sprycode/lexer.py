@@ -995,6 +995,10 @@ class Lexer:
         Converts ${...} interpolation to {...} (matching f-string format).
         The token value is stored as `processed\x00raw` so tagged templates
         (e.g. String.raw) can access the unescaped original text.
+
+        Nested template literals inside ${...} expressions are supported:
+        ``result: ${`inner: ${x}`}`` is scanned correctly by tracking brace
+        depth and recursively consuming inner backtick strings.
         """
         self._advance()  # consume opening `
         value = ""
@@ -1012,11 +1016,13 @@ class Lexer:
                 self._advance()
                 break
             elif ch == "$" and self._peek() == "{":
-                # ${expr} → {expr}
+                # ${expr} — scan the full expression with depth/string tracking
+                # so that nested backtick templates (and nested braces) are handled.
                 self._advance()  # skip $
-                brace = self._advance()  # include {
-                value += brace
-                raw_value += brace
+                self._advance()  # skip {
+                expr_chars = self._scan_template_expr()
+                value += "{" + expr_chars + "}"
+                raw_value += "{" + expr_chars + "}"
             else:
                 ch_val = self._advance()
                 value += ch_val
@@ -1025,6 +1031,88 @@ class Lexer:
             raise LexerError("Unterminated template literal", line, col)
         # Store as processed\x00raw so tagged templates can access original
         yield Token(TokenType.FSTRING, value + "\x00" + raw_value, line, col)
+
+    def _scan_template_expr(self) -> str:
+        """Scan a template expression (the content of ``${...}``) until the
+        matching ``}`` (depth 0), handling nested braces and inner backtick
+        template strings.  Returns the expression source string (without the
+        surrounding ``{``/``}``).
+        """
+        expr = ""
+        depth = 1
+        while self.pos < len(self.source) and depth > 0:
+            ec = self._current()
+            if ec == "{":
+                expr += ec
+                self._advance()
+                depth += 1
+            elif ec == "}":
+                depth -= 1
+                if depth > 0:
+                    expr += ec
+                self._advance()
+            elif ec == "`":
+                # Nested backtick template — consume verbatim so it can be
+                # re-lexed when the outer template is evaluated.
+                expr += ec
+                self._advance()
+                expr += self._scan_inner_backtick()
+            elif ec in ("'", '"'):
+                # String literal inside expression — consume to avoid mismatching }
+                quote = ec
+                expr += ec
+                self._advance()
+                while self.pos < len(self.source):
+                    sc = self._current()
+                    if sc == "\\":
+                        expr += sc
+                        self._advance()
+                        if self.pos < len(self.source):
+                            expr += self._current()
+                            self._advance()
+                    elif sc == quote:
+                        expr += sc
+                        self._advance()
+                        break
+                    else:
+                        expr += sc
+                        self._advance()
+            else:
+                expr += ec
+                self._advance()
+        return expr
+
+    def _scan_inner_backtick(self) -> str:
+        """Scan the body of an inner backtick template (after the opening
+        backtick has already been consumed and added).  Returns the source
+        text through and including the closing backtick so the caller can
+        embed it verbatim in an outer expression string.
+        """
+        result = ""
+        while self.pos < len(self.source):
+            ic = self._current()
+            if ic == "\\":
+                result += ic
+                self._advance()
+                if self.pos < len(self.source):
+                    result += self._current()
+                    self._advance()
+            elif ic == "`":
+                result += ic
+                self._advance()
+                return result  # end of inner template
+            elif ic == "$" and self._peek() == "{":
+                # Nested ${...} inside inner template
+                result += ic  # $
+                self._advance()
+                result += self._current()  # {
+                self._advance()
+                result += self._scan_template_expr()
+                result += "}"
+            else:
+                result += ic
+                self._advance()
+        return result  # unterminated inner template (error will be caught later)
 
     def _scan_number(self, line: int, col: int) -> Iterator[Token]:
         # Check for 0x, 0b, 0o prefix literals

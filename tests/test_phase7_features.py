@@ -179,7 +179,7 @@ class TestJSONNamespace:
 
     def test_stringify_list(self):
         i = run('let v = JSON.stringify([1, 2, 3])')
-        assert val(i, "v") == "[1, 2, 3]"
+        assert val(i, "v") == "[1,2,3]"
 
     def test_stringify_string(self):
         i = run('let v = JSON.stringify("hello")')
@@ -414,7 +414,7 @@ class TestListAt:
 class TestMathRandom:
     def test_random_returns_float(self):
         i = run('let v = typeof math.random()')
-        assert val(i, "v") == "Float"
+        assert val(i, "v") == "number"
 
     def test_random_in_range(self):
         src = """var passed = true

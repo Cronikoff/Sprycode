@@ -262,9 +262,9 @@ let v = tag`Hello ${name}\n`"""
 
 def test_typeof_symbol():
     i = run('let s = Symbol("foo")\nlet v = typeof s')
-    assert v(i) == "Symbol"
+    assert v(i) == "symbol"
 
 
 def test_typeof_symbol_for():
     i = run('let s = Symbol.for("key")\nlet v = typeof s')
-    assert v(i) == "Symbol"
+    assert v(i) == "symbol"

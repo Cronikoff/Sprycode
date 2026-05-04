@@ -119,7 +119,7 @@ class Coll {
 let c = new Coll()
 let v = typeof c[Symbol.iterator]
 """)
-    assert i.globals.get("v") == "Function"
+    assert i.globals.get("v") == "function"
 
 
 def test_class_computed_method_callable() -> None:
@@ -223,22 +223,22 @@ def test_typeof_undeclared_returns_undefined() -> None:
 
 def test_typeof_null_returns_null() -> None:
     i = run("let v = typeof null")
-    assert i.globals.get("v") == "Null"
+    assert i.globals.get("v") == "object"
 
 
 def test_typeof_number_returns_int() -> None:
     i = run("let v = typeof 42")
-    assert i.globals.get("v") == "Int"
+    assert i.globals.get("v") == "number"
 
 
 def test_typeof_string_returns_text() -> None:
     i = run('let v = typeof "hello"')
-    assert i.globals.get("v") == "Text"
+    assert i.globals.get("v") == "string"
 
 
 def test_typeof_declared_null_is_null() -> None:
     i = run("let x = null\nlet v = typeof x")
-    assert i.globals.get("v") == "Null"
+    assert i.globals.get("v") == "object"
 
 
 # ---------------------------------------------------------------------------
@@ -276,18 +276,20 @@ let v = await p
 
 
 def test_globalthis_undefined_is_none() -> None:
+    from sprycode.interpreter import SPRY_UNDEFINED
     i = run("let v = globalThis.undefined")
-    assert i.globals.get("v") is None
+    assert i.globals.get("v") is SPRY_UNDEFINED
 
 
 def test_globalthis_undefined_comparison() -> None:
+    # JS: undefined == null → True (loose equality)
     i = run("let v = globalThis.undefined == null")
     assert i.globals.get("v") is True
 
 
 def test_globalthis_undefined_typeof() -> None:
     i = run("let v = typeof globalThis.undefined")
-    assert i.globals.get("v") == "Null"
+    assert i.globals.get("v") == "undefined"
 
 
 # ---------------------------------------------------------------------------

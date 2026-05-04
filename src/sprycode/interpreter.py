@@ -27,6 +27,7 @@ from .ast_nodes import (
     AtomicStatement,
     BinaryExpression,
     Block,
+    DeclarationList,
     BoolLiteral,
     BreakStatement,
     CallExpression,
@@ -166,6 +167,46 @@ from .runtime.stdlib import (
 # ---------------------------------------------------------------------------
 # Runtime control exceptions (used as signals, not errors)
 # ---------------------------------------------------------------------------
+
+
+class _SpryUndefinedType:
+    """Singleton sentinel for the JS ``undefined`` value.
+
+    Distinct from ``None`` (which represents ``null``) so that
+    ``String(undefined)`` → ``'undefined'`` and ``typeof undefined`` → ``'undefined'``
+    work correctly when the caller explicitly passes the ``undefined`` global.
+
+    JS loose equality: ``undefined == null`` is ``True``.
+    JS strict equality: ``undefined === null`` is ``False``.
+    """
+
+    _instance: "_SpryUndefinedType | None" = None
+
+    def __new__(cls) -> "_SpryUndefinedType":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __eq__(self, other: object) -> bool:
+        # JS: undefined == null → True, undefined == undefined → True
+        if isinstance(other, _SpryUndefinedType):
+            return True
+        if other is None:
+            return True
+        return False
+
+    def __hash__(self) -> int:
+        return hash(None)
+
+    def __repr__(self) -> str:
+        return "undefined"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+#: The singleton ``undefined`` value used throughout the SpryCode runtime.
+SPRY_UNDEFINED = _SpryUndefinedType()
 
 
 def _strict_eq(left: Any, right: Any) -> bool:
@@ -446,6 +487,23 @@ class BoundMethod:
         return f"<bound method {self.fn.name}>"
 
 
+class DictBoundMethod:
+    """A SpryCode function/lambda bound to a plain dict object.
+
+    When a ``SpryFunction`` is accessed as a property of a dict (plain object literal),
+    we wrap it so ``this`` is automatically bound to the dict when the method is called.
+    This gives object-literal methods the same ``this`` binding behaviour as class methods.
+    """
+
+    def __init__(self, obj: dict, fn: Any) -> None:
+        self.obj = obj
+        self.fn = fn
+
+    def __repr__(self) -> str:
+        name = getattr(self.fn, "name", "<anonymous>")
+        return f"<dict method {name}>"
+
+
 class SpryRegex:
     """Runtime representation of a regex literal (compiled re pattern)."""
 
@@ -528,6 +586,15 @@ class SpryWebSocket:
         return f"<WebSocket {self.url!r} connected={self.connected}>"
 
 
+class _Missing:
+    """Sentinel for missing optional arguments (e.g. reduce initial value)."""
+    def __repr__(self) -> str:
+        return "<missing>"
+
+
+_MISSING = _Missing()
+
+
 class _CallableList(list):
     """A list that is also callable — used for properties like `.flat` that work both
     as `list.flat` (returns default result) and `list.flat(depth)` (parameterised)."""
@@ -545,11 +612,22 @@ class SpryIterator:
 
     Also compares equal to the underlying list for backward compatibility
     with existing tests that use `assert result == [...]`.
+
+    Supports TC39 Iterator Helpers (filter, map, take, drop, flatMap, toArray)
+    with a call_fn hook so SpryCode lambdas can be used as predicates/mappers.
     """
 
-    def __init__(self, items: list) -> None:
+    def __init__(self, items: list, call_fn: "Any | None" = None) -> None:
         self._items = list(items)
         self._index = 0
+        self._call_fn = call_fn  # Interpreter._call_function partial for lambdas
+
+    def _call(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args, None)
+        if callable(fn):
+            return fn(*args)
+        return fn
 
     def next(self) -> dict:
         if self._index < len(self._items):
@@ -557,6 +635,84 @@ class SpryIterator:
             self._index += 1
             return {"value": val, "done": False}
         return {"value": None, "done": True}
+
+    def toArray(self) -> list:
+        """Return remaining items as a plain list (alias for toList)."""
+        return list(self._items[self._index:])
+
+    def toList(self) -> list:
+        return list(self._items[self._index:])
+
+    def filter(self, fn: Any) -> "SpryIterator":
+        """Return a new SpryIterator keeping only items where fn(item) is truthy."""
+        result = []
+        for item in self._items[self._index:]:
+            if self._call(fn, [item]):
+                result.append(item)
+        return SpryIterator(result, self._call_fn)
+
+    def map(self, fn: Any) -> "SpryIterator":
+        """Return a new SpryIterator with fn applied to each item."""
+        result = [self._call(fn, [item]) for item in self._items[self._index:]]
+        return SpryIterator(result, self._call_fn)
+
+    def take(self, n: Any) -> "SpryIterator":
+        """Return a new SpryIterator with at most n items."""
+        return SpryIterator(self._items[self._index:self._index + int(n)], self._call_fn)
+
+    def drop(self, n: Any) -> "SpryIterator":
+        """Return a new SpryIterator skipping the first n items."""
+        return SpryIterator(self._items[self._index + int(n):], self._call_fn)
+
+    def flatMap(self, fn: Any) -> "SpryIterator":
+        """Return a new SpryIterator with fn applied and results flattened one level."""
+        result: list = []
+        for item in self._items[self._index:]:
+            val = self._call(fn, [item])
+            if isinstance(val, (list, SpryIterator)):
+                result.extend(val)
+            else:
+                result.append(val)
+        return SpryIterator(result, self._call_fn)
+
+    def forEach(self, fn: Any) -> None:
+        """Call fn(item) for each remaining item."""
+        for item in self._items[self._index:]:
+            self._call(fn, [item])
+
+    def reduce(self, fn: Any, initial: Any = _MISSING) -> Any:
+        """Reduce remaining items with fn(acc, item)."""
+        items = self._items[self._index:]
+        if not items:
+            if initial is _MISSING:
+                raise TypeError("reduce of empty iterator with no initial value")
+            return initial
+        acc = initial if initial is not _MISSING else items[0]
+        start = 0 if initial is not _MISSING else 1
+        for item in items[start:]:
+            acc = self._call(fn, [acc, item])
+        return acc
+
+    def some(self, fn: Any) -> bool:
+        """Return True if fn(item) is truthy for any remaining item."""
+        for item in self._items[self._index:]:
+            if self._call(fn, [item]):
+                return True
+        return False
+
+    def every(self, fn: Any) -> bool:
+        """Return True if fn(item) is truthy for all remaining items."""
+        for item in self._items[self._index:]:
+            if not self._call(fn, [item]):
+                return False
+        return True
+
+    def find(self, fn: Any) -> Any:
+        """Return first item where fn(item) is truthy, or None."""
+        for item in self._items[self._index:]:
+            if self._call(fn, [item]):
+                return item
+        return None
 
     def __iter__(self):
         return iter(self._items)
@@ -573,9 +729,6 @@ class SpryIterator:
 
     def __getitem__(self, index: Any) -> Any:
         return self._items[index]
-
-    def toList(self) -> list:
-        return list(self._items[self._index:])
 
     def __repr__(self) -> str:
         return f"Iterator({self._items!r})"
@@ -868,7 +1021,13 @@ class Interpreter:
         env.define("entries", lambda d: [[k, v] for k, v in d.items()] if isinstance(d, dict) else [])
 
         # Dict/Object helpers
-        env.define("fromEntries", lambda lst: dict(lst) if isinstance(lst, list) else {})
+        def _from_entries(entries: Any) -> dict:
+            if isinstance(entries, list):
+                return {str(k): v for k, v in entries}
+            if isinstance(entries, SpryMap):
+                return {str(k): v for k, v in entries._data.items()}
+            return {}
+        env.define("fromEntries", _from_entries)
         env.define("merge", lambda *dicts: {k: v for d in dicts if isinstance(d, dict) for k, v in d.items()})
 
         # Parsing helpers (global convenience functions)
@@ -945,7 +1104,7 @@ class Interpreter:
         env.define("null", None)
         env.define("Infinity", float("inf"))
         env.define("NaN", float("nan"))
-        env.define("undefined", None)  # JS-compat alias for null
+        env.define("undefined", SPRY_UNDEFINED)  # JS-compat undefined sentinel
 
         # Environment and formatting
         env.define("env", lambda key, default=None: os.environ.get(str(key), default))
@@ -964,7 +1123,9 @@ class Interpreter:
         env.define("python", _PythonNamespace())
 
         # String global namespace
-        env.define("String", _StringNamespace())
+        _string_ns = _StringNamespace()
+        _string_ns._interp = self
+        env.define("String", _string_ns)
 
         # Map global namespace
         _map_ns = _MapNamespace()
@@ -1065,9 +1226,9 @@ class Interpreter:
         env.define("Reflect", _ReflectNamespace())
 
         # globalThis — reference to the interpreter's global env dict
-        env.define("globalThis", {"__type__": "GlobalThis", "undefined": None})
+        env.define("globalThis", {"__type__": "GlobalThis", "undefined": SPRY_UNDEFINED})
 
-        # structuredClone — deep clone that handles SpryMap, SprySet, dict, list
+        # structuredClone — deep clone that handles SpryMap, SprySet, SpryDate, dict, list
         def _structured_clone(val: Any) -> Any:
             if isinstance(val, SpryMap):
                 new_map = SpryMap()
@@ -1079,6 +1240,11 @@ class Interpreter:
                 for item in val._data:
                     new_set.add(_structured_clone(item))
                 return new_set
+            if isinstance(val, SpryDate):
+                import datetime as _datetime_mod
+                new_date = object.__new__(SpryDate)
+                new_date._dt = val._dt.replace()  # replace() with no args copies all datetime fields
+                return new_date
             if isinstance(val, dict):
                 return {k: _structured_clone(v) for k, v in val.items()}
             if isinstance(val, list):
@@ -1160,25 +1326,80 @@ class Interpreter:
         return env
 
     def _eval_fstring(self, template: str, env: "Environment") -> str:
-        """Evaluate an f-string template by substituting {expr} with evaluated values."""
-        import re
+        """Evaluate an f-string template by substituting {expr} with evaluated values.
+
+        Uses a depth-aware scan instead of a simple regex so that nested braces
+        and inner backtick template literals inside ``{...}`` expressions are
+        handled correctly.
+        """
         result = ""
-        last = 0
-        for m in re.finditer(r"\{([^}]+)\}", template):
-            result += template[last:m.start()]
-            expr_src = m.group(1)
-            try:
-                from .lexer import Lexer as _Lexer
-                from .parser import Parser as _Parser
-                tokens = _Lexer(expr_src).tokenize()
-                prog = _Parser(tokens).parse()
-                # prog.body[0] is the expression statement
-                val = self._eval(prog.body[0], env)
-                result += self._builtin_str(val)
-            except Exception as e:
-                result += f"{{{expr_src}}}"
-            last = m.end()
-        result += template[last:]
+        i = 0
+        n = len(template)
+        while i < n:
+            if template[i] == "{":
+                # Depth-tracking scan for the matching closing }
+                i += 1
+                depth = 1
+                expr_start = i
+                while i < n and depth > 0:
+                    c = template[i]
+                    if c == "{":
+                        depth += 1
+                        i += 1
+                    elif c == "}":
+                        depth -= 1
+                        i += 1
+                    elif c == "`":
+                        # Inner backtick string — skip until matching close backtick,
+                        # tracking its own ${...} depth so inner } don't confuse us.
+                        i += 1
+                        while i < n:
+                            bc = template[i]
+                            if bc == "\\":
+                                i += 2  # skip escape + escaped char
+                            elif bc == "`":
+                                i += 1
+                                break
+                            elif bc == "$" and i + 1 < n and template[i + 1] == "{":
+                                i += 2  # skip ${
+                                inner_d = 1
+                                while i < n and inner_d > 0:
+                                    ic = template[i]
+                                    if ic == "{":
+                                        inner_d += 1
+                                    elif ic == "}":
+                                        inner_d -= 1
+                                    i += 1
+                            else:
+                                i += 1
+                    elif c in ("'", '"'):
+                        quote = c
+                        i += 1
+                        while i < n:
+                            sc = template[i]
+                            if sc == "\\":
+                                i += 2
+                            elif sc == quote:
+                                i += 1
+                                break
+                            else:
+                                i += 1
+                    else:
+                        i += 1
+                expr_src = template[expr_start:i - 1]  # exclude trailing }
+                try:
+                    from .lexer import Lexer as _Lexer
+                    from .parser import Parser as _Parser
+                    tokens = _Lexer(expr_src).tokenize()
+                    prog = _Parser(tokens).parse()
+                    # prog.body[0] is the expression statement
+                    val = self._eval(prog.body[0], env)
+                    result += self._builtin_str(val)
+                except Exception as e:
+                    result += f"{{{expr_src}}}"
+            else:
+                result += template[i]
+                i += 1
         return result
 
     def _eval_tagged_template(self, node: "TaggedTemplateExpression", env: "Environment") -> Any:
@@ -1187,31 +1408,72 @@ class Interpreter:
         Calls tag(strings, ...values) where strings is the list of raw string parts
         and values are the evaluated expressions.
         """
-        import re as _re
         tag_fn = self._eval(node.tag, env)
         # Use raw_template when available (preserves \\n etc for String.raw)
         template = node.raw_template if node.raw_template else node.template
         strings: list[str] = []
         values: list[Any] = []
-        last = 0
-        for m in _re.finditer(r"\{([^}]+)\}", template):
-            strings.append(template[last:m.start()])
-            expr_src = m.group(1)
-            try:
-                from .lexer import Lexer as _Lexer
-                from .parser import Parser as _Parser
-                _tokens = _Lexer(expr_src).tokenize()
-                _prog = _Parser(_tokens).parse()
-                val = self._eval(_prog.body[0], env)
-                values.append(val)
-            except Exception:
-                values.append(None)
-            last = m.end()
-        strings.append(template[last:])
+        i = 0
+        n = len(template)
+        current_str = ""
+        while i < n:
+            if template[i] == "{":
+                i += 1
+                depth = 1
+                expr_start = i
+                while i < n and depth > 0:
+                    c = template[i]
+                    if c == "{":
+                        depth += 1
+                        i += 1
+                    elif c == "}":
+                        depth -= 1
+                        i += 1
+                    elif c == "`":
+                        i += 1
+                        while i < n:
+                            bc = template[i]
+                            if bc == "\\":
+                                i += 2
+                            elif bc == "`":
+                                i += 1
+                                break
+                            elif bc == "$" and i + 1 < n and template[i + 1] == "{":
+                                i += 2
+                                inner_d = 1
+                                while i < n and inner_d > 0:
+                                    ic = template[i]
+                                    if ic == "{":
+                                        inner_d += 1
+                                    elif ic == "}":
+                                        inner_d -= 1
+                                    i += 1
+                            else:
+                                i += 1
+                    else:
+                        i += 1
+                expr_src = template[expr_start:i - 1]
+                strings.append(current_str)
+                current_str = ""
+                try:
+                    from .lexer import Lexer as _Lexer
+                    from .parser import Parser as _Parser
+                    _tokens = _Lexer(expr_src).tokenize()
+                    _prog = _Parser(_tokens).parse()
+                    val = self._eval(_prog.body[0], env)
+                    values.append(val)
+                except Exception:
+                    values.append(None)
+            else:
+                current_str += template[i]
+                i += 1
+        strings.append(current_str)
         return self._call_value(tag_fn, [strings, *values])
 
     def _builtin_str(self, value: Any) -> str:
         """Convert any SpryCode value to a string."""
+        if isinstance(value, _SpryUndefinedType):
+            return "undefined"
         if value is None:
             return "null"
         if isinstance(value, bool):
@@ -1347,6 +1609,12 @@ class Interpreter:
         if isinstance(node, Block):
             return self._exec_block(node, env.child())
 
+        if isinstance(node, DeclarationList):
+            # Multiple declarations from `var a=1, b=2` — execute in CURRENT env (no new scope)
+            for stmt in node.body:
+                self._exec(stmt, env)
+            return None
+
         if isinstance(node, AppDeclaration):
             self._app_name = node.name
             self._app_version = node.version
@@ -1383,12 +1651,15 @@ class Interpreter:
                         return None
                 obj.set(node.property, value)
             elif isinstance(obj, dict):
+                # Check for frozen object — silently ignore writes (JS non-strict behavior)
+                if obj.get("__spry_frozen__"):
+                    return None
                 # Check for setter
                 setter_key = f"__setter__{node.property}"
                 if setter_key in obj:
                     setter_fn = obj[setter_key]
                     if isinstance(setter_fn, SpryFunction):
-                        self._call_function(setter_fn, [value], node)
+                        self._call_dict_bound_method(setter_fn, obj, [value], node)
                         return None
                     elif callable(setter_fn):
                         try:
@@ -1582,7 +1853,8 @@ class Interpreter:
                     err_val = ue.value
                     if isinstance(err_val, dict) and "message" not in err_val:
                         err_val = {**err_val, "message": ue.message}
-                    child.define(node.error_name, err_val, mutable=False)
+                    if node.error_name:
+                        child.define(node.error_name, err_val, mutable=False)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = ue
@@ -1590,7 +1862,8 @@ class Interpreter:
                 if node.handler is not None:
                     child = env.child()
                     err_val = SpryResult(ok=False, error=str(e))
-                    child.define(node.error_name, err_val, mutable=False)
+                    if node.error_name:
+                        child.define(node.error_name, err_val, mutable=False)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = e
@@ -1933,7 +2206,7 @@ class Interpreter:
 
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
-            if callee is None:
+            if callee is None or callee is SPRY_UNDEFINED:
                 return None
             args: list[Any] = []
             for a in node.args:
@@ -1955,6 +2228,8 @@ class Interpreter:
                     raise SpryRuntimeError(str(e), node)
             if isinstance(callee, BoundMethod):
                 return self._call_bound_method(callee, args, node)
+            if isinstance(callee, DictBoundMethod):
+                return self._call_dict_bound_method(callee.fn, callee.obj, args, node)
             if isinstance(callee, SpryFunction):
                 return self._call_function(callee, args, node)
             if isinstance(callee, SpryLambda):
@@ -2140,7 +2415,7 @@ class Interpreter:
                 if "Undefined variable" in str(e) or "not defined" in str(e):
                     return "undefined"
                 raise
-            return self._spry_typeof(val)
+            return self._js_typeof(val)
 
         if isinstance(node, InstanceofExpression):
             val = self._eval(node.operand, env)
@@ -2188,9 +2463,20 @@ class Interpreter:
         return self._exec(node, env)
 
     def _eval_binary(self, node: BinaryExpression, env: Environment) -> Any:
-        left = self._eval(node.left, env)
-        right = self._eval(node.right, env)
         op = node.op
+        left = self._eval(node.left, env)
+
+        # Short-circuit operators: evaluate right operand lazily
+        if op == "&&":
+            if not self._truthy(left):
+                return left
+            return self._eval(node.right, env)
+        if op == "||":
+            if self._truthy(left):
+                return left
+            return self._eval(node.right, env)
+
+        right = self._eval(node.right, env)
 
         if op == "+":
             if isinstance(left, (SpryMoney,)) and isinstance(right, (SpryMoney,)):
@@ -2239,10 +2525,6 @@ class Interpreter:
             return left <= right
         if op == ">=":
             return left >= right
-        if op == "&&":
-            return self._truthy(left) and self._truthy(right)
-        if op == "||":
-            return self._truthy(left) or self._truthy(right)
         # Bitwise operators
         if op == "&":
             return int(left) & int(right)
@@ -2307,6 +2589,9 @@ class Interpreter:
         if isinstance(callee, BoundMethod):
             return self._call_bound_method(callee, args, node)
 
+        if isinstance(callee, DictBoundMethod):
+            return self._call_dict_bound_method(callee.fn, callee.obj, args, node)
+
         if isinstance(callee, SpryFunction):
             return self._call_function(callee, args, node)
 
@@ -2344,12 +2629,11 @@ class Interpreter:
             raise SpryRuntimeError(
                 f"Function {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
             )
-        if fn.rest_param is None and len(args) > total_positional:
-            raise SpryRuntimeError(
-                f"Function {fn.name!r} expects at most {total_positional} args, got {len(args)}", node
-            )
+        # Extra args are silently ignored (JS semantics: callers may pass more args than declared)
 
         child = fn.closure.child()
+        # Always define `arguments` (JS semantics: every function has access to all passed args)
+        child.define("arguments", list(args), mutable=False)
 
         for i, (pname, _ptype) in enumerate(fn.params):
             # Dict destructuring param: __destruct__:a,b
@@ -2422,8 +2706,10 @@ class Interpreter:
         obj = self._eval(node.object, env)
         prop = node.property
 
-        if obj is None:
-            raise SpryRuntimeError(f"Cannot access property {prop!r} on null", node)
+        if obj is None or isinstance(obj, _SpryUndefinedType):
+            noun = "null" if obj is None else "undefined"
+            err_msg = f"Cannot read properties of {noun} (reading '{prop}')"
+            raise SpryUserError(SpryErrorObject("TypeError", err_msg))
 
         return self._eval_member_on(obj, prop, node)
 
@@ -2609,14 +2895,19 @@ class Interpreter:
             if getter_key in obj:
                 getter_fn = obj[getter_key]
                 if isinstance(getter_fn, SpryFunction):
-                    return self._call_function(getter_fn, [], node)
+                    # Inject this = obj so getters can access object properties
+                    return self._call_dict_bound_method(getter_fn, obj, [], node)
                 elif callable(getter_fn):
                     try:
                         return getter_fn()
                     except Exception as e:
                         raise SpryRuntimeError(str(e), node)
             if prop in obj:
-                return obj[prop]
+                val = obj[prop]
+                # Bind 'this' for SpryFunction and SpryLambda stored as object methods
+                if isinstance(val, SpryFunction):
+                    return DictBoundMethod(obj, val)
+                return val
             # Built-in dict properties/methods
             if prop == "keys":
                 return list(obj.keys())
@@ -2658,7 +2949,8 @@ class Interpreter:
                     obj.update(other)
                     return obj
                 return _dict_assign
-            raise SpryRuntimeError(f"Key {prop!r} not found in object", node)
+            # JS-compat: accessing a missing property returns None (undefined)
+            return None
 
         if isinstance(obj, list):
             if prop == "length":
@@ -2672,7 +2964,10 @@ class Interpreter:
             if prop == "isEmpty":
                 return len(obj) == 0
             if prop == "push":
-                return lambda item: obj.append(item)
+                def _list_push(*items: Any, _lst=obj) -> int:
+                    _lst.extend(items)
+                    return len(_lst)
+                return _list_push
             if prop == "pop":
                 return lambda: obj.pop() if obj else None
             if prop == "includes":
@@ -2698,14 +2993,26 @@ class Interpreter:
                     return sorted(_o, key=functools.cmp_to_key(comparator))
                 return _CallableList(sorted(obj), _sorted_fn)
             if prop == "indexOf":
-                return lambda item: obj.index(item) if item in obj else -1
-            if prop == "lastIndexOf":
-                def _last_index_of(item: Any, _o: list = obj) -> int:
-                    for _i in range(len(_o) - 1, -1, -1):
+                def _list_index_of(item: Any, from_index: int = 0, _o: list = obj) -> int:
+                    start = int(from_index) if from_index is not None else 0
+                    if start < 0:
+                        start = max(0, len(_o) + start)
+                    for _i in range(start, len(_o)):
                         if _o[_i] == item:
                             return _i
                     return -1
-                return _last_index_of
+                return _list_index_of
+            if prop == "lastIndexOf":
+                def _list_last_index_of(item: Any, from_index: Any = None, _o: list = obj) -> int:
+                    end = len(_o) - 1 if from_index is None else int(from_index)
+                    if end < 0:
+                        end = len(_o) + end
+                    end = min(end, len(_o) - 1)
+                    for _i in range(end, -1, -1):
+                        if _o[_i] == item:
+                            return _i
+                    return -1
+                return _list_last_index_of
             if prop == "find":
                 return lambda pred: next((x for x in obj if self._truthy(pred(x))), None)
             if prop == "filter":
@@ -3024,6 +3331,8 @@ class Interpreter:
                     for _idx, _x in enumerate(_o):
                         fn(_x, _idx, _o) if multi else fn(_x)
                 return _list_foreach
+            if prop == "toArray":
+                return list(obj)  # plain list — toArray() returns itself as a new list
 
         if isinstance(obj, str):
             if prop == "length":
@@ -3038,13 +3347,21 @@ class Interpreter:
                 return obj.lstrip()
             if prop == "trimEnd":
                 return obj.rstrip()
+            if prop == "trimLeft":
+                return obj.lstrip()
+            if prop == "trimRight":
+                return obj.rstrip()
             if prop == "split":
                 def _str_split(sep: Any = " ", limit: Any = None, _obj: str = obj) -> list:
                     if isinstance(sep, SpryRegex):
                         import re as _re
                         result = _re.split(sep.pattern.pattern, _obj)
                     elif isinstance(sep, str):
-                        result = _obj.split(sep)
+                        if sep == "":
+                            # JS/TS: "hello".split("") → ['h', 'e', 'l', 'l', 'o']
+                            result = list(_obj)
+                        else:
+                            result = _obj.split(sep)
                     else:
                         result = _obj.split(str(sep))
                     if limit is not None:
@@ -3103,9 +3420,17 @@ class Interpreter:
             if prop == "isNotEmpty":
                 return len(obj) > 0
             if prop == "indexOf":
-                return lambda sub: obj.find(sub)
+                def _str_index_of(sub: str, from_index: int = 0, _s: str = obj) -> int:
+                    start = max(0, int(from_index)) if from_index is not None else 0
+                    return _s.find(str(sub), start)
+                return _str_index_of
             if prop == "lastIndexOf":
-                return lambda sub: obj.rfind(sub)
+                def _str_last_index_of(sub: str, from_index: Any = None, _s: str = obj) -> int:
+                    if from_index is None:
+                        return _s.rfind(str(sub))
+                    end = int(from_index) + len(str(sub))
+                    return _s.rfind(str(sub), 0, end)
+                return _str_last_index_of
             if prop == "at":
                 return lambda n: obj[int(n)] if -len(obj) <= int(n) < len(obj) else None
             if prop == "charAt":
@@ -3270,7 +3595,7 @@ class Interpreter:
 
         if isinstance(obj, (int, float)):
             if prop in ("toFixed", "toFixed"):
-                return lambda digits=2: f"{obj:.{int(digits)}f}"
+                return lambda digits=0: f"{obj:.{int(digits)}f}"
             if prop == "toPrecision":
                 def _to_precision(digits: int = 6, _obj: Any = obj) -> str:
                     d = int(digits)
@@ -3326,11 +3651,34 @@ class Interpreter:
             if prop in ("round",):
                 return round(obj)
             if prop == "toExponential":
-                def _to_exp(digits: int = 6, _obj: Any = obj) -> str:
+                def _to_exp(digits: Any = None, _obj: Any = obj) -> str:
                     import re as _re
-                    result = f"{float(_obj):.{int(digits)}e}"
+                    fval = float(_obj)
+                    if digits is None:
+                        # No-arg: minimum digits needed (JS semantics) via repr shortest form
+                        if fval == 0.0:
+                            return "0e+0"
+                        _sign = "-" if fval < 0 else ""
+                        _r = repr(abs(fval))
+                        if "e" in _r:
+                            _mantissa_s, _exp_s = _r.split("e")
+                            _exp_n = int(_exp_s)
+                        else:
+                            _int_p, _frac_p = _r.split(".") if "." in _r else (_r, "")
+                            if _int_p == "0":
+                                _leading = len(_frac_p) - len(_frac_p.lstrip("0"))
+                                _exp_n = -(_leading + 1)
+                                _sig = _frac_p.lstrip("0")
+                            else:
+                                _exp_n = len(_int_p) - 1
+                                _sig = (_int_p + _frac_p).rstrip("0")
+                            _mantissa_s = _sig[0] + ("." + _sig[1:] if len(_sig) > 1 else "")
+                        _esign = "+" if _exp_n >= 0 else "-"
+                        return f"{_sign}{_mantissa_s}e{_esign}{abs(_exp_n)}"
+                    else:
+                        raw = f"{fval:.{int(digits)}e}"
                     # JS uses e+4 not e+04 — strip leading zero from exponent
-                    return _re.sub(r"e([+-])0+(\d)", lambda m: f"e{m.group(1)}{m.group(2)}", result)
+                    return _re.sub(r"e([+-])0+(\d)", lambda m: f"e{m.group(1)}{m.group(2)}", raw)
                 return _to_exp
             if prop == "sign":
                 return 1 if obj > 0 else (-1 if obj < 0 else 0)
@@ -3526,10 +3874,88 @@ class Interpreter:
         if isinstance(obj, SpryIterator):
             if prop == "next":
                 return lambda _it=obj: _it.next()
-            if prop == "toList":
-                return lambda _it=obj: _it.toList()
+            if prop in ("toList", "toArray"):
+                return lambda _it=obj: _it.toArray()
             if prop in ("values", "entries", "keys"):
                 return lambda _it=obj: _it  # iterators are already iterators
+            # Iterator helper methods — inject interpreter call_fn so lambdas work
+            _call_fn = self._call_value
+            if prop == "filter":
+                def _iter_filter(fn: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    result = []
+                    for _item in _it._items[_it._index:]:
+                        if _call_fn(fn, [_item]):
+                            result.append(_item)
+                    return SpryIterator(result, _call_fn)
+                return _iter_filter
+            if prop == "map":
+                def _iter_map(fn: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    return SpryIterator(
+                        [_call_fn(fn, [_item]) for _item in _it._items[_it._index:]],
+                        _call_fn,
+                    )
+                return _iter_map
+            if prop == "take":
+                def _iter_take(n: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    return SpryIterator(_it._items[_it._index:_it._index + int(n)], _call_fn)
+                return _iter_take
+            if prop == "drop":
+                def _iter_drop(n: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    return SpryIterator(_it._items[_it._index + int(n):], _call_fn)
+                return _iter_drop
+            if prop == "flatMap":
+                def _iter_flatmap(fn: Any, _it: SpryIterator = obj) -> SpryIterator:
+                    result: list = []
+                    for _item in _it._items[_it._index:]:
+                        _val = _call_fn(fn, [_item])
+                        if isinstance(_val, (list, SpryIterator)):
+                            result.extend(_val)
+                        else:
+                            result.append(_val)
+                    return SpryIterator(result, _call_fn)
+                return _iter_flatmap
+            if prop == "forEach":
+                def _iter_foreach(fn: Any, _it: SpryIterator = obj) -> None:
+                    for _item in _it._items[_it._index:]:
+                        _call_fn(fn, [_item])
+                return _iter_foreach
+            if prop == "reduce":
+                def _iter_reduce(fn: Any, initial: Any = _MISSING, _it: SpryIterator = obj) -> Any:
+                    items = _it._items[_it._index:]
+                    has_initial = initial is not _MISSING
+                    if not items:
+                        if not has_initial:
+                            raise SpryRuntimeError("reduce of empty iterator with no initial value", node)
+                        return initial
+                    acc = initial if has_initial else items[0]
+                    start = 0 if has_initial else 1
+                    for _item in items[start:]:
+                        acc = _call_fn(fn, [acc, _item])
+                    return acc
+                return _iter_reduce
+            if prop == "some":
+                def _iter_some(fn: Any, _it: SpryIterator = obj) -> bool:
+                    for _item in _it._items[_it._index:]:
+                        if _call_fn(fn, [_item]):
+                            return True
+                    return False
+                return _iter_some
+            if prop == "every":
+                def _iter_every(fn: Any, _it: SpryIterator = obj) -> bool:
+                    for _item in _it._items[_it._index:]:
+                        if not _call_fn(fn, [_item]):
+                            return False
+                    return True
+                return _iter_every
+            if prop == "find":
+                def _iter_find(fn: Any, _it: SpryIterator = obj) -> Any:
+                    for _item in _it._items[_it._index:]:
+                        if _call_fn(fn, [_item]):
+                            return _item
+                    return None
+                return _iter_find
+            if prop == "length" or prop == "size":
+                return len(obj._items) - obj._index
             raise SpryRuntimeError(f"Iterator has no property {prop!r}", node)
 
         if isinstance(obj, SpryProxy):
@@ -3584,6 +4010,17 @@ class Interpreter:
             if prop in ("toString", "__str__"):
                 return lambda: repr(obj)
             raise SpryRuntimeError(f"Function has no property {prop!r}", node)
+
+        if isinstance(obj, SprySymbol):
+            if prop == "description":
+                return obj.description
+            if prop in ("toString", "__str__"):
+                _sym_desc = obj.description
+                return lambda _d=_sym_desc: f"Symbol({_d})"
+            if prop == "valueOf":
+                return lambda _s=obj: _s
+            # symbols have no other properties
+            return None
 
         # Try attribute access
         try:
@@ -3926,7 +4363,12 @@ class Interpreter:
         items: list[Any] = []
         next_fn: Any = None
         if isinstance(iterator, dict) and "next" in iterator:
-            next_fn = iterator["next"]
+            raw = iterator["next"]
+            if isinstance(raw, DictBoundMethod):
+                # DictBoundMethod — call via _call_dict_method so `this` = the dict
+                next_fn = lambda _r=raw: self._call_dict_bound_method(_r.fn, _r.obj, [], node)
+            else:
+                next_fn = raw
         elif isinstance(iterator, SpryInstance) and "next" in iterator.fields:
             next_fn_raw = iterator.fields["next"]
             if isinstance(next_fn_raw, SpryFunction):
@@ -3986,7 +4428,12 @@ class Interpreter:
             ]
         if isinstance(value, dict):
             # Check if it's an iterator (has 'next') — if so consume it
-            if "next" in value and callable(value.get("next")):
+            next_val = value.get("next")
+            if next_val is not None and (
+                callable(next_val)
+                or isinstance(next_val, (DictBoundMethod, SpryFunction, SpryLambda,
+                                          SpryMultiLambda, BoundMethod))
+            ):
                 return self._consume_iterator(value, node)
             return [k for k in value.keys() if not k.startswith("__spry_")]
         raise SpryRuntimeError(
@@ -4073,7 +4520,7 @@ class Interpreter:
         """Execute C-style for loop: for var i = 0; i < n; i++ { ... }"""
         child_env = env.child()
         if node.init is not None:
-            if isinstance(node.init, Block):
+            if isinstance(node.init, (Block, DeclarationList)):
                 for stmt in node.init.body:
                     # In C-style for-loop init, both `let` and `const` produce LetDeclaration
                     # nodes but must be mutable (JS semantics: loop counter is reassignable)
@@ -4087,6 +4534,8 @@ class Interpreter:
                 # nodes but are treated as mutable loop counters here (JS semantics for for-loop vars)
                 val = self._eval(node.init.value, child_env) if node.init.value is not None else None
                 child_env.define(node.init.name, val, mutable=True)
+            elif isinstance(node.init, NullLiteral):
+                pass  # empty init: for (;;) or for (;cond;update)
             else:
                 self._exec(node.init, child_env)
         max_iterations = 100_000
@@ -4346,7 +4795,9 @@ class Interpreter:
         return {"type": "credit", "account": account, "amount": amount}
 
     def _spry_typeof(self, val: Any) -> str:
-        """Return the SpryCode type name of a value."""
+        """Return the SpryCode type name of a value (used for SpryCode-style type checks)."""
+        if isinstance(val, _SpryUndefinedType):
+            return "undefined"
         if val is None:
             return "Null"
         if isinstance(val, bool):
@@ -4391,6 +4842,31 @@ class Interpreter:
             return "Function"
         return type(val).__name__
 
+    def _js_typeof(self, val: Any) -> str:
+        """Return the JS-standard typeof string (lowercase) — used by the ``typeof`` operator."""
+        if isinstance(val, _SpryUndefinedType):
+            return "undefined"
+        if val is None:
+            return "object"  # JS quirk: typeof null === 'object'
+        if isinstance(val, bool):
+            return "boolean"
+        if isinstance(val, (int, float)):
+            return "number"
+        if isinstance(val, str):
+            return "string"
+        if isinstance(val, SprySymbol):
+            return "symbol"
+        # All callables that aren't object-like instances
+        if isinstance(val, (SpryFunction, SpryLambda, SpryMultiLambda, SpryClass,
+                             BoundMethod, DictBoundMethod)):
+            return "function"
+        if callable(val) and not isinstance(val, (SpryInstance, SpryErrorObject,
+                                                   SprySet, SpryMap, SpryGenerator,
+                                                   SpryPromise, SpryProxy, SpryRegex)):
+            return "function"
+        # Anything else is 'object'
+        return "object"
+
     def _eval_type_cast(self, node: TypeCastExpression, env: Environment) -> Any:
         """Evaluate `expr as TypeName` — convert value to the target type."""
         val = self._eval(node.operand, env)
@@ -4425,6 +4901,17 @@ class Interpreter:
 
     def _spry_instanceof(self, val: Any, type_name: str) -> bool:
         """Return True if val is an instance of the named SpryCode type."""
+        # SpryErrorObject: check .name and walk the error hierarchy
+        if isinstance(val, SpryErrorObject):
+            _error_hierarchy = {
+                "TypeError", "RangeError", "SyntaxError", "ReferenceError",
+                "EvalError", "URIError",
+            }
+            if type_name == "Error":
+                return True
+            if type_name == val.name:
+                return True
+            return False
         # SpryInstance: check the class name and walk the superclass chain
         if isinstance(val, SpryInstance):
             cls: SpryClass | None = val.cls
@@ -4439,7 +4926,7 @@ class Interpreter:
                 cls = cls.superclass
             return False
         actual = self._spry_typeof(val)
-        # Normalize aliases
+        # SpryCode-style aliases
         aliases: dict[str, list[str]] = {
             "Number": ["Int", "Float"],
             "Text": ["Text"],
@@ -4451,6 +4938,28 @@ class Interpreter:
         }
         if type_name in aliases:
             return actual in aliases[type_name]
+        # JS-style type-name aliases for primitive/built-in types
+        js_aliases: dict[str, Any] = {
+            "Array": list,
+            "String": str,
+            "Boolean": bool,
+            "Number": (int, float),
+            "Function": (SpryFunction, SpryLambda),
+            "Map": SpryMap,
+            "Set": SprySet,
+            "RegExp": SpryRegex,
+            "Promise": SpryPromise,
+            "Symbol": SprySymbol,
+        }
+        if type_name in js_aliases:
+            py_type = js_aliases[type_name]
+            if isinstance(py_type, tuple):
+                return isinstance(val, py_type) and not isinstance(val, bool)
+            if type_name == "Boolean":
+                return isinstance(val, bool)
+            if type_name == "Number":
+                return isinstance(val, (int, float)) and not isinstance(val, bool)
+            return isinstance(val, py_type)
         return actual == type_name
 
     def _exec_assert(self, node: AssertStatement, env: Environment) -> Any:
@@ -4504,9 +5013,12 @@ class Interpreter:
         else:
             val = source_val
         if not isinstance(val, (list, tuple)):
-            raise SpryRuntimeError(
-                f"List destructuring requires a list, got {type(val).__name__}", node
-            )
+            try:
+                val = self._iter_to_list(val, node)
+            except Exception:
+                raise SpryRuntimeError(
+                    f"List destructuring requires a list, got {type(val).__name__}", node
+                )
         for i, name in enumerate(node.names):
             item = val[i] if i < len(val) else None
             # Skip holes: [a, , b] — the comma with no name skips an element
@@ -4642,6 +5154,11 @@ class Interpreter:
         if _builtin_err_ns is not None:
             cls._builtin_error_superclass = _builtin_err_ns  # type: ignore[attr-defined]
         env.define(node.name, cls, mutable=False)
+        # Run any static initialization blocks defined in the class body
+        for stmt in node.body.body:
+            if isinstance(stmt, FunctionDeclaration) and stmt.name == "__static_init__":
+                static_env = env.child()
+                self._exec_block(stmt.body, static_env)
         return None
 
     def _eval_class_expression(self, node: "ClassExpression", env: Environment) -> SpryClass:
@@ -4816,6 +5333,8 @@ class Interpreter:
                     closure=instance_env,
                     defaults=stmt.defaults,
                     rest_param=stmt.rest_param,
+                    is_generator=stmt.is_generator,
+                    is_async=stmt.is_async,
                 )
                 fields[stmt.name] = fn
                 instance_env.define(stmt.name, fn, mutable=False)
@@ -4861,6 +5380,11 @@ class Interpreter:
                 )
                 fields[computed_key_str] = fn
                 instance_env.define(computed_key_str, fn, mutable=False)
+            elif isinstance(stmt, Assignment) and stmt.value is not None:
+                # Public instance field declaration: fieldName = value (no var/let keyword)
+                val = self._eval(stmt.value, instance_env)
+                fields[stmt.name] = val
+                instance_env.define(stmt.name, val, mutable=True)
 
         instance = SpryInstance(cls=cls, fields=fields)
 
@@ -4878,6 +5402,8 @@ class Interpreter:
                     closure=instance_env,
                     defaults=fval.defaults,
                     rest_param=fval.rest_param,
+                    is_generator=fval.is_generator,
+                    is_async=fval.is_async,
                 )
                 fields[fname] = new_fn
                 instance.fields[fname] = new_fn
@@ -4922,6 +5448,26 @@ class Interpreter:
     def _call_bound_method(self, bm: BoundMethod, args: list[Any], node: Node) -> Any:
         """Call a method on an instance, binding `self` in the execution environment."""
         fn = bm.fn
+        # Generator methods: create a generator with self/this pre-bound in the closure
+        if fn.is_generator:
+            gen_closure = fn.closure.child()
+            gen_closure.define("self", bm.instance, mutable=False)
+            gen_closure.define("this", bm.instance, mutable=False)
+            if hasattr(bm, "_defining_class") and bm._defining_class is not None:
+                gen_closure.define("__current_class__", bm._defining_class, mutable=False)
+            elif isinstance(bm.instance, SpryInstance):
+                gen_closure.define("__current_class__", bm.instance.cls, mutable=False)
+            bound_gen_fn = SpryFunction(
+                name=fn.name,
+                params=fn.params,
+                body=fn.body,
+                closure=gen_closure,
+                defaults=fn.defaults,
+                rest_param=fn.rest_param,
+                is_async=getattr(fn, "is_async", False),
+                is_generator=True,
+            )
+            return SpryGenerator(bound_gen_fn, args, self)
         child = fn.closure.child()
         # Bind self so methods can do self.field = val
         child.define("self", bm.instance, mutable=False)
@@ -4949,6 +5495,8 @@ class Interpreter:
             raise SpryRuntimeError(
                 f"Method {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
             )
+        # Define `arguments` so methods can introspect all passed args (JS semantics)
+        child.define("arguments", list(args), mutable=False)
 
         for i, (pname, _ptype) in enumerate(fn.params):
             if pname.startswith("__destruct__:"):
@@ -5006,6 +5554,50 @@ class Interpreter:
                 continue
             if child_val != initial:
                 bm.instance.fields[fname] = child_val
+
+        return return_val
+
+    def _call_dict_bound_method(self, fn: "SpryFunction", obj: dict,
+                                args: list, node: "Node") -> Any:
+        """Call a SpryFunction with ``this`` bound to a plain dict object.
+
+        Used for object-literal shorthand methods and getter/setter functions
+        stored in a dict so that ``this.x`` inside the method resolves to the dict.
+        """
+        child = fn.closure.child()
+        child.define("self", obj, mutable=False)
+        child.define("this", obj, mutable=False)
+
+        required = [
+            p for p, _ in fn.params
+            if p not in fn.defaults and not p.startswith("__destruct__") and not p.startswith("__array_destruct__")
+        ]
+        if len(args) < len(required):
+            raise SpryRuntimeError(
+                f"Function {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
+            )
+
+        for i, (pname, _ptype) in enumerate(fn.params):
+            if i < len(args):
+                child.define(pname, args[i], mutable=False)
+            elif pname in fn.defaults:
+                child.define(pname, self._eval(fn.defaults[pname], fn.closure), mutable=False)
+            else:
+                child.define(pname, None, mutable=False)
+
+        if fn.rest_param is not None:
+            child.define(fn.rest_param, list(args[len(fn.params):]), mutable=False)
+
+        return_val = None
+        try:
+            self._exec_block(fn.body, child)
+        except ReturnSignal as r:
+            return_val = r.value
+
+        # Sync back mutated dict properties (this.x = val style)
+        # Walk the child env to detect property writes applied via MemberAssignment.
+        # We don't sync local variables back to the dict — only explicit this.x = val
+        # assignments already wrote directly into obj via MemberAssignment.
 
         return return_val
 
@@ -5183,6 +5775,8 @@ class Interpreter:
         return type(value).__name__
 
     def _truthy(self, value: Any) -> bool:
+        if isinstance(value, _SpryUndefinedType):
+            return False
         if value is None:
             return False
         if isinstance(value, bool):
@@ -5287,8 +5881,11 @@ class _JsonNamespace:
             return str(o)
 
         indent_val = int(indent) if indent is not None else None
+        # Use compact separators (no spaces) when no indent — matches JS JSON.stringify behavior
+        separators = (',', ':') if indent_val is None else None
         try:
-            return _json.dumps(value, indent=indent_val, ensure_ascii=False, default=_default)
+            return _json.dumps(value, indent=indent_val, separators=separators,
+                               ensure_ascii=False, default=_default)
         except (TypeError, ValueError) as e:
             raise ValueError(f"JSON.stringify error: {e}") from e
 
@@ -5354,10 +5951,31 @@ class _ArrayNamespace:
     def __getattr__(self, name: str) -> Any:
         if name == "from":
             return self.from_
+        if name == "fromAsync":
+            return self.fromAsync
         raise AttributeError(name)
+
+    def fromAsync(self, iterable: Any, map_fn: Any = None) -> SpryPromise:
+        """ES2024 Array.fromAsync — wrap Array.from result in a fulfilled Promise."""
+        result = self.from_(iterable, map_fn)
+        return SpryPromise(value=result)
 
     def of(self, *args: Any) -> list:
         """Create an array from arguments: Array.of(1, 2, 3) → [1, 2, 3]."""
+        return list(args)
+
+    def __call__(self, *args: Any) -> list:
+        """Array(n) → sparse array of length n; Array(a, b, c) → [a, b, c].
+
+        Matches JS semantics:
+        - Single integer arg → list of that length filled with None.
+        - Multiple args → list of those values.
+        """
+        if len(args) == 1 and isinstance(args[0], (int, float)) and not isinstance(args[0], bool):
+            n = int(args[0])
+            if n < 0:
+                raise SpryRuntimeError(f"Invalid array length: {n}", None)
+            return [None] * n
         return list(args)
 
     def __repr__(self) -> str:
@@ -5392,9 +6010,13 @@ class _ObjectNamespace:
         return []
 
     def fromEntries(self, entries: Any) -> dict:
-        """Create an object from [[key, value], ...] pairs."""
+        """Create an object from [[key, value], ...] pairs or a Map."""
         if isinstance(entries, list):
             return {str(k): v for k, v in entries}
+        if isinstance(entries, SpryMap):
+            return {str(k): v for k, v in entries._data.items()}
+        if isinstance(entries, SpryIterator):
+            return {str(k): v for k, v in entries._iterator}
         return {}
 
     def assign(self, *objs: Any) -> dict:
@@ -6891,6 +7513,8 @@ class _StringNamespace:
 
     def __call__(self, val: Any) -> str:
         """String(x) — convert x to a string."""
+        if isinstance(val, _SpryUndefinedType):
+            return "undefined"
         if val is None:
             return "null"
         if isinstance(val, bool):
@@ -6903,6 +7527,20 @@ class _StringNamespace:
             if val == int(val):
                 return str(int(val))
             return str(val)
+        # For SpryInstance, delegate to _builtin_str so toString() is called
+        if isinstance(val, SpryInstance):
+            # Import here to avoid circular ref — interpreter is the one we need
+            # _builtin_str is on the interpreter; fall back to str() if no interp ref
+            if hasattr(self, "_interp"):
+                return self._interp._builtin_str(val)
+            # Fallback: call toString manually if present
+            if "toString" in val.fields:
+                ts = val.fields["toString"]
+                if callable(ts):
+                    try:
+                        return str(ts())
+                    except Exception:
+                        pass
         return str(val)
 
 _symbol_counter = 0
@@ -7005,9 +7643,13 @@ class SpryWeakRef:
 
 
 class _WeakRefNamespace:
-    """WeakRef.new(obj) creates a weak reference wrapper."""
+    """WeakRef.new(obj) / new WeakRef(obj) creates a weak reference wrapper."""
 
     def new(self, target: Any) -> SpryWeakRef:
+        return SpryWeakRef(target)
+
+    def __call__(self, target: Any) -> SpryWeakRef:
+        """Support: new WeakRef(obj) / WeakRef(obj) call syntax."""
         return SpryWeakRef(target)
 
     def __repr__(self) -> str:
@@ -7099,6 +7741,16 @@ class SprySet:
     def entries(self) -> "SpryIterator":
         return SpryIterator([[v, v] for v in self._data])
 
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, SprySet):
+            return self._data == other._data
+        if isinstance(other, list):
+            return self._data == other
+        return NotImplemented
+
     def __iter__(self):
         return iter(self._data)
 
@@ -7107,17 +7759,20 @@ class SprySet:
 
 
 class _SprySetNamespace:
-    """Set global — supports both Set(list) for dedup and Set.new([items]) for SprySet."""
+    """Set global — supports Set(iterable) creating a SprySet, and Set.new([items])."""
 
-    def __call__(self, lst: Any) -> list:
-        """Backward compat: Set([1,2,3]) returns a deduplicated list."""
-        if not isinstance(lst, (list, tuple)):
-            raise TypeError("Set() requires a list")
-        seen: list = []
-        for item in lst:
-            if item not in seen:
-                seen.append(item)
-        return seen
+    def __call__(self, lst: Any = None) -> SprySet:
+        """Create a SprySet from an iterable (JS: new Set(iterable))."""
+        if lst is None:
+            return SprySet()
+        if isinstance(lst, (list, tuple)):
+            return SprySet(list(lst))
+        if isinstance(lst, SprySet):
+            return SprySet(list(lst._data))
+        try:
+            return SprySet(list(lst))
+        except TypeError:
+            return SprySet()
 
     def new(self, items: Any = None) -> SprySet:
         if items is None:
@@ -7152,18 +7807,21 @@ class _IteratorNamespace:
     def __init__(self, interp: Any) -> None:
         self._interp = interp
 
-    def from_(self, iterable: Any) -> list:
-        """Convert any iterable to a materialised array (iterator protocol stub)."""
+    def from_(self, iterable: Any) -> SpryIterator:
+        """Convert any iterable to a SpryIterator with chainable helper methods."""
+        _call_fn = self._interp._call_value
+        if isinstance(iterable, SpryIterator):
+            return SpryIterator(iterable._items[iterable._index:], _call_fn)
         if isinstance(iterable, SpryGenerator):
-            return iterable._materialise()
+            return SpryIterator(iterable._materialise(), _call_fn)
         if isinstance(iterable, SprySet):
-            return list(iterable._data)
+            return SpryIterator(list(iterable._data), _call_fn)
         if isinstance(iterable, SpryMap):
-            return [[k, v] for k, v in iterable._data.items()]
+            return SpryIterator([[k, v] for k, v in iterable._data.items()], _call_fn)
         try:
-            return list(iterable)
+            return SpryIterator(list(iterable), _call_fn)
         except TypeError:
-            return []
+            return SpryIterator([], _call_fn)
 
     def __getattr__(self, prop: str) -> Any:
         if prop == "from":
@@ -7279,6 +7937,30 @@ class _PromiseNamespace:
             else:
                 return SpryPromise(value=p)
         return SpryPromise(value=None, error=errors)
+
+    def withResolvers(self) -> dict:
+        """ES2024: Return {promise, resolve, reject} with the promise pre-resolved.
+
+        In SpryCode's synchronous model the promise is already settled; resolve/reject
+        are no-op callables that mimic the JS API shape.
+        """
+        promise: SpryPromise = SpryPromise(value=None)
+        container: dict = {"_p": promise}
+
+        def _resolve(value: Any = None) -> None:
+            container["_p"] = SpryPromise(value=value)
+
+        def _reject(reason: Any = None) -> None:
+            container["_p"] = SpryPromise(value=None, error=reason)
+
+        class _LazyPromise:
+            """Proxy that delegates to the container's current promise."""
+            def __getattr__(self_, attr: str) -> Any:  # noqa: N805
+                return getattr(container["_p"], attr)
+            def __repr__(self_) -> str:  # noqa: N805
+                return repr(container["_p"])
+
+        return {"promise": _LazyPromise(), "resolve": _resolve, "reject": _reject}
 
     def __repr__(self) -> str:
         return "Promise"
@@ -7670,10 +8352,20 @@ class SpryWeakMap:
 
 
 class _WeakMapNamespace:
-    """WeakMap global namespace — WeakMap.new()."""
+    """WeakMap global namespace — WeakMap.new() or new WeakMap()."""
 
-    def new(self) -> SpryWeakMap:
-        return SpryWeakMap()
+    def __call__(self, iterable: Any = None) -> SpryWeakMap:
+        wm = SpryWeakMap()
+        if iterable is not None:
+            for entry in iterable:
+                if hasattr(entry, '__iter__'):
+                    pair = list(entry)
+                    if len(pair) >= 2:
+                        wm.set(pair[0], pair[1])
+        return wm
+
+    def new(self, iterable: Any = None) -> SpryWeakMap:
+        return self.__call__(iterable)
 
     def __repr__(self) -> str:
         return "WeakMap"
@@ -7700,10 +8392,17 @@ class SpryWeakSet:
 
 
 class _WeakSetNamespace:
-    """WeakSet global namespace — WeakSet.new()."""
+    """WeakSet global namespace — WeakSet.new() or new WeakSet()."""
 
-    def new(self) -> SpryWeakSet:
-        return SpryWeakSet()
+    def __call__(self, iterable: Any = None) -> SpryWeakSet:
+        ws = SpryWeakSet()
+        if iterable is not None:
+            for key in iterable:
+                ws.add(key)
+        return ws
+
+    def new(self, iterable: Any = None) -> SpryWeakSet:
+        return self.__call__(iterable)
 
     def __repr__(self) -> str:
         return "WeakSet"
@@ -7926,6 +8625,10 @@ class _FinalizationRegistryNamespace:
     def new(self, callback: Any) -> SpryFinalizationRegistry:
         return SpryFinalizationRegistry(callback)
 
+    def __call__(self, callback: Any) -> SpryFinalizationRegistry:
+        """Support: new FinalizationRegistry(fn) / FinalizationRegistry(fn) call syntax."""
+        return SpryFinalizationRegistry(callback)
+
     def __repr__(self) -> str:
         return "FinalizationRegistry"
 
@@ -8135,9 +8838,13 @@ class SpryURL:
 
 
 class _URLNamespace:
-    """URL global namespace — URL.new(href)."""
+    """URL global namespace — URL.new(href) / new URL(href)."""
 
     def new(self, href: Any) -> SpryURL:
+        return SpryURL(str(href))
+
+    def __call__(self, href: Any) -> SpryURL:
+        """Support: new URL(href) / URL(href) call syntax."""
         return SpryURL(str(href))
 
     def canParse(self, href: Any) -> bool:
@@ -8987,6 +9694,9 @@ class SpryErrorObject:
             return self.stack
         if prop == "cause":
             return self.cause
+        if prop == "constructor":
+            # JS: err.constructor.name === error type name
+            return {"name": self.name}
         if prop == "toString":
             return lambda: f"{self.name}: {self.message}"
         raise SpryRuntimeError(f"Error has no property {prop!r}", None)

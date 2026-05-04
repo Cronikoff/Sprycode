@@ -102,7 +102,7 @@ let v = b.hello()"""
 let f = Foo.new()
 let v = typeof f"""
         i = run(src)
-        assert val(i, "v") == "Foo"
+        assert val(i, "v") == "object"
 
     def test_new_instanceof(self):
         src = """class Bar {}
@@ -210,7 +210,7 @@ let v = [x for x in count_up(3, 6)]"""
 let gen = g()
 let v = typeof gen"""
         i = run(src)
-        assert val(i, "v") == "Generator"
+        assert val(i, "v") == "object"
 
     def test_generator_empty(self):
         src = """fn* empty() { }
@@ -276,9 +276,9 @@ let v = match x {
     def test_match_expr_with_typeof(self):
         src = """fn describe(x) {
   return match typeof x {
-    "Int" => "integer"
-    "Text" => "string"
-    "Bool" => "boolean"
+    "number" => "integer"
+    "string" => "string"
+    "boolean" => "boolean"
     _ => "other"
   }
 }

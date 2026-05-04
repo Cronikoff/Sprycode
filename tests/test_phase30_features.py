@@ -66,7 +66,7 @@ class TestObjectIs:
 class TestAsyncFn:
     def test_typeof_returns_promise(self):
         i = run("async fn f() { return 42 }\nlet v = typeof f()")
-        assert val(i) == "Promise"
+        assert val(i) == "object"
 
     def test_then_receives_value(self):
         i = run(

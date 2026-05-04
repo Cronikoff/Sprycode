@@ -1163,6 +1163,16 @@ class Lexer:
             elif ch == "_":
                 # Allow underscores in numbers for readability: 1_000_000
                 self._advance()
+            elif ch in ("e", "E") and value:
+                # Scientific notation: 1e3, 1.5e-2
+                value += self._advance()  # consume 'e'/'E'
+                if self.pos < len(self.source) and self._current() in ("+", "-"):
+                    value += self._advance()  # consume optional sign
+                if self.pos < len(self.source) and self._current().isdigit():
+                    while self.pos < len(self.source) and self._current().isdigit():
+                        value += self._advance()
+                    has_dot = True  # treat as float to avoid BigInt 'n' suffix
+                break
             else:
                 break
         # BigInt literal: 42n

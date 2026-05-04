@@ -60,11 +60,14 @@ class DeclarationList(Node):
 
 @dataclass
 class LetDeclaration(Node):
-    """let <name>[: <type>] = <value>"""
+    """let <name>[: <type>] = <value>  (mutable block-scoped binding)
+    const <name> = <value>            (immutable binding, is_const=True)
+    """
     name: str = ""
     type_annotation: str | None = None
     value: Node | None = None
     privacy: str | None = None  # "private" | "sensitive" | None
+    is_const: bool = False  # True when declared with 'const'
 
 
 @dataclass
@@ -151,6 +154,7 @@ class TryCatchStatement(Node):
     error_name: str = ""
     handler: Block | None = None
     finally_block: "Block | None" = None
+    error_pattern: "Node | None" = None  # ListDestructure/ObjectDestructure for catch ({a,b}) / catch ([a,b])
 
 
 @dataclass
@@ -994,6 +998,8 @@ class ComputedMethodDeclaration(Node):
     is_static: bool = False
     is_generator: bool = False
     is_async: bool = False
+    is_getter: bool = False          # get [expr]() { ... }
+    is_setter: bool = False          # set [expr](v) { ... }
     defaults: dict = field(default_factory=dict)
     rest_param: "str | None" = None
 

@@ -230,6 +230,39 @@ def _make_sequence_iter(items: list) -> Any:
     return _factory
 
 
+def _dict_has_ics(d: dict) -> bool:
+    """Return True if *d* has Symbol.isConcatSpreadable set to True."""
+    _ics_str = "Symbol('isConcatSpreadable')"
+    if d.get(_ics_str) is True:
+        return True
+    for k, v in d.items():
+        if isinstance(k, SprySymbol) and k.description == "isConcatSpreadable" and v is True:
+            return True
+    return False
+
+
+def _inst_has_ics(inst: Any) -> bool:
+    """Return True if *inst* (SpryInstance) has Symbol.isConcatSpreadable set to True."""
+    _ics_str = "Symbol('isConcatSpreadable')"
+    if inst.fields.get(_ics_str) is True:
+        return True
+    for k, v in inst.fields.items():
+        if isinstance(k, SprySymbol) and k.description == "isConcatSpreadable" and v is True:
+            return True
+    return False
+
+
+def _owns_prop(obj: Any, key: str) -> bool:
+    """Return True if *obj* (dict or SpryInstance) has *key* as an own property."""
+    if isinstance(obj, dict):
+        return key in obj
+    # SpryInstance — check fields but exclude internal double-underscore keys
+    fields = getattr(obj, "fields", None)
+    if fields is not None:
+        return key in fields and not key.startswith("__")
+    return False
+
+
 def _strict_eq(left: Any, right: Any) -> bool:
     """Strict equality (===): same type AND same value; objects compared by identity."""
     if type(left) is not type(right):
@@ -438,9 +471,29 @@ class SpryClass:
         self.closure = closure
         self.superclass = superclass
         self._static_fields: dict = {}  # mutable static field storage
+        self._prototype: "SpryClassPrototype | None" = None  # lazily created
+
+    @property
+    def prototype(self) -> "SpryClassPrototype":
+        if self._prototype is None:
+            self._prototype = SpryClassPrototype(self)
+        return self._prototype
 
     def __repr__(self) -> str:
         return f"<class {self.name}>"
+
+
+class SpryClassPrototype:
+    """Represents `SomeClass.prototype` — used for identity comparisons with Object.getPrototypeOf."""
+
+    def __init__(self, cls: SpryClass) -> None:
+        self.cls = cls
+
+    def toString(self) -> str:
+        return f"[object {self.cls.name}]"
+
+    def __repr__(self) -> str:
+        return f"{self.cls.name}.prototype"
 
 
 class SpryInstance:
@@ -543,7 +596,7 @@ class SpryRegex:
         if m is None:
             return None
         groups = [m.group(0)] + list(m.groups())
-        return SpryRegexMatch(groups, m.start(), text)
+        return SpryRegexMatch(groups, m.start(), text, named_groups=m.groupdict() or {})
 
     def exec(self, text: str) -> Any:
         if self.global_flag and self.lastIndex > 0:
@@ -556,7 +609,7 @@ class SpryRegex:
         if self.global_flag:
             self.lastIndex = m.end()
         groups = [m.group(0)] + list(m.groups())
-        return SpryRegexMatch(groups, m.start(), text)
+        return SpryRegexMatch(groups, m.start(), text, named_groups=m.groupdict() or {})
 
     def replace(self, text: str, replacement: str, count: int = 1) -> str:
         actual_count = 0 if self.global_flag else count
@@ -573,11 +626,13 @@ class SpryRegex:
 
 
 class SpryRegexMatch(list):
-    """Array-like regex match result: [full, group1, group2, ...] with .index and .input."""
-    def __init__(self, groups: list, index: int, input_str: str) -> None:
+    """Array-like regex match result: [full, group1, group2, ...] with .index, .input, .groups."""
+    def __init__(self, groups: list, index: int, input_str: str,
+                 named_groups: "dict | None" = None) -> None:
         super().__init__(groups)
         self.index = index
         self.input = input_str
+        self.groups = named_groups or {}
 
     def __repr__(self) -> str:
         return f"RegexMatch({list(self)!r}, index={self.index})"
@@ -945,8 +1000,21 @@ def _parse_regex_pattern(pattern: str) -> tuple[str, int]:
             if "s" in flag_str:
                 flags |= _re.DOTALL
             is_global = "g" in flag_str
-            return inner, flags, is_global
-    return pattern, 0, False
+            return _js_regex_to_python(inner), flags, is_global
+    return _js_regex_to_python(pattern), 0, False
+
+
+def _js_regex_to_python(pattern: str) -> str:
+    """Translate JS regex syntax to Python regex syntax.
+
+    Currently handles:
+      - Named capture groups: (?<name>...) → (?P<name>...)
+    """
+    import re as _re
+    # JS named capture: (?<name>...) → Python (?P<name>...)
+    # But not negative lookahead (?<!...) or (?<= ...)
+    result = _re.sub(r'\(\?<([A-Za-z_][A-Za-z0-9_]*)>', r'(?P<\1>', pattern)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1133,8 +1201,10 @@ class Interpreter:
 
         # Global namespace objects (JS-style)
         env.define("JSON", _JsonNamespace())
-        env.define("Array", _ArrayNamespace())
-        env.define("Object", _ObjectNamespace())
+        _array_ns = _ArrayNamespace()
+        _array_ns._interp = self
+        env.define("Array", _array_ns)
+        env.define("Object", _ObjectNamespace(call_fn=self._call_value))
         env.define("Number", _NumberNamespace())
 
         # Event bus
@@ -1735,7 +1805,7 @@ class Interpreter:
 
         if isinstance(node, LetDeclaration):
             value = self._eval(node.value, env) if node.value is not None else None
-            env.define(node.name, value, mutable=False)
+            env.define(node.name, value, mutable=not node.is_const)
             return None
 
         if isinstance(node, VarDeclaration):
@@ -1810,6 +1880,11 @@ class Interpreter:
                     f"Cannot compound-assign property {node.property!r} on {type(obj).__name__}", node
                 )
             if node.op == "+":
+                # JS-style: if either operand is a string, coerce the other
+                if isinstance(current, str) and not isinstance(rhs, str):
+                    rhs = self._builtin_str(rhs)
+                elif isinstance(rhs, str) and not isinstance(current, str):
+                    current = self._builtin_str(current)
                 new_val = current + rhs
             elif node.op == "-":
                 new_val = current - rhs
@@ -1850,6 +1925,21 @@ class Interpreter:
             obj = self._eval(node.object, env)
             idx = self._eval(node.index, env)
             value = self._eval(node.value, env)
+            # Symbol subscript assignment — check for computed setter on SpryInstance
+            if isinstance(idx, SprySymbol) and isinstance(obj, SpryInstance):
+                key_str = str(idx)
+                setter_key = f"__setter__{key_str}"
+                if setter_key in obj.fields:
+                    setter_fn = obj.fields[setter_key]
+                    bm = BoundMethod(instance=obj, fn=setter_fn)
+                    self._call_bound_method(bm, [value], node)
+                    return None
+                obj.fields[key_str] = value
+                return None
+            # Plain dict with Symbol key — use the symbol object itself as key (identity semantics)
+            if isinstance(idx, SprySymbol) and isinstance(obj, dict):
+                obj[idx] = value
+                return None
             try:
                 obj[idx] = value
             except (TypeError, KeyError, IndexError) as e:
@@ -1860,6 +1950,11 @@ class Interpreter:
             current = env.get(node.name)
             rhs = self._eval(node.value, env)
             if node.op == "+":
+                # JS-style: if either operand is a string, coerce the other
+                if isinstance(current, str) and not isinstance(rhs, str):
+                    rhs = self._builtin_str(rhs)
+                elif isinstance(rhs, str) and not isinstance(current, str):
+                    current = self._builtin_str(current)
                 new_val = current + rhs
             elif node.op == "-":
                 new_val = current - rhs
@@ -1966,8 +2061,10 @@ class Interpreter:
                     err_val = ue.value
                     if isinstance(err_val, dict) and "message" not in err_val:
                         err_val = {**err_val, "message": ue.message}
-                    if node.error_name:
-                        child.define(node.error_name, err_val, mutable=False)
+                    if node.error_pattern is not None:
+                        self._apply_catch_pattern(node.error_pattern, err_val, child)
+                    elif node.error_name:
+                        child.define(node.error_name, err_val, mutable=True)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = ue
@@ -1975,8 +2072,10 @@ class Interpreter:
                 if node.handler is not None:
                     child = env.child()
                     err_val = SpryResult(ok=False, error=str(e))
-                    if node.error_name:
-                        child.define(node.error_name, err_val, mutable=False)
+                    if node.error_pattern is not None:
+                        self._apply_catch_pattern(node.error_pattern, err_val, child)
+                    elif node.error_name:
+                        child.define(node.error_name, err_val, mutable=True)
                     result = self._exec_block(node.handler, child)
                 else:
                     exc_to_reraise = e
@@ -2200,22 +2299,33 @@ class Interpreter:
                 # yield* iterable — iterate and forward each value via the yield hook
                 iterable = self._eval(node.value, env) if node.value is not None else []
                 yield_hook = getattr(self._tl, "yield_hook", None)
+                delegate_return_val = None
                 if isinstance(iterable, SpryGenerator):
-                    iterable._materialise()
-                    items = list(iterable._collected)
-                elif isinstance(iterable, (list, tuple)):
-                    items = list(iterable)
+                    # Use the generator's next() protocol so we get the return value
+                    while True:
+                        item = iterable.next()
+                        if item["done"]:
+                            delegate_return_val = item["value"]
+                            break
+                        val_ = item["value"]
+                        if yield_hook is not None:
+                            yield_hook(val_)
+                        else:
+                            raise YieldSignal(val_)
                 else:
-                    try:
+                    if isinstance(iterable, (list, tuple)):
                         items = list(iterable)
-                    except TypeError:
-                        items = []
-                for item in items:
-                    if yield_hook is not None:
-                        yield_hook(item)
                     else:
-                        raise YieldSignal(item)
-                return None
+                        try:
+                            items = list(iterable)
+                        except TypeError:
+                            items = []
+                    for item_ in items:
+                        if yield_hook is not None:
+                            yield_hook(item_)
+                        else:
+                            raise YieldSignal(item_)
+                return delegate_return_val
             value = self._eval(node.value, env) if node.value is not None else None
             # Check for thread-local generator yield hook (used by coroutine generators)
             yield_hook = getattr(self._tl, "yield_hook", None)
@@ -2281,6 +2391,11 @@ class Interpreter:
                         spread_val = self._eval(val_node.expr, env)  # type: ignore[union-attr]
                         if isinstance(spread_val, dict):
                             result.update(spread_val)
+                        elif isinstance(spread_val, SpryInstance):
+                            # Spread instance fields (non-private, non-method)
+                            for fname, fval in spread_val.fields.items():
+                                if not fname.startswith("__") and not isinstance(fval, (SpryFunction, BoundMethod)):
+                                    result[fname] = fval
                         else:
                             raise SpryRuntimeError("Object spread requires an object", node)
                     elif key_or_marker == "__computed__":
@@ -2356,7 +2471,15 @@ class Interpreter:
             if isinstance(val, SpryPromise):
                 if val._settled:
                     return val._value
-                raise SpryRuntimeError(str(val._error) if val._error else "Promise rejected", node)
+                err = val._error
+                # If the rejection value is a SpryInstance (user-defined error class),
+                # SpryErrorObject (builtin error), or any non-string error value,
+                # re-raise as SpryUserError so try/catch in user code handles it properly
+                if isinstance(err, (SpryErrorObject, SpryInstance)):
+                    raise SpryUserError(err)
+                if err is not None and not isinstance(err, str):
+                    raise SpryUserError(err)
+                raise SpryRuntimeError(str(err) if err is not None else "Promise rejected", node)
             return val
 
         if isinstance(node, SequenceExpression):
@@ -2380,6 +2503,8 @@ class Interpreter:
                 return None
             idx = self._eval(node.index, env)
             try:
+                if isinstance(obj, dict):
+                    return obj.get(idx, SPRY_UNDEFINED)
                 return obj[idx]
             except (KeyError, IndexError, TypeError) as e:
                 raise SpryRuntimeError(f"Index error: {e}", node)
@@ -2396,21 +2521,39 @@ class Interpreter:
                         return _make_sequence_iter(list(obj._data))
                     if isinstance(obj, SpryMap):
                         return _make_sequence_iter([[k, v] for k, v in obj._data.items()])
-                # SpryInstance indexed with SprySymbol — use string repr as key
+                # SpryClass indexed with SprySymbol — look up in _static_fields
+                if isinstance(obj, SpryClass):
+                    key_str = str(idx)
+                    if key_str in obj._static_fields:
+                        return obj._static_fields[key_str]
+                    raise SpryRuntimeError(
+                        f"Symbol subscript {idx!r} is not supported on SpryClass", node
+                    )
+                # SpryInstance indexed with SprySymbol — use str(sym) as key for consistency
+                # with how computed methods are stored in _exec_class
                 if isinstance(obj, SpryInstance):
                     key_str = str(idx)
+                    # Check for computed getter first
+                    getter_key = f"__getter__{key_str}"
+                    if getter_key in obj.fields:
+                        getter_fn = obj.fields[getter_key]
+                        return self._call_function(getter_fn, [], node)
                     if key_str in obj.fields:
-                        return obj.fields[key_str]
-                    raise SpryRuntimeError(f"Key {key_str!r} not found in object", node)
-                if isinstance(obj, dict):
-                    key_str = str(idx)
-                    if key_str in obj:
-                        return obj[key_str]
+                        v = obj.fields[key_str]
+                        if isinstance(v, SpryFunction):
+                            return BoundMethod(instance=obj, fn=v)
+                        return v
                     return None
+                # Plain dict with SprySymbol — use symbol object itself as key (identity semantics)
+                if isinstance(obj, dict):
+                    return obj.get(idx)
                 raise SpryRuntimeError(
                     f"Symbol subscript {idx!r} is not supported on {type(obj).__name__}", node
                 )
             try:
+                if isinstance(obj, dict):
+                    # dict: missing key returns undefined (like JS obj['key'])
+                    return obj.get(idx, SPRY_UNDEFINED)
                 return obj[idx]
             except (KeyError, IndexError, TypeError) as e:
                 raise SpryRuntimeError(f"Index error: {e}", node)
@@ -2495,7 +2638,7 @@ class Interpreter:
             is_global = "g" in node.flags
             for f in node.flags:
                 re_flags |= flags_map.get(f, 0)
-            compiled = re.compile(node.pattern, re_flags)
+            compiled = re.compile(_js_regex_to_python(node.pattern), re_flags)
             return SpryRegex(compiled, global_flag=is_global, flags_str=node.flags)
 
         if isinstance(node, AnonymousFunctionExpression):
@@ -2552,6 +2695,12 @@ class Interpreter:
             # Try to find the type as a SpryClass in the environment (supports inheritance)
             try:
                 target = env.get(node.type_name)
+                # Check for Symbol.hasInstance static method first (custom instanceof behaviour)
+                if isinstance(target, SpryClass):
+                    _has_instance_key = "Symbol('hasInstance')"
+                    if _has_instance_key in target._static_fields:
+                        _has_instance_fn = target._static_fields[_has_instance_key]
+                        return bool(self._call_function(_has_instance_fn, [val], node))
                 if isinstance(target, SpryClass) and isinstance(val, SpryInstance):
                     cls: SpryClass | None = val.cls
                     while cls is not None:
@@ -2793,16 +2942,28 @@ class Interpreter:
         child.define("arguments", list(args), mutable=False)
 
         for i, (pname, _ptype) in enumerate(fn.params):
-            # Dict destructuring param: __destruct__:a,b
+            # Dict destructuring param: __destruct__:a,b  or  __destruct__:key|alias,b
             if pname.startswith("__destruct__:"):
-                field_names = pname[len("__destruct__:"):].split(",")
+                field_specs = pname[len("__destruct__:"):].split(",")
                 arg_val = args[i] if i < len(args) else {}
                 if not isinstance(arg_val, dict):
                     raise SpryRuntimeError(
                         f"Function {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
                     )
-                for fname in field_names:
-                    child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    # Apply default if the key is absent from the source object (JS semantics:
+                    # defaults apply when the key is missing, not when the value is null)
+                    if fkey not in arg_val:
+                        default_key = f"__destruct_default__{flocal}"
+                        val = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
+                    else:
+                        val = arg_val[fkey]
+                    child.define(flocal, val, mutable=False)
             # Array destructuring param: __array_destruct__:a,b...rest
             elif pname.startswith("__array_destruct__:"):
                 raw = pname[len("__array_destruct__:"):]
@@ -2841,11 +3002,86 @@ class Interpreter:
             return r.value
         except (SpryUserError, SpryRuntimeError) as e:
             if fn.is_async:
+                # Preserve the original error object for proper try/catch in user code
+                if isinstance(e, SpryUserError):
+                    return SpryPromise(value=None, error=e.value)
                 return SpryPromise(value=None, error=str(e))
             raise
         if fn.is_async:
             return SpryPromise(value=None)
         return None
+
+    def _call_function_with_this(self, fn: "SpryFunction", args: list[Any], this_arg: Any, node: "Node") -> Any:
+        """Call fn with `this` and `self` bound to this_arg in the execution env."""
+        child = fn.closure.child()
+        child.define("arguments", list(args), mutable=False)
+        child.define("this", this_arg, mutable=False)
+        child.define("self", this_arg, mutable=False)
+        # Expose instance fields if this_arg is a SpryInstance
+        initial_field_values: dict[str, Any] = {}
+        if isinstance(this_arg, SpryInstance):
+            for fname, fval in this_arg.fields.items():
+                if fname not in child._vars:
+                    child.define(fname, fval, mutable=True)
+                    initial_field_values[fname] = fval
+        for i, (pname, _ptype) in enumerate(fn.params):
+            if pname.startswith("__destruct__:"):
+                field_specs = pname[len("__destruct__:"):].split(",")
+                arg_val = args[i] if i < len(args) else {}
+                if isinstance(arg_val, SpryInstance):
+                    arg_val = arg_val.fields
+                if not isinstance(arg_val, dict):
+                    arg_val = {}
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    if fkey not in arg_val:
+                        default_key = f"__destruct_default__{flocal}"
+                        fval = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
+                    else:
+                        fval = arg_val[fkey]
+                    child.define(flocal, fval, mutable=False)
+            elif pname.startswith("__array_destruct__:"):
+                raw = pname[len("__array_destruct__:"):]
+                arr_rest_name: str | None = None
+                if "..." in raw:
+                    raw, arr_rest_name = raw.split("...", 1)
+                arr_field_names = [f for f in raw.split(",") if f]
+                arg_val = args[i] if i < len(args) else []
+                items = list(arg_val) if not isinstance(arg_val, list) else arg_val
+                for _j, _fname in enumerate(arr_field_names):
+                    child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
+                if arr_rest_name:
+                    child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
+            elif i < len(args):
+                child.define(pname, args[i], mutable=False)
+            elif pname in fn.defaults:
+                child.define(pname, self._eval(fn.defaults[pname], fn.closure), mutable=False)
+            else:
+                child.define(pname, None, mutable=False)
+        if fn.rest_param is not None:
+            child.define(fn.rest_param, list(args[len(fn.params):]), mutable=False)
+        return_val = None
+        try:
+            self._exec_block(fn.body, child)
+        except ReturnSignal as r:
+            return_val = r.value
+        # Sync back mutated fields if this_arg is a SpryInstance
+        if isinstance(this_arg, SpryInstance) and initial_field_values:
+            param_names = {p for p, _ in fn.params}
+            for fname, initial in initial_field_values.items():
+                if fname in param_names:
+                    continue
+                try:
+                    child_val = child.get(fname)
+                except SpryRuntimeError:
+                    continue
+                if child_val != initial:
+                    this_arg.fields[fname] = child_val
+        return return_val
 
     def _call_task(self, task: SpryTask) -> Any:
         child = task.closure.child()
@@ -3015,6 +3251,11 @@ class Interpreter:
                 if isinstance(getter_fn, SpryFunction):
                     bm = BoundMethod(instance=obj, fn=getter_fn)
                     return self._call_bound_method(bm, [], node)
+            # Built-in instance methods
+            if prop == "hasOwnProperty":
+                def _instance_has_own(key: Any, _inst: SpryInstance = obj) -> bool:
+                    return _owns_prop(_inst, str(key))
+                return _instance_has_own
             # Instance field or method lookup
             if prop in obj.fields:
                 v = obj.fields[prop]
@@ -3246,7 +3487,30 @@ class Interpreter:
             if prop == "findIndex":
                 return lambda pred: next((i for i, x in enumerate(obj) if self._truthy(pred(x))), -1)
             if prop == "concat":
-                return lambda other: obj + (other if isinstance(other, list) else [other])
+                def _list_concat(*others: Any) -> list:
+                    result = list(obj)
+                    for other in others:
+                        if isinstance(other, list):
+                            result.extend(other)
+                        elif isinstance(other, dict):
+                            # Check Symbol.isConcatSpreadable (stored as SprySymbol key or string)
+                            if _dict_has_ics(other):
+                                n = int(other.get("length", 0))
+                                for i in range(n):
+                                    result.append(other.get(str(i)))
+                            else:
+                                result.append(other)
+                        elif isinstance(other, SpryInstance):
+                            if _inst_has_ics(other):
+                                n = int(other.fields.get("length", 0))
+                                for i in range(n):
+                                    result.append(other.fields.get(str(i)))
+                            else:
+                                result.append(other)
+                        else:
+                            result.append(other)
+                    return result
+                return _list_concat
             if prop == "unshift":
                 def _list_unshift(*items: Any) -> int:
                     for item in reversed(items):
@@ -3530,9 +3794,15 @@ class Interpreter:
             if prop == "includes":
                 return lambda sub: sub in obj
             if prop == "startsWith":
-                return lambda prefix: obj.startswith(prefix)
+                def _str_startswith(prefix: Any, position: Any = None, _obj: str = obj) -> bool:
+                    pos = int(position) if position is not None else 0
+                    return _obj[pos:].startswith(str(prefix))
+                return _str_startswith
             if prop == "endsWith":
-                return lambda suffix: obj.endswith(suffix)
+                def _str_endswith(suffix: Any, length: Any = None, _obj: str = obj) -> bool:
+                    s = _obj[:int(length)] if length is not None else _obj
+                    return s.endswith(str(suffix))
+                return _str_endswith
             if prop == "replace":
                 def _str_replace(old: Any, new: Any, _obj: str = obj) -> str:
                     import re as _re
@@ -3610,21 +3880,43 @@ class Interpreter:
                 import re as _re
                 def _str_match(pattern: Any, _obj: str = obj) -> Any:
                     if isinstance(pattern, SpryRegex):
-                        matches = list(pattern.pattern.finditer(_obj))
-                        if not matches:
-                            return None
-                        all_groups = [m.group(0) for m in matches]
-                        return SpryRegexMatch(all_groups, matches[0].start(), _obj)
+                        if pattern.global_flag:
+                            # global match: return all full-match strings (JS behaviour)
+                            matches = list(pattern.pattern.finditer(_obj))
+                            if not matches:
+                                return None
+                            all_groups = [m.group(0) for m in matches]
+                            return SpryRegexMatch(all_groups, matches[0].start(), _obj)
+                        else:
+                            # non-global: return first match with all capture groups + named groups
+                            m = pattern.pattern.search(_obj)
+                            if m is None:
+                                return None
+                            groups = [m.group(0)] + list(m.groups())
+                            return SpryRegexMatch(groups, m.start(), _obj,
+                                                  named_groups=m.groupdict() or {})
+                    # Plain string pattern: use findall to return all matches (legacy behaviour)
                     pat, flags, _g = _parse_regex_pattern(str(pattern))
-                    return _re.findall(pat, _obj, flags) or None
+                    try:
+                        return _re.findall(pat, _obj, flags) or None
+                    except _re.error:
+                        return None
                 return _str_match
             if prop == "matchAll":
                 import re as _re
                 def _str_matchall(pattern: Any, _obj: str = obj) -> list:
                     if isinstance(pattern, SpryRegex):
-                        return [[m.group(), *m.groups()] for m in pattern.pattern.finditer(_obj)]
+                        return [SpryRegexMatch([m.group(), *m.groups()], m.start(), _obj,
+                                               named_groups=m.groupdict() or {})
+                                for m in pattern.pattern.finditer(_obj)]
                     pat, flags, _g = _parse_regex_pattern(str(pattern))
-                    return [[m.group(), *m.groups()] for m in _re.finditer(pat, _obj, flags)]
+                    try:
+                        compiled = _re.compile(pat, flags)
+                    except _re.error:
+                        return []
+                    return [SpryRegexMatch([m.group(), *m.groups()], m.start(), _obj,
+                                           named_groups=m.groupdict() or {})
+                            for m in compiled.finditer(_obj)]
                 return _str_matchall
             if prop == "search":
                 import re as _re
@@ -3890,6 +4182,8 @@ class Interpreter:
                 return lambda *args: self._construct_class(obj, list(args), node)
             if prop == "name":
                 return obj.name
+            if prop == "prototype":
+                return obj.prototype
             # Check mutable static field storage first
             if prop in obj._static_fields:
                 return obj._static_fields[prop]
@@ -4118,6 +4412,9 @@ class Interpreter:
         if isinstance(obj, SpryProxy):
             return obj._spry_get_prop(prop)
 
+        if isinstance(obj, (_ObjectPrototype, _ObjectPrototypeHasOwnProperty, _ObjectPrototypeToString)):
+            return obj._spry_get_prop(prop)
+
         if isinstance(obj, (SpryURL, SpryURLSearchParams, SpryArrayBuffer, SprySharedArrayBuffer,
                              SpryTypedArray, SpryDataView,
                              SpryTextEncoder, SpryTextDecoder,
@@ -4149,11 +4446,26 @@ class Interpreter:
                 return _fn_bind
             if prop == "call":
                 def _fn_call(this_arg: Any, *call_args: Any, _fn=obj) -> Any:
+                    if isinstance(_fn, BoundMethod):
+                        # Rebind the underlying function to the new this_arg
+                        underlying = _fn.fn
+                        if this_arg is not None:
+                            return self._call_function_with_this(underlying, list(call_args), this_arg, node)
+                        return self._call_bound_method(_fn, list(call_args), node)
+                    if this_arg is not None and isinstance(_fn, SpryFunction):
+                        return self._call_function_with_this(_fn, list(call_args), this_arg, node)
                     return self._call_value(_fn, list(call_args))
                 return _fn_call
             if prop == "apply":
                 def _fn_apply(this_arg: Any, args_list: Any = None, _fn=obj) -> Any:
                     args = list(args_list) if args_list is not None else []
+                    if isinstance(_fn, BoundMethod):
+                        underlying = _fn.fn
+                        if this_arg is not None:
+                            return self._call_function_with_this(underlying, args, this_arg, node)
+                        return self._call_bound_method(_fn, args, node)
+                    if this_arg is not None and isinstance(_fn, SpryFunction):
+                        return self._call_function_with_this(_fn, args, this_arg, node)
                     return self._call_value(_fn, args)
                 return _fn_apply
             if prop == "name":
@@ -4178,6 +4490,24 @@ class Interpreter:
                 return lambda _s=obj: _s
             # symbols have no other properties
             return None
+
+        # Python callables: add JS-style call/apply/bind support
+        if callable(obj) and prop in ("call", "apply", "bind"):
+            if prop == "call":
+                def _py_call(this_arg: Any, *call_args: Any, _fn=obj) -> Any:
+                    return _fn(*call_args)
+                return _py_call
+            if prop == "apply":
+                def _py_apply(this_arg: Any, args_list: Any = None, _fn=obj) -> Any:
+                    args = list(args_list) if args_list is not None else []
+                    return _fn(*args)
+                return _py_apply
+            if prop == "bind":
+                def _py_bind(this_arg: Any, *bound_args: Any, _fn=obj) -> Any:
+                    def _bound(*call_args: Any) -> Any:
+                        return _fn(*(list(bound_args) + list(call_args)))
+                    return _bound
+                return _py_bind
 
         # Try attribute access
         try:
@@ -4337,8 +4667,41 @@ class Interpreter:
             child = lam.closure.child()
         else:
             child = env.child()
-        for i, param in enumerate(lam.params):
-            child.define(param, args[i] if i < len(args) else None, mutable=False)
+        # Separate rest param encoding from regular params
+        params = lam.params
+        rest_param_name: str | None = None
+        if params and params[-1].startswith("__rest__:"):
+            rest_param_name = params[-1][len("__rest__:"):]
+            params = params[:-1]
+        for i, param in enumerate(params):
+            arg_val = args[i] if i < len(args) else None
+            # Dict destructuring param: __destruct__:a,b  or  __destruct__:key|alias,b
+            if param.startswith("__destruct__:"):
+                field_specs = param[len("__destruct__:"):].split(",")
+                src = arg_val if isinstance(arg_val, dict) else {}
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    child.define(flocal, src.get(fkey), mutable=False)
+            # Array destructuring param: __array_destruct__:a,b...rest
+            elif param.startswith("__array_destruct__:"):
+                raw = param[len("__array_destruct__:"):]
+                arr_rest_name: str | None = None
+                if "..." in raw:
+                    raw, arr_rest_name = raw.split("...", 1)
+                arr_field_names = [f for f in raw.split(",") if f]
+                items = list(arg_val) if isinstance(arg_val, (list, tuple)) else []
+                for _j, _fname in enumerate(arr_field_names):
+                    child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
+                if arr_rest_name:
+                    child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
+            else:
+                child.define(param, arg_val, mutable=False)
+        if rest_param_name is not None:
+            child.define(rest_param_name, list(args[len(params):]), mutable=False)
         body = lam.body
         if isinstance(body, Block):
             try:
@@ -4517,7 +4880,16 @@ class Interpreter:
 
     def _consume_iterator(self, iterator: Any, node: Any) -> list:
         """Consume a JS-style iterator object (has `next()` method) into a list."""
-        items: list[Any] = []
+        # SpryGenerator: lazily call .next() until done
+        if isinstance(iterator, SpryGenerator):
+            items: list[Any] = []
+            while True:
+                res = iterator.next()
+                if res.get("done", False):
+                    break
+                items.append(res.get("value"))
+            return items
+        items = []
         next_fn: Any = None
         if isinstance(iterator, dict) and "next" in iterator:
             raw = iterator["next"]
@@ -4606,13 +4978,9 @@ class Interpreter:
         else:
             iterable = self._eval(node.iterable, env)
 
-        if not isinstance(iterable, range):
-            iterable = self._iter_to_list(iterable, node)
-
-        # Destructured loop: for i, v in enumerate(list)
+        # Determine loop item binder helper
         multi_vars = node.vars if node.vars else [node.var]
         destructured = len(multi_vars) > 1
-        # Object destructuring loop: for {x, y} of list  or  for let {x, y} of list
         obj_destruct_vars: list[str] | None = None
         list_destruct_node: Any = node._list_destruct_node  # type: ignore[attr-defined]
         obj_destruct_node: Any = node._obj_destruct_node    # type: ignore[attr-defined]
@@ -4621,39 +4989,116 @@ class Interpreter:
             obj_destruct_vars = [f for f in field_names_str.split(",") if f]
             destructured = False
 
-        for item in iterable:
-            child = env.child()
+        def _bind_item(child: "Environment", item: Any) -> None:
+            """Bind a single loop item into child env per the destructure pattern."""
             if list_destruct_node is not None:
-                # for let [a, b] of list — bind via list destructure pattern
                 self._apply_list_destructure(list_destruct_node, item if isinstance(item, (list, tuple)) else [item], child, list_destruct_node.mutable)
             elif obj_destruct_node is not None:
-                # for let {a, b} of list
                 self._apply_object_destructure(obj_destruct_node, item, child, obj_destruct_node.mutable)
             elif obj_destruct_vars is not None:
-                # Bind object fields as loop variables
                 obj = item if isinstance(item, dict) else (item.fields if isinstance(item, SpryInstance) else {})
                 for fname in obj_destruct_vars:
                     child.define(fname, obj.get(fname) if isinstance(obj, dict) else None, mutable=False)
             elif destructured:
-                # item should be a list/tuple: [index, value]
                 if isinstance(item, (list, tuple)):
                     for idx, vname in enumerate(multi_vars):
                         child.define(vname, item[idx] if idx < len(item) else None, mutable=False)
                 else:
-                    # fallback: bind first var to item
                     child.define(multi_vars[0], item, mutable=False)
             else:
                 child.define(node.var, item, mutable=False)
+
+        def _exec_body_for_item(item: Any) -> bool:
+            """Execute body for one item. Returns True if we should break."""
+            child = env.child()
+            _bind_item(child, item)
             try:
                 self._exec_block(node.body, child)
             except BreakSignal as bs:
                 if bs.label is None or bs.label == node.label:
-                    break
+                    return True  # break
                 raise
             except ContinueSignal as cs:
                 if cs.label is None or cs.label == node.label:
-                    continue
-                raise
+                    pass  # continue
+                else:
+                    raise
+            return False
+
+        # Helper: call any next() function with no args, returning the result dict
+        def _call_next(next_fn: Any) -> Any:
+            if isinstance(next_fn, (SpryLambda, SpryMultiLambda)):
+                return self._call_value(next_fn, [])
+            if isinstance(next_fn, SpryFunction):
+                return self._call_function(next_fn, [], node)
+            if isinstance(next_fn, BoundMethod):
+                return self._call_bound_method(next_fn, [], node)
+            if isinstance(next_fn, DictBoundMethod):
+                return self._call_dict_method(next_fn, [], node)
+            if callable(next_fn):
+                return next_fn()
+            return None
+
+        def _lazy_iter_dict(iterator: dict) -> bool:
+            """Lazily iterate a JS-style dict iterator {next: fn}. Returns True if done."""
+            next_fn = iterator.get("next")
+            if next_fn is None:
+                return False
+            while True:
+                result = _call_next(next_fn)
+                if not isinstance(result, dict) or result.get("done", False):
+                    break
+                if _exec_body_for_item(result.get("value")):
+                    return True  # broken
+            return False
+
+        # SpryGenerator: iterate lazily to support infinite generators with break
+        if isinstance(iterable, SpryGenerator):
+            while True:
+                result = iterable.next()
+                if result.get("done", False):
+                    break
+                if _exec_body_for_item(result.get("value")):
+                    break
+            return None
+
+        # Dict iterator (has 'next' callable): lazy iteration
+        if isinstance(iterable, dict):
+            next_val = iterable.get("next")
+            if next_val is not None and (
+                callable(next_val)
+                or isinstance(next_val, (DictBoundMethod, SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod))
+            ):
+                _lazy_iter_dict(iterable)
+                return None
+
+        # SpryInstance with [Symbol.iterator]() — lazy iteration
+        if isinstance(iterable, SpryInstance):
+            sym_key = "Symbol('iterator')"
+            if sym_key in iterable.fields:
+                sym_iter_fn = iterable.fields[sym_key]
+                if isinstance(sym_iter_fn, SpryFunction):
+                    bm = BoundMethod(instance=iterable, fn=sym_iter_fn)
+                    iterator = self._call_bound_method(bm, [], node)
+                    if isinstance(iterator, dict):
+                        _lazy_iter_dict(iterator)
+                        return None
+                    # If iterator is itself a SpryGenerator, handle lazily
+                    if isinstance(iterator, SpryGenerator):
+                        while True:
+                            res = iterator.next()
+                            if res.get("done", False):
+                                break
+                            if _exec_body_for_item(res.get("value")):
+                                break
+                        return None
+
+        if not isinstance(iterable, range):
+            iterable = self._iter_to_list(iterable, node)
+
+        for item in iterable:
+            if _exec_body_for_item(item):
+                break
         return None
 
     def _exec_labeled(self, node: LabeledStatement, env: Environment) -> Any:
@@ -5240,6 +5685,26 @@ class Interpreter:
             env.define(node.rest_name, rest_obj, mutable=mutable)
         return None
 
+    def _apply_catch_pattern(self, pattern: Any, err_val: Any, env: "Environment") -> None:
+        """Apply a destructuring pattern (ListDestructure/ObjectDestructure) to a catch value."""
+        if isinstance(pattern, ObjectDestructure):
+            # Convert err_val to a dict if it's a SpryInstance or SpryErrorObject
+            if isinstance(err_val, SpryInstance):
+                src = err_val.fields
+            elif isinstance(err_val, SpryErrorObject):
+                src = {"message": err_val.message, "name": err_val.name, "stack": err_val.stack}
+            elif isinstance(err_val, dict):
+                src = err_val
+            else:
+                src = {"message": str(err_val)}
+            self._apply_object_destructure(pattern, src, env, mutable=True)
+        elif isinstance(pattern, ListDestructure):
+            if isinstance(err_val, (list, tuple)):
+                src_list = list(err_val)
+            else:
+                src_list = [err_val]
+            self._apply_list_destructure(pattern, src_list, env, mutable=True)
+
     # ------------------------------------------------------------------
     # File creation / archive
     # ------------------------------------------------------------------
@@ -5316,6 +5781,35 @@ class Interpreter:
             if isinstance(stmt, FunctionDeclaration) and stmt.name == "__static_init__":
                 static_env = env.child()
                 self._exec_block(stmt.body, static_env)
+        # Store static computed methods (e.g. static [Symbol.hasInstance]()) in _static_fields
+        for stmt in node.body.body:
+            if isinstance(stmt, ComputedMethodDeclaration) and stmt.is_static:
+                computed_key = self._eval(stmt.key, env)
+                computed_key_str = str(computed_key) if computed_key is not None else "__computed__"
+                fn = SpryFunction(
+                    name=computed_key_str,
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=env,
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                cls._static_fields[computed_key_str] = fn
+            # static #field / static #method — store in _static_fields with __private__ prefix
+            elif isinstance(stmt, VarDeclaration) and stmt.name.startswith("__static_private__"):
+                priv_key = "__private__" + stmt.name[len("__static_private__"):]
+                cls._static_fields[priv_key] = self._eval(stmt.value, env) if stmt.value is not None else None
+            elif isinstance(stmt, FunctionDeclaration) and stmt.name.startswith("__static_private__"):
+                priv_key = "__private__" + stmt.name[len("__static_private__"):]
+                fn = SpryFunction(
+                    name=priv_key,
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=env,
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                cls._static_fields[priv_key] = fn
         return None
 
     def _eval_class_expression(self, node: "ClassExpression", env: Environment) -> SpryClass:
@@ -5335,6 +5829,20 @@ class Interpreter:
         cls._mixins = []  # type: ignore[attr-defined]
         if _builtin_err_ns is not None:
             cls._builtin_error_superclass = _builtin_err_ns  # type: ignore[attr-defined]
+        # Store static computed methods in _static_fields
+        for stmt in node.body.body:
+            if isinstance(stmt, ComputedMethodDeclaration) and stmt.is_static:
+                computed_key = self._eval(stmt.key, env)
+                computed_key_str = str(computed_key) if computed_key is not None else "__computed__"
+                fn = SpryFunction(
+                    name=computed_key_str,
+                    params=stmt.params,
+                    body=stmt.body,  # type: ignore
+                    closure=env,
+                    defaults=stmt.defaults,
+                    rest_param=stmt.rest_param,
+                )
+                cls._static_fields[computed_key_str] = fn
         return cls
 
     def _eval_super(self, node: SuperExpression, env: Environment) -> Any:
@@ -5479,10 +5987,16 @@ class Interpreter:
         # Execute the class body to pick up var/fn declarations (subclass overrides superclass)
         for stmt in cls.body.body:  # type: ignore[union-attr]
             if isinstance(stmt, VarDeclaration):
+                # Skip static private fields — class-level, stored in _static_fields
+                if stmt.name.startswith("__static_private__"):
+                    continue
                 val = self._eval(stmt.value, instance_env) if stmt.value is not None else None
                 fields[stmt.name] = val
                 instance_env.define(stmt.name, val, mutable=True)
             elif isinstance(stmt, FunctionDeclaration):
+                # Skip static private methods and static init — class-level
+                if stmt.name.startswith("__static_private__") or stmt.name == "__static_init__":
+                    continue
                 fn = SpryFunction(
                     name=stmt.name,
                     params=stmt.params,
@@ -5524,6 +6038,9 @@ class Interpreter:
                 fields[f"__setter__{stmt.name}"] = setter_fn
                 instance_env.define(f"__setter__{stmt.name}", setter_fn, mutable=False)
             elif isinstance(stmt, ComputedMethodDeclaration):
+                # Skip static computed methods — they're class-level, handled in _exec_class
+                if stmt.is_static:
+                    continue
                 # [Symbol.iterator]() { ... } — evaluate key and store method
                 computed_key = self._eval(stmt.key, instance_env)
                 computed_key_str = str(computed_key) if computed_key is not None else "__computed__"
@@ -5534,9 +6051,21 @@ class Interpreter:
                     closure=instance_env,
                     defaults=stmt.defaults,
                     rest_param=stmt.rest_param,
+                    is_generator=stmt.is_generator,
                 )
-                fields[computed_key_str] = fn
-                instance_env.define(computed_key_str, fn, mutable=False)
+                if stmt.is_getter:
+                    # get [expr]() { ... } — store as computed getter
+                    getter_key = f"__getter__{computed_key_str}"
+                    fields[getter_key] = fn
+                    instance_env.define(getter_key, fn, mutable=False)
+                elif stmt.is_setter:
+                    # set [expr](v) { ... } — store as computed setter
+                    setter_key = f"__setter__{computed_key_str}"
+                    fields[setter_key] = fn
+                    instance_env.define(setter_key, fn, mutable=False)
+                else:
+                    fields[computed_key_str] = fn
+                    instance_env.define(computed_key_str, fn, mutable=False)
             elif isinstance(stmt, Assignment) and stmt.value is not None:
                 # Public instance field declaration: fieldName = value (no var/let keyword)
                 val = self._eval(stmt.value, instance_env)
@@ -5657,14 +6186,25 @@ class Interpreter:
 
         for i, (pname, _ptype) in enumerate(fn.params):
             if pname.startswith("__destruct__:"):
-                field_names = pname[len("__destruct__:"):].split(",")
+                field_specs = pname[len("__destruct__:"):].split(",")
                 arg_val = args[i] if i < len(args) else {}
                 if not isinstance(arg_val, dict):
                     raise SpryRuntimeError(
                         f"Method {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
                     )
-                for fname in field_names:
-                    child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    # Apply default when key is absent (JS semantics: missing key, not null value)
+                    if fkey not in arg_val:
+                        default_key = f"__destruct_default__{flocal}"
+                        fval = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
+                    else:
+                        fval = arg_val[fkey]
+                    child.define(flocal, fval, mutable=False)
             elif pname.startswith("__array_destruct__:"):
                 raw = pname[len("__array_destruct__:"):]
                 arr_rest_name: str | None = None
@@ -6029,20 +6569,61 @@ class _JsonNamespace:
     """JSON global namespace — JSON.stringify(), JSON.parse()."""
 
     def stringify(self, value: Any, replacer: Any = None, indent: Any = None) -> str:
-        """Serialize a value to a JSON string. replacer is ignored (null/None accepted)."""
+        """Serialize a value to a JSON string."""
         import json as _json
 
-        def _default(o: Any) -> Any:
-            if hasattr(o, "__repr__"):
-                return repr(o)
-            return str(o)
-
         indent_val = int(indent) if indent is not None else None
+
+        def _spry_to_json(obj: Any) -> Any:
+            """Recursively convert SpryCode values to JSON-serializable Python values."""
+            if isinstance(obj, (SpryFunction, SpryLambda, SpryMultiLambda, SpryTask)):
+                return None  # functions are serialized as null in JS
+            if isinstance(obj, SpryInstance):
+                return {k: _spry_to_json(v) for k, v in obj.fields.items()
+                        if not isinstance(v, (SpryFunction, SpryLambda, SpryMultiLambda,
+                                              SpryTask)) and not callable(v)}
+            if isinstance(obj, SpryMap):
+                return {str(k): _spry_to_json(v) for k, v in obj._data.items()}
+            if isinstance(obj, SprySet):
+                return list(obj._data)
+            if isinstance(obj, list):
+                return [_spry_to_json(v) for v in obj]
+            if isinstance(obj, dict):
+                return {k: _spry_to_json(v) for k, v in obj.items()
+                        if not isinstance(v, (SpryFunction, SpryLambda, SpryMultiLambda, SpryTask))}
+            return obj
+
+        # Convert SpryCode objects first so filters operate on plain dicts/lists
+        value = _spry_to_json(value)
+
+        # Apply array-key replacer filter
+        if isinstance(replacer, list):
+            allowed = set(str(k) for k in replacer)
+
+            def _filter(obj: Any) -> Any:
+                if isinstance(obj, dict):
+                    return {k: _filter(v) for k, v in obj.items() if k in allowed}
+                if isinstance(obj, list):
+                    return [_filter(v) for v in obj]
+                return obj
+            value = _filter(value)
+
+        # Apply function replacer
+        if callable(replacer) and not isinstance(replacer, list):
+            def _replace(key: str, obj: Any) -> Any:
+                result = replacer(key, obj)
+                if isinstance(result, dict):
+                    return {k: _replace(k, v) for k, v in result.items()}
+                if isinstance(result, list):
+                    return [_replace(str(i), v) for i, v in enumerate(result)]
+                return result
+            value = _replace("", value)
+
         # Use compact separators (no spaces) when no indent — matches JS JSON.stringify behavior
         separators = (',', ':') if indent_val is None else None
         try:
             return _json.dumps(value, indent=indent_val, separators=separators,
-                               ensure_ascii=False, default=_default)
+                               ensure_ascii=False)
         except (TypeError, ValueError) as e:
             raise ValueError(f"JSON.stringify error: {e}") from e
 
@@ -6084,6 +6665,9 @@ class _ArrayNamespace:
             result = [[k, v] for k, v in iterable._data.items()]
         elif isinstance(iterable, SprySet):
             result = list(iterable._data)
+        elif isinstance(iterable, (SpryInstance, SpryGenerator)):
+            # Use _iter_to_list for SpryInstance (supports [Symbol.iterator]()) and generators
+            result = self._interp._iter_to_list(iterable, None)
         elif isinstance(iterable, dict) and "length" in iterable:
             # Array-like: {length: N, "0": x, "1": y, ...}
             n = int(iterable["length"])
@@ -6141,6 +6725,9 @@ class _ArrayNamespace:
 
 class _ObjectNamespace:
     """Object global namespace — Object.keys(), Object.values(), Object.assign(), etc."""
+
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
 
     def keys(self, obj: Any) -> list:
         """Return the keys of an object/dict."""
@@ -6343,10 +6930,13 @@ class _ObjectNamespace:
         """Return the prototype of an object.
 
         For objects created with Object.create(proto), returns proto.
+        For SpryInstances, returns the class prototype (ClassName.prototype).
         For plain objects/instances/null, returns None.
         """
         if isinstance(obj, dict) and "__spry_proto__" in obj:
             return obj["__spry_proto__"]
+        if isinstance(obj, SpryInstance):
+            return obj.cls.prototype
         return None
 
     def setPrototypeOf(self, obj: Any, proto: Any) -> Any:
@@ -6367,10 +6957,113 @@ class _ObjectNamespace:
     def __getattr__(self, prop: str) -> Any:
         if prop == "is":
             return self.is_
+        if prop == "prototype":
+            proto = _ObjectPrototype(self, call_fn=self._call_fn)
+            object.__setattr__(self, "prototype", proto)
+            return proto
         raise AttributeError(prop)
 
     def __repr__(self) -> str:
         return "Object"
+
+
+class _ObjectPrototype:
+    """Object.prototype — provides hasOwnProperty and toString for .call() usage."""
+
+    def __init__(self, obj_ns: Any, call_fn: Any = None) -> None:
+        self._obj_ns = obj_ns
+        self._call_fn = call_fn
+
+    @property
+    def hasOwnProperty(self) -> "_ObjectPrototypeHasOwnProperty":
+        return _ObjectPrototypeHasOwnProperty()
+
+    @property
+    def toString(self) -> "_ObjectPrototypeToString":
+        return _ObjectPrototypeToString(call_fn=self._call_fn)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "hasOwnProperty":
+            return self.hasOwnProperty
+        if prop == "toString":
+            return self.toString
+        raise SpryRuntimeError(f"Object.prototype has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "Object.prototype"
+
+
+class _ObjectPrototypeHasOwnProperty:
+    """Object.prototype.hasOwnProperty — supports .call(obj, key)."""
+
+    def call(self, obj: Any, key: Any) -> bool:
+        return _owns_prop(obj, str(key))
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "call":
+            return self.call
+        raise SpryRuntimeError(f"Object.prototype.hasOwnProperty has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "hasOwnProperty"
+
+
+class _ObjectPrototypeToString:
+    """Object.prototype.toString — supports .call(obj) to return [object Tag]."""
+
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
+
+    def call(self, obj: Any) -> str:
+        if obj is None:
+            return "[object Null]"
+        if obj is SPRY_UNDEFINED:
+            return "[object Undefined]"
+        if isinstance(obj, bool):
+            return "[object Boolean]"
+        if isinstance(obj, (int, float)):
+            return "[object Number]"
+        if isinstance(obj, str):
+            return "[object String]"
+        if isinstance(obj, list):
+            return "[object Array]"
+        if isinstance(obj, SpryInstance):
+            # Check for [Symbol.toStringTag] getter or plain field
+            _tag_key = "Symbol('toStringTag')"
+            _getter_key = f"__getter__{_tag_key}"
+            if _getter_key in obj.fields:
+                getter_fn = obj.fields[_getter_key]
+                if self._call_fn is not None:
+                    try:
+                        tag = self._call_fn(getter_fn, [])
+                        return f"[object {tag}]" if isinstance(tag, str) else "[object Object]"
+                    except Exception:
+                        pass
+                return "[object Object]"
+            if _tag_key in obj.fields:
+                tag = obj.fields[_tag_key]
+                return f"[object {tag}]" if isinstance(tag, str) else "[object Object]"
+            return "[object Object]"
+        if isinstance(obj, dict):
+            _tag_key = "Symbol('toStringTag')"
+            if _tag_key in obj:
+                return f"[object {obj[_tag_key]}]"
+            return "[object Object]"
+        if callable(obj) or isinstance(obj, (SpryFunction, SpryLambda)):
+            return "[object Function]"
+        if isinstance(obj, SpryMap):
+            return "[object Map]"
+        if isinstance(obj, SprySet):
+            return "[object Set]"
+        return "[object Object]"
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "call":
+            return self.call
+        raise SpryRuntimeError(f"Object.prototype.toString has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "toString"
 
 
 class _NumberNamespace:
@@ -8217,6 +8910,46 @@ class SpryDate:
 
 class _DateNamespace:
     """Date global namespace."""
+
+    def __call__(self, *args: Any) -> "SpryDate":
+        """Called as `new Date(...)` from SpryCode."""
+        import datetime
+        if not args:
+            # new Date() → current local time
+            now = datetime.datetime.now()
+            return SpryDate(now.year, now.month, now.day,
+                            now.hour, now.minute, now.second,
+                            now.microsecond // 1000)
+        if len(args) == 1:
+            arg = args[0]
+            if isinstance(arg, (int, float)):
+                # new Date(ms) → Unix timestamp in milliseconds
+                epoch = datetime.datetime(1970, 1, 1)
+                dt = epoch + datetime.timedelta(milliseconds=arg)
+                return SpryDate(dt.year, dt.month, dt.day,
+                                dt.hour, dt.minute, dt.second,
+                                dt.microsecond // 1000)
+            # new Date(string) → parse ISO/common formats
+            formats = ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+                       "%Y-%m-%d", "%m/%d/%Y"]
+            for fmt in formats:
+                try:
+                    dt = datetime.datetime.strptime(str(arg), fmt)
+                    return SpryDate(dt.year, dt.month, dt.day,
+                                    dt.hour, dt.minute, dt.second,
+                                    dt.microsecond // 1000)
+                except ValueError:
+                    continue
+            return SpryDate(1970, 1, 1, 0, 0, 0, 0)  # fallback NaN-like
+        # new Date(year, month, day, ...) — month is 0-indexed in JS
+        year = int(args[0])
+        month = int(args[1]) + 1 if len(args) > 1 else 1  # JS: 0-indexed
+        day = int(args[2]) if len(args) > 2 else 1
+        hour = int(args[3]) if len(args) > 3 else 0
+        minute = int(args[4]) if len(args) > 4 else 0
+        second = int(args[5]) if len(args) > 5 else 0
+        ms = int(args[6]) if len(args) > 6 else 0
+        return SpryDate(year, month, day, hour, minute, second, ms)
 
     def now(self) -> float:
         """Return current time as milliseconds since epoch."""

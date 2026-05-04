@@ -454,6 +454,44 @@ class Parser:
             return LabeledStatement(label=label_tok.value, body=body_stmt,
                                     line=label_tok.line, column=label_tok.column)
 
+        # Array destructuring assignment at statement start: [a, b, c] = expr
+        # Must be checked BEFORE expression parsing to avoid [a, b] being consumed
+        # as a subscript on the previous statement's trailing value (newlines are stripped).
+        if tok.type == TokenType.LBRACKET:
+            saved_pos = self.pos
+            try:
+                self._advance()  # consume '['
+                names: list[str] = []
+                rest_name_s: str | None = None
+                ok = True
+                while not self._check(TokenType.RBRACKET) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        if self._current().type in self._IDENTIFIER_LIKE:
+                            rest_name_s = self._advance().value
+                        else:
+                            ok = False
+                        break
+                    if self._current().type in self._IDENTIFIER_LIKE:
+                        names.append(self._advance().value)
+                    else:
+                        ok = False
+                        break
+                    if not self._match(TokenType.COMMA):
+                        break
+                if ok and self._check(TokenType.RBRACKET):
+                    self._advance()  # consume ']'
+                    if self._check(TokenType.EQ):
+                        self._advance()  # consume '='
+                        rhs = self._parse_expression()
+                        return ListDestructureAssignment(
+                            names=names, value=rhs, rest_name=rest_name_s,
+                            line=tok.line, column=tok.column,
+                        )
+            except Exception:
+                pass
+            self.pos = saved_pos
+
         # Standalone block statement: { stmt; stmt; ... }
         # Disambiguate from object literals by peeking at the first token inside.
         # Treat as block when the first inner token is:
@@ -526,16 +564,19 @@ class Parser:
         return AppDeclaration(name=name_tok.value, version=version, line=tok.line, column=tok.column)
 
     def _parse_let(self) -> Node:
-        if self._check(TokenType.CONST):
-            tok = self._advance()  # consume 'const' (JS-compatible immutable binding, parsed like let)
+        is_const = self._check(TokenType.CONST)
+        if is_const:
+            tok = self._advance()  # consume 'const' (JS-compatible immutable binding)
         else:
             tok = self._expect(TokenType.LET)
+        # mutable=True for let (reassignable), mutable=False for const (immutable)
+        mutable = not is_const
         # Check for list destructuring: let [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
-            first: Node = self._parse_list_destructure(tok, mutable=False)
+            first: Node = self._parse_list_destructure(tok, mutable=mutable)
         # Check for object destructuring: let {a, b} = expr
         elif self._check(TokenType.LBRACE):
-            first = self._parse_object_destructure(tok, mutable=False)
+            first = self._parse_object_destructure(tok, mutable=mutable)
         else:
             name_tok = self._expect_ident()
             type_annotation = None
@@ -550,15 +591,16 @@ class Parser:
                 value=value,
                 line=tok.line,
                 column=tok.column,
+                is_const=is_const,
             )
         # Multiple declarations: let a = 1, b = 2, c = 3
         if self._check(TokenType.COMMA):
             decls: list[Node] = [first]
             while self._match(TokenType.COMMA):
                 if self._check(TokenType.LBRACKET):
-                    decls.append(self._parse_list_destructure(tok, mutable=False))
+                    decls.append(self._parse_list_destructure(tok, mutable=mutable))
                 elif self._check(TokenType.LBRACE):
-                    decls.append(self._parse_object_destructure(tok, mutable=False))
+                    decls.append(self._parse_object_destructure(tok, mutable=mutable))
                 else:
                     n_tok = self._expect_ident()
                     t_ann = None
@@ -569,7 +611,7 @@ class Parser:
                         v_node = self._parse_expression()
                     decls.append(LetDeclaration(
                         name=n_tok.value, type_annotation=t_ann, value=v_node,
-                        line=n_tok.line, column=n_tok.column,
+                        line=n_tok.line, column=n_tok.column, is_const=is_const,
                     ))
             return DeclarationList(body=decls, line=tok.line, column=tok.column)
         return first
@@ -646,8 +688,10 @@ class Parser:
             # Dict destructuring param: {a, b}
             if self._check(TokenType.LBRACE):
                 # Accept as a synthetic param name "__destruct__" and store original names
-                param_names = self._parse_dict_destruct_param()
+                param_names, param_defaults = self._parse_dict_destruct_param()
                 params.append(("__destruct__:" + ",".join(param_names), None))
+                for _fname, _dflt in param_defaults.items():
+                    defaults[f"__destruct_default__{_fname}"] = _dflt
                 if not self._match(TokenType.COMMA):
                     break
                 continue
@@ -740,16 +784,37 @@ class Parser:
         inner = self._parse_statement()
         return ExportStatement(declaration=inner, line=tok.line, column=tok.column)
 
-    def _parse_dict_destruct_param(self) -> list[str]:
-        """Parse {a, b, c} destructuring pattern in function params."""
+    def _parse_dict_destruct_param(self) -> tuple[list[str], dict[str, "Node"]]:
+        """Parse {a, b, c} or {a: alias, key = default} destructuring pattern in function params.
+
+        Returns a tuple of:
+        - names: list of field specs, each either ``"name"`` or ``"key|alias"``
+        - defaults: dict mapping local name → default AST node
+        """
+        from .ast_nodes import Node as _Node  # noqa: F401 (avoid circular at module top)
         self._expect(TokenType.LBRACE)
         names: list[str] = []
+        defaults: dict[str, Any] = {}
         while not self._check(TokenType.RBRACE) and not self._at_end():
-            names.append(self._expect_ident().value)
+            name_tok = self._expect_ident()
+            key = name_tok.value
+            if self._match(TokenType.COLON):
+                # rename: {key: localName} — optionally followed by = default
+                alias_tok = self._expect_ident()
+                local = alias_tok.value
+                names.append(key + "|" + local)
+                if self._match(TokenType.EQ):
+                    defaults[local] = self._parse_expression()
+            elif self._match(TokenType.EQ):
+                # default: {key = defaultExpr}
+                defaults[key] = self._parse_expression()
+                names.append(key)
+            else:
+                names.append(key)
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACE)
-        return names
+        return names, defaults
 
     def _parse_task(self) -> TaskDeclaration:
         tok = self._expect(TokenType.TASK)
@@ -847,12 +912,15 @@ class Parser:
         body = self._parse_block()
         # catch is optional if finally is present
         err_name = ""
+        err_pattern = None
         handler: Block | None = None
         if self._check(TokenType.CATCH):
             self._advance()
             # Support:
             #   catch e { ... }         — bare identifier
             #   catch (e) { ... }       — parenthesised identifier
+            #   catch ({a, b}) { ... }  — object destructuring
+            #   catch ([a, b]) { ... }  — array destructuring
             #   catch { ... }           — no binding (optional catch binding, ES2019)
             has_paren = self._match(TokenType.LPAREN)
             if has_paren:
@@ -860,6 +928,16 @@ class Parser:
                     # catch () { ... } — empty parens, no binding
                     self._advance()
                     err_name = ""
+                elif self._check(TokenType.LBRACE):
+                    # catch ({a, b}) { ... } — object destructuring
+                    dummy_tok = self._current()
+                    err_pattern = self._parse_object_destructure(dummy_tok, mutable=True)
+                    self._expect(TokenType.RPAREN)
+                elif self._check(TokenType.LBRACKET):
+                    # catch ([a, b]) { ... } — array destructuring
+                    dummy_tok = self._current()
+                    err_pattern = self._parse_list_destructure(dummy_tok, mutable=True)
+                    self._expect(TokenType.RPAREN)
                 else:
                     err_name = self._expect_ident().value
                     self._expect(TokenType.RPAREN)
@@ -878,6 +956,7 @@ class Parser:
             error_name=err_name,
             handler=handler,
             finally_block=finally_block,
+            error_pattern=err_pattern,
             line=tok.line,
             column=tok.column,
         )
@@ -1672,6 +1751,25 @@ class Parser:
                 body.append(GetterDeclaration(name=name_tok.value, body=getter_body,
                                               line=cur.line, column=cur.column))
                 continue
+            # Contextual `get [expr]() { ... }` — computed getter
+            if (cur.type == TokenType.IDENTIFIER and cur.value == "get"
+                    and self._peek(1).type == TokenType.LBRACKET):
+                self._advance()  # consume 'get'
+                self._advance()  # consume '['
+                cg_key = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                self._expect(TokenType.LPAREN)
+                self._expect(TokenType.RPAREN)
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                cg_body = self._parse_block()
+                body.append(ComputedMethodDeclaration(
+                    key=cg_key, params=[], body=cg_body,
+                    is_getter=True, defaults={}, rest_param=None,
+                    line=cur.line, column=cur.column,
+                ))
+                continue
             # Contextual `set propName(param) { ... }`
             if (cur.type == TokenType.IDENTIFIER and cur.value == "set"
                     and self._peek(1).type in self._IDENTIFIER_LIKE):
@@ -1684,6 +1782,23 @@ class Parser:
                 body.append(SetterDeclaration(name=name_tok.value, param=param_tok.value,
                                               body=setter_body,
                                               line=cur.line, column=cur.column))
+                continue
+            # Contextual `set [expr](param) { ... }` — computed setter
+            if (cur.type == TokenType.IDENTIFIER and cur.value == "set"
+                    and self._peek(1).type == TokenType.LBRACKET):
+                self._advance()  # consume 'set'
+                self._advance()  # consume '['
+                cs_key = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                self._expect(TokenType.LPAREN)
+                cs_param = self._expect_ident().value
+                self._expect(TokenType.RPAREN)
+                cs_body = self._parse_block()
+                body.append(ComputedMethodDeclaration(
+                    key=cs_key, params=[(cs_param, None)], body=cs_body,
+                    is_setter=True, defaults={}, rest_param=None,
+                    line=cur.line, column=cur.column,
+                ))
                 continue
             # `fn get propName() { ... }` or `fn set propName(v) { ... }` — JS-compatible getter/setter
             if cur.type == TokenType.FN:
@@ -1794,6 +1909,33 @@ class Parser:
                                                       body=setter_body,
                                                       line=cur.line, column=cur.column))
                     continue
+                # static [expr]() { ... } — static computed method (e.g. static [Symbol.hasInstance]())
+                if next_tok.type == TokenType.LBRACKET:
+                    self._advance()  # consume 'static'
+                    self._advance()  # consume '['
+                    sc_key = self._parse_expression()
+                    self._expect(TokenType.RBRACKET)
+                    self._expect(TokenType.LPAREN)
+                    sc_params: list[tuple[str, str | None]] = []
+                    sc_defaults: dict = {}
+                    sc_rest: str | None = None
+                    while not self._check(TokenType.RPAREN) and not self._at_end():
+                        if self._check(TokenType.ELLIPSIS):
+                            self._advance()
+                            sc_rest = self._expect_ident().value
+                            break
+                        pname = self._expect_ident().value
+                        sc_params.append((pname, None))
+                        if not self._match(TokenType.COMMA):
+                            break
+                    self._expect(TokenType.RPAREN)
+                    sc_body = self._parse_block()
+                    body.append(ComputedMethodDeclaration(
+                        key=sc_key, params=sc_params, body=sc_body,
+                        is_static=True, defaults=sc_defaults, rest_param=sc_rest,
+                        line=cur.line, column=cur.column,
+                    ))
+                    continue
                 if next_tok.type in self._IDENTIFIER_LIKE or next_tok.type == TokenType.FN:
                     self._advance()  # consume 'static'
                     if self._check(TokenType.FN):
@@ -1838,6 +1980,42 @@ class Parser:
                         column=cur.column,
                     ))
                     continue
+                # static #field = value  or  static #method() { }
+                if next_tok.type == TokenType.PRIVATE_IDENT:
+                    self._advance()  # consume 'static'
+                    sp_tok = self._advance()  # consume the PRIVATE_IDENT token
+                    sp_name = f"__static_private__{sp_tok.value}"
+                    if self._check(TokenType.LPAREN):
+                        # static #method(...) { ... } — static private method
+                        spm_params, spm_defaults, spm_rest = self._parse_method_params()
+                        if self._check(TokenType.ARROW):
+                            self._advance()
+                            self._parse_type_name()
+                        spm_body = self._parse_block()
+                        body.append(FunctionDeclaration(
+                            name=sp_name,
+                            params=spm_params,
+                            body=spm_body,
+                            defaults=spm_defaults,
+                            rest_param=spm_rest,
+                            is_async=False,
+                            is_generator=False,
+                            line=cur.line,
+                            column=cur.column,
+                        ))
+                    else:
+                        # static #field = value — static private field
+                        sp_value = None
+                        if self._match(TokenType.EQ):
+                            sp_value = self._parse_expression()
+                        body.append(VarDeclaration(
+                            name=sp_name,
+                            type_annotation=None,
+                            value=sp_value,
+                            line=cur.line,
+                            column=cur.column,
+                        ))
+                    continue
             # Computed method: [Symbol.iterator]() { ... }
             if self._check(TokenType.LBRACKET):
                 self._advance()  # consume '['
@@ -1870,6 +2048,27 @@ class Parser:
             ms_is_async = False
             ms_is_gen = False
             cur = self._current()  # refresh after the previous checks may have advanced
+            # #methodName() { ... } — private instance method shorthand
+            if cur.type == TokenType.PRIVATE_IDENT and self._peek(1).type == TokenType.LPAREN:
+                pm_tok = self._advance()  # consume PRIVATE_IDENT
+                pm_name = f"__private__{pm_tok.value}"
+                pm_params, pm_defaults, pm_rest = self._parse_method_params()
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                pm_body = self._parse_block()
+                body.append(FunctionDeclaration(
+                    name=pm_name,
+                    params=pm_params,
+                    body=pm_body,
+                    defaults=pm_defaults,
+                    rest_param=pm_rest,
+                    is_async=False,
+                    is_generator=False,
+                    line=pm_tok.line,
+                    column=pm_tok.column,
+                ))
+                continue
             if cur.type == TokenType.IDENTIFIER and cur.value == "async":
                 # async name() { ... } — look-ahead to confirm it's a method
                 if self._peek(1).type in self._IDENTIFIER_LIKE and self._peek(2).type == TokenType.LPAREN:
@@ -1882,6 +2081,24 @@ class Parser:
                     ms_is_gen = True
                     self._advance()  # consume '*'
                     cur = self._current()
+                # *[expr]() { ... } — generator computed method shorthand
+                elif self._peek(1).type == TokenType.LBRACKET:
+                    self._advance()  # consume '*'
+                    self._advance()  # consume '['
+                    gc_key = self._parse_expression()
+                    self._expect(TokenType.RBRACKET)
+                    gc_params, gc_defaults, gc_rest = self._parse_method_params()
+                    if self._check(TokenType.ARROW):
+                        self._advance()
+                        self._parse_type_name()
+                    gc_body = self._parse_block()
+                    body.append(ComputedMethodDeclaration(
+                        key=gc_key, params=gc_params, body=gc_body,
+                        defaults=gc_defaults, rest_param=gc_rest,
+                        is_generator=True,
+                        line=cur.line, column=cur.column,
+                    ))
+                    continue
             if cur.type in self._IDENTIFIER_LIKE and self._peek(1).type == TokenType.LPAREN:
                 ms_tok = self._advance()
                 ms_params, ms_defaults, ms_rest = self._parse_method_params()
@@ -1924,8 +2141,10 @@ class Parser:
                 rest_param = self._expect_ident().value
                 break
             if self._check(TokenType.LBRACE):
-                param_names = self._parse_dict_destruct_param()
+                param_names, param_defaults = self._parse_dict_destruct_param()
                 params.append(("__destruct__:" + ",".join(param_names), None))
+                for _fname, _dflt in param_defaults.items():
+                    defaults[f"__destruct_default__{_fname}"] = _dflt
                 if not self._match(TokenType.COMMA):
                     break
                 continue
@@ -3090,9 +3309,13 @@ class Parser:
 
     def _parse_postfix(self) -> Node:
         expr = self._parse_primary()
+        # Track the line of the last consumed token — used for ASI-like disambiguation:
+        # a '[' on a different line is not a subscript on the previous expression.
+        _last_line = self.tokens[self.pos - 1].line if self.pos > 0 else 0
         while True:
             if self._check(TokenType.DOT):
-                self._advance()
+                _dot_tok = self._advance()
+                _last_line = _dot_tok.line
                 prop_tok = self._current()
                 # Handle private field access: self.#name  (DOT followed by PRIVATE_IDENT)
                 if prop_tok.type == TokenType.PRIVATE_IDENT:
@@ -3101,11 +3324,13 @@ class Parser:
                 else:
                     # Property can be any identifier or keyword used as a property
                     prop = self._advance().value
+                _last_line = self.tokens[self.pos - 1].line
                 if self._check(TokenType.LPAREN):
                     # Method call
                     self._advance()
                     args = self._parse_arg_list()
                     self._expect(TokenType.RPAREN)
+                    _last_line = self.tokens[self.pos - 1].line
                     callee = MemberExpression(
                         object=expr, property=prop, line=prop_tok.line, column=prop_tok.column
                     )
@@ -3119,27 +3344,32 @@ class Parser:
             elif self._check(TokenType.QUESTION_DOT):
                 # Optional chaining: obj?.prop
                 qt = self._advance()
+                _last_line = qt.line
                 if self._check(TokenType.LPAREN):
                     # Optional call: fn?.() — call fn only if non-null
                     self._advance()  # consume '('
                     args = self._parse_arg_list()
                     self._expect(TokenType.RPAREN)
+                    _last_line = self.tokens[self.pos - 1].line
                     expr = OptionalCallExpression(callee=expr, args=args, line=qt.line, column=qt.column)
                 elif self._check(TokenType.LBRACKET):
                     # Optional index: arr?.[i]
                     self._advance()  # consume [
                     index = self._parse_expression()
                     self._expect(TokenType.RBRACKET)
+                    _last_line = self.tokens[self.pos - 1].line
                     expr = OptionalIndexExpression(object=expr, index=index, line=qt.line, column=qt.column)
                 else:
                     prop_tok = self._current()
                     prop = self._advance().value
+                    _last_line = self.tokens[self.pos - 1].line
                     if self._check(TokenType.LPAREN):
                         # Optional method call: obj?.method(args)
                         # Parsed as OptionalCallExpression so callee=None short-circuits the call
                         self._advance()
                         args = self._parse_arg_list()
                         self._expect(TokenType.RPAREN)
+                        _last_line = self.tokens[self.pos - 1].line
                         callee = OptionalMemberExpression(
                             object=expr, property=prop, line=qt.line, column=qt.column
                         )
@@ -3151,29 +3381,39 @@ class Parser:
                             object=expr, property=prop, line=qt.line, column=qt.column
                         )
             elif self._check(TokenType.LBRACKET):
+                # ASI: if '[' is on a different line from the end of the previous expression,
+                # don't treat it as a subscript — it's the start of a new statement.
+                if self._current().line != _last_line:
+                    break
                 op_tok = self._advance()
+                _last_line = op_tok.line
                 index = self._parse_expression()
                 self._expect(TokenType.RBRACKET)
+                _last_line = self.tokens[self.pos - 1].line
                 expr = IndexExpression(object=expr, index=index, line=op_tok.line, column=op_tok.column)
             elif self._check(TokenType.LPAREN):
                 op_tok = self._advance()
+                _last_line = op_tok.line
                 args = self._parse_arg_list()
                 self._expect(TokenType.RPAREN)
+                _last_line = self.tokens[self.pos - 1].line
                 expr = CallExpression(callee=expr, args=args, line=op_tok.line, column=op_tok.column)
             elif self._check(TokenType.FAILED):
                 # result.failed shorthand
-                self._advance()
+                op_tok = self._advance()
+                _last_line = op_tok.line
                 expr = MemberExpression(
                     object=expr,
                     property="failed",
-                    line=self._current().line,
-                    column=self._current().column,
+                    line=op_tok.line,
+                    column=op_tok.column,
                 )
             elif self._check(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
                 # Only apply postfix ++/-- to lvalues (Identifier or MemberExpression)
                 if not isinstance(expr, (Identifier, MemberExpression)):
                     break
                 op_tok = self._advance()
+                _last_line = op_tok.line
                 expr = PostfixExpression(
                     operand=expr,
                     op=op_tok.value,
@@ -3183,6 +3423,7 @@ class Parser:
             elif self._check(TokenType.INSTANCEOF):
                 inst_tok = self._advance()
                 type_tok = self._advance()  # consume the type name token
+                _last_line = type_tok.line
                 expr = InstanceofExpression(
                     operand=expr,
                     type_name=type_tok.value,
@@ -3192,6 +3433,7 @@ class Parser:
             elif self._check(TokenType.FSTRING):
                 # Tagged template literal: tag`...`
                 tmpl_tok = self._advance()
+                _last_line = tmpl_tok.line
                 # Token value is "processed\x00raw" from the lexer
                 _parts = tmpl_tok.value.split("\x00", 1)
                 _processed = _parts[0]
@@ -3270,7 +3512,7 @@ class Parser:
             if self._check(TokenType.EXTENDS):
                 self._advance()
                 superclass = self._expect_ident().value
-            body = self._parse_block()
+            body = self._parse_class_body()
             return ClassExpression(name=name, superclass=superclass, body=body, line=tok.line, column=tok.column)
 
         if tok.type == TokenType.STRING:
@@ -3327,8 +3569,10 @@ class Parser:
                     rest_param = rest_tok.value
                     break
                 if self._check(TokenType.LBRACE):
-                    param_names = self._parse_dict_destruct_param()
+                    param_names, param_defaults = self._parse_dict_destruct_param()
                     params.append(("__destruct__:" + ",".join(param_names), None))
+                    for _fname, _dflt in param_defaults.items():
+                        defaults[f"__destruct_default__{_fname}"] = _dflt
                     if not self._match(TokenType.COMMA):
                         break
                     continue
@@ -3363,14 +3607,61 @@ class Parser:
         if tok.type == TokenType.LPAREN:
             self._advance()
             # Check for lambda: () => expr  or  (x) => expr  or  (a, b) => expr
+            # Also supports destructured params: ([a,b]) => or ({name}) => or (a, [b,c]) =>
             saved_pos = self.pos
             try:
                 params: list[str] = []
-                # Zero-arg: immediately check ) =>
-                if self._current().type in self._IDENTIFIER_LIKE:
-                    params.append(self._advance().value)
-                    while self._match(TokenType.COMMA):
-                        params.append(self._expect_ident().value)
+                rest_param: str | None = None
+                # Collect params until RPAREN
+                while not self._check(TokenType.RPAREN) and not self._at_end():
+                    # Rest param: ...name
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        rest_param = self._expect_ident().value
+                        break
+                    # Array destructure param: [a, b, ...rest]
+                    if self._check(TokenType.LBRACKET):
+                        self._advance()
+                        arr_names: list[str] = []
+                        arr_rest: str | None = None
+                        while not self._check(TokenType.RBRACKET) and not self._at_end():
+                            if self._check(TokenType.ELLIPSIS):
+                                self._advance()
+                                arr_rest = self._expect_ident().value
+                                break
+                            arr_names.append(self._expect_ident().value)
+                            if not self._match(TokenType.COMMA):
+                                break
+                        self._expect(TokenType.RBRACKET)
+                        synth = "__array_destruct__:" + ",".join(arr_names)
+                        if arr_rest:
+                            synth += "..." + arr_rest
+                        params.append(synth)
+                    # Object destructure param: {name, key: alias, name = default}
+                    elif self._check(TokenType.LBRACE):
+                        self._advance()
+                        obj_parts: list[str] = []
+                        while not self._check(TokenType.RBRACE) and not self._at_end():
+                            name_tok2 = self._expect_ident()
+                            key2 = name_tok2.value
+                            if self._match(TokenType.COLON):
+                                alias_tok2 = self._expect_ident()
+                                obj_parts.append(key2 + "|" + alias_tok2.value)
+                            elif self._match(TokenType.EQ):
+                                self._parse_expression()  # consume default (ignored for now)
+                                obj_parts.append(key2)
+                            else:
+                                obj_parts.append(key2)
+                            if not self._match(TokenType.COMMA):
+                                break
+                        self._expect(TokenType.RBRACE)
+                        params.append("__destruct__:" + ",".join(obj_parts))
+                    elif self._current().type in self._IDENTIFIER_LIKE:
+                        params.append(self._advance().value)
+                    else:
+                        raise ParseError("expected param", self._current())
+                    if not self._match(TokenType.COMMA):
+                        break
                 if self._check(TokenType.RPAREN):
                     self._advance()  # )
                     if self._check(TokenType.FAT_ARROW):
@@ -3379,12 +3670,15 @@ class Parser:
                             body: Node = self._parse_block()
                         else:
                             body = self._parse_lambda_body()
+                        # Attach rest param encoding if present
+                        if rest_param is not None:
+                            params.append("__rest__:" + rest_param)
                         if len(params) == 0:
                             # Zero-arg lambda: () => expr  — modelled as MultiParamLambda
                             # with an empty params list (no binding needed on call)
                             return MultiParamLambda(params=[], body=body,
                                                    line=tok.line, column=tok.column)
-                        if len(params) == 1:
+                        if len(params) == 1 and not params[0].startswith("__"):
                             return LambdaExpression(param=params[0], body=body,
                                                     line=tok.line, column=tok.column)
                         return MultiParamLambda(params=params, body=body,
@@ -3404,7 +3698,6 @@ class Parser:
                                           line=tok.line, column=tok.column)
             self._expect(TokenType.RPAREN)
             return expr
-
         if tok.type == TokenType.LBRACE:
             return self._parse_object_literal()
 

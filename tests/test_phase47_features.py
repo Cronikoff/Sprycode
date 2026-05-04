@@ -194,6 +194,15 @@ let v = greet({name: 'Alice'})
 """)
         assert val(i) == 'Hello, Alice!'
 
+    def test_null_value_not_replaced_by_default(self) -> None:
+        """Explicit null value should not trigger default (JS semantics: only missing key)."""
+        i = run("""
+fn greet({name = 'World'}) { return 'Hello, ' + name }
+let v = greet({name: null})
+""")
+        # null is explicitly provided, so default should NOT apply; null converted to string "null"
+        assert val(i) == 'Hello, null'
+
     def test_multiple_defaults(self) -> None:
         i = run("""
 fn config({host = 'localhost', port = 3000}) {

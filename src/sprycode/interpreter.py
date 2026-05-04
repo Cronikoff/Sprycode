@@ -2886,12 +2886,13 @@ class Interpreter:
                         fkey, flocal = fspec.split("|", 1)
                     else:
                         fkey = flocal = fspec
-                    val = arg_val.get(fkey)
-                    # Apply default if value is None and a default is defined
-                    if val is None:
+                    # Apply default if the key is absent from the source object (JS semantics:
+                    # defaults apply when the key is missing, not when the value is null)
+                    if fkey not in arg_val:
                         default_key = f"__destruct_default__{flocal}"
-                        if default_key in fn.defaults:
-                            val = self._eval(fn.defaults[default_key], fn.closure)
+                        val = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
+                    else:
+                        val = arg_val[fkey]
                     child.define(flocal, val, mutable=False)
             # Array destructuring param: __array_destruct__:a,b...rest
             elif pname.startswith("__array_destruct__:"):
@@ -2964,11 +2965,11 @@ class Interpreter:
                         fkey, flocal = fspec.split("|", 1)
                     else:
                         fkey = flocal = fspec
-                    fval = arg_val.get(fkey)
-                    if fval is None:
+                    if fkey not in arg_val:
                         default_key = f"__destruct_default__{flocal}"
-                        if default_key in fn.defaults:
-                            fval = self._eval(fn.defaults[default_key], fn.closure)
+                        fval = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
+                    else:
+                        fval = arg_val[fkey]
                     child.define(flocal, fval, mutable=False)
             elif pname.startswith("__array_destruct__:"):
                 raw = pname[len("__array_destruct__:"):]
@@ -5970,12 +5971,12 @@ class Interpreter:
                         fkey, flocal = fspec.split("|", 1)
                     else:
                         fkey = flocal = fspec
-                    fval = arg_val.get(fkey)
-                    # Apply default if value is None and a default is defined
-                    if fval is None:
+                    # Apply default when key is absent (JS semantics: missing key, not null value)
+                    if fkey not in arg_val:
                         default_key = f"__destruct_default__{flocal}"
-                        if default_key in fn.defaults:
-                            fval = self._eval(fn.defaults[default_key], fn.closure)
+                        fval = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
+                    else:
+                        fval = arg_val[fkey]
                     child.define(flocal, fval, mutable=False)
             elif pname.startswith("__array_destruct__:"):
                 raw = pname[len("__array_destruct__:"):]

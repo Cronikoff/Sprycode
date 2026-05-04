@@ -1672,6 +1672,25 @@ class Parser:
                 body.append(GetterDeclaration(name=name_tok.value, body=getter_body,
                                               line=cur.line, column=cur.column))
                 continue
+            # Contextual `get [expr]() { ... }` — computed getter
+            if (cur.type == TokenType.IDENTIFIER and cur.value == "get"
+                    and self._peek(1).type == TokenType.LBRACKET):
+                self._advance()  # consume 'get'
+                self._advance()  # consume '['
+                cg_key = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                self._expect(TokenType.LPAREN)
+                self._expect(TokenType.RPAREN)
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                cg_body = self._parse_block()
+                body.append(ComputedMethodDeclaration(
+                    key=cg_key, params=[], body=cg_body,
+                    is_getter=True, defaults={}, rest_param=None,
+                    line=cur.line, column=cur.column,
+                ))
+                continue
             # Contextual `set propName(param) { ... }`
             if (cur.type == TokenType.IDENTIFIER and cur.value == "set"
                     and self._peek(1).type in self._IDENTIFIER_LIKE):
@@ -1684,6 +1703,23 @@ class Parser:
                 body.append(SetterDeclaration(name=name_tok.value, param=param_tok.value,
                                               body=setter_body,
                                               line=cur.line, column=cur.column))
+                continue
+            # Contextual `set [expr](param) { ... }` — computed setter
+            if (cur.type == TokenType.IDENTIFIER and cur.value == "set"
+                    and self._peek(1).type == TokenType.LBRACKET):
+                self._advance()  # consume 'set'
+                self._advance()  # consume '['
+                cs_key = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                self._expect(TokenType.LPAREN)
+                cs_param = self._expect_ident().value
+                self._expect(TokenType.RPAREN)
+                cs_body = self._parse_block()
+                body.append(ComputedMethodDeclaration(
+                    key=cs_key, params=[(cs_param, None)], body=cs_body,
+                    is_setter=True, defaults={}, rest_param=None,
+                    line=cur.line, column=cur.column,
+                ))
                 continue
             # `fn get propName() { ... }` or `fn set propName(v) { ... }` — JS-compatible getter/setter
             if cur.type == TokenType.FN:
@@ -1793,6 +1829,33 @@ class Parser:
                                                       param=param_tok.value,
                                                       body=setter_body,
                                                       line=cur.line, column=cur.column))
+                    continue
+                # static [expr]() { ... } — static computed method (e.g. static [Symbol.hasInstance]())
+                if next_tok.type == TokenType.LBRACKET:
+                    self._advance()  # consume 'static'
+                    self._advance()  # consume '['
+                    sc_key = self._parse_expression()
+                    self._expect(TokenType.RBRACKET)
+                    self._expect(TokenType.LPAREN)
+                    sc_params: list[tuple[str, str | None]] = []
+                    sc_defaults: dict = {}
+                    sc_rest: str | None = None
+                    while not self._check(TokenType.RPAREN) and not self._at_end():
+                        if self._check(TokenType.ELLIPSIS):
+                            self._advance()
+                            sc_rest = self._expect_ident().value
+                            break
+                        pname = self._expect_ident().value
+                        sc_params.append((pname, None))
+                        if not self._match(TokenType.COMMA):
+                            break
+                    self._expect(TokenType.RPAREN)
+                    sc_body = self._parse_block()
+                    body.append(ComputedMethodDeclaration(
+                        key=sc_key, params=sc_params, body=sc_body,
+                        is_static=True, defaults=sc_defaults, rest_param=sc_rest,
+                        line=cur.line, column=cur.column,
+                    ))
                     continue
                 if next_tok.type in self._IDENTIFIER_LIKE or next_tok.type == TokenType.FN:
                     self._advance()  # consume 'static'

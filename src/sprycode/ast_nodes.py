@@ -994,6 +994,8 @@ class ComputedMethodDeclaration(Node):
     is_static: bool = False
     is_generator: bool = False
     is_async: bool = False
+    is_getter: bool = False          # get [expr]() { ... }
+    is_setter: bool = False          # set [expr](v) { ... }
     defaults: dict = field(default_factory=dict)
     rest_param: "str | None" = None
 

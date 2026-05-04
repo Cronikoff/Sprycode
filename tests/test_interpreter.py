@@ -97,7 +97,7 @@ class TestVariables:
         interp = run("var count = 0\ncount = count + 1")
         assert interp.globals.get("count") == 1
 
-    def test_let_immutable_reassign_fails(self):
+    def test_const_immutable_reassign_fails(self):
         # In SpryCode (like JS), 'let' is mutable/reassignable; only 'const' is immutable
         with pytest.raises(Exception):
             run("const x = 1\nx = 2")

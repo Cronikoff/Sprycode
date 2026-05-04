@@ -570,13 +570,13 @@ class Parser:
         else:
             tok = self._expect(TokenType.LET)
         # mutable=True for let (reassignable), mutable=False for const (immutable)
-        _mutable = not is_const
+        mutable = not is_const
         # Check for list destructuring: let [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
-            first: Node = self._parse_list_destructure(tok, mutable=_mutable)
+            first: Node = self._parse_list_destructure(tok, mutable=mutable)
         # Check for object destructuring: let {a, b} = expr
         elif self._check(TokenType.LBRACE):
-            first = self._parse_object_destructure(tok, mutable=_mutable)
+            first = self._parse_object_destructure(tok, mutable=mutable)
         else:
             name_tok = self._expect_ident()
             type_annotation = None
@@ -598,9 +598,9 @@ class Parser:
             decls: list[Node] = [first]
             while self._match(TokenType.COMMA):
                 if self._check(TokenType.LBRACKET):
-                    decls.append(self._parse_list_destructure(tok, mutable=_mutable))
+                    decls.append(self._parse_list_destructure(tok, mutable=mutable))
                 elif self._check(TokenType.LBRACE):
-                    decls.append(self._parse_object_destructure(tok, mutable=_mutable))
+                    decls.append(self._parse_object_destructure(tok, mutable=mutable))
                 else:
                     n_tok = self._expect_ident()
                     t_ann = None

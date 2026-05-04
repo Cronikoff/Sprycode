@@ -5013,9 +5013,12 @@ class Interpreter:
         else:
             val = source_val
         if not isinstance(val, (list, tuple)):
-            raise SpryRuntimeError(
-                f"List destructuring requires a list, got {type(val).__name__}", node
-            )
+            try:
+                val = self._iter_to_list(val, node)
+            except Exception:
+                raise SpryRuntimeError(
+                    f"List destructuring requires a list, got {type(val).__name__}", node
+                )
         for i, name in enumerate(node.names):
             item = val[i] if i < len(val) else None
             # Skip holes: [a, , b] — the comma with no name skips an element

@@ -741,11 +741,27 @@ class Parser:
         return ExportStatement(declaration=inner, line=tok.line, column=tok.column)
 
     def _parse_dict_destruct_param(self) -> list[str]:
-        """Parse {a, b, c} destructuring pattern in function params."""
+        """Parse {a, b, c} or {a: alias, key = default} destructuring pattern in function params.
+
+        Each element in the returned list is either:
+        - ``"name"``          → key=name, local=name
+        - ``"key|alias"``     → key=key, local=alias  (rename)
+        """
         self._expect(TokenType.LBRACE)
         names: list[str] = []
         while not self._check(TokenType.RBRACE) and not self._at_end():
-            names.append(self._expect_ident().value)
+            name_tok = self._expect_ident()
+            key = name_tok.value
+            if self._match(TokenType.COLON):
+                # rename: {key: localName}
+                alias_tok = self._expect_ident()
+                names.append(key + "|" + alias_tok.value)
+            elif self._match(TokenType.EQ):
+                # default: {key = defaultExpr} — consume default; only key name stored
+                self._parse_expression()  # consume default expression (ignored for now)
+                names.append(key)
+            else:
+                names.append(key)
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACE)
@@ -3426,14 +3442,61 @@ class Parser:
         if tok.type == TokenType.LPAREN:
             self._advance()
             # Check for lambda: () => expr  or  (x) => expr  or  (a, b) => expr
+            # Also supports destructured params: ([a,b]) => or ({name}) => or (a, [b,c]) =>
             saved_pos = self.pos
             try:
                 params: list[str] = []
-                # Zero-arg: immediately check ) =>
-                if self._current().type in self._IDENTIFIER_LIKE:
-                    params.append(self._advance().value)
-                    while self._match(TokenType.COMMA):
-                        params.append(self._expect_ident().value)
+                rest_param: str | None = None
+                # Collect params until RPAREN
+                while not self._check(TokenType.RPAREN) and not self._at_end():
+                    # Rest param: ...name
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        rest_param = self._expect_ident().value
+                        break
+                    # Array destructure param: [a, b, ...rest]
+                    if self._check(TokenType.LBRACKET):
+                        self._advance()
+                        arr_names: list[str] = []
+                        arr_rest: str | None = None
+                        while not self._check(TokenType.RBRACKET) and not self._at_end():
+                            if self._check(TokenType.ELLIPSIS):
+                                self._advance()
+                                arr_rest = self._expect_ident().value
+                                break
+                            arr_names.append(self._expect_ident().value)
+                            if not self._match(TokenType.COMMA):
+                                break
+                        self._expect(TokenType.RBRACKET)
+                        synth = "__array_destruct__:" + ",".join(arr_names)
+                        if arr_rest:
+                            synth += "..." + arr_rest
+                        params.append(synth)
+                    # Object destructure param: {name, key: alias, name = default}
+                    elif self._check(TokenType.LBRACE):
+                        self._advance()
+                        obj_parts: list[str] = []
+                        while not self._check(TokenType.RBRACE) and not self._at_end():
+                            name_tok2 = self._expect_ident()
+                            key2 = name_tok2.value
+                            if self._match(TokenType.COLON):
+                                alias_tok2 = self._expect_ident()
+                                obj_parts.append(key2 + "|" + alias_tok2.value)
+                            elif self._match(TokenType.EQ):
+                                self._parse_expression()  # consume default (ignored for now)
+                                obj_parts.append(key2)
+                            else:
+                                obj_parts.append(key2)
+                            if not self._match(TokenType.COMMA):
+                                break
+                        self._expect(TokenType.RBRACE)
+                        params.append("__destruct__:" + ",".join(obj_parts))
+                    elif self._current().type in self._IDENTIFIER_LIKE:
+                        params.append(self._advance().value)
+                    else:
+                        raise ParseError("expected param", self._current())
+                    if not self._match(TokenType.COMMA):
+                        break
                 if self._check(TokenType.RPAREN):
                     self._advance()  # )
                     if self._check(TokenType.FAT_ARROW):
@@ -3442,12 +3505,15 @@ class Parser:
                             body: Node = self._parse_block()
                         else:
                             body = self._parse_lambda_body()
+                        # Attach rest param encoding if present
+                        if rest_param is not None:
+                            params.append("__rest__:" + rest_param)
                         if len(params) == 0:
                             # Zero-arg lambda: () => expr  — modelled as MultiParamLambda
                             # with an empty params list (no binding needed on call)
                             return MultiParamLambda(params=[], body=body,
                                                    line=tok.line, column=tok.column)
-                        if len(params) == 1:
+                        if len(params) == 1 and not params[0].startswith("__"):
                             return LambdaExpression(param=params[0], body=body,
                                                     line=tok.line, column=tok.column)
                         return MultiParamLambda(params=params, body=body,
@@ -3467,7 +3533,6 @@ class Parser:
                                           line=tok.line, column=tok.column)
             self._expect(TokenType.RPAREN)
             return expr
-
         if tok.type == TokenType.LBRACE:
             return self._parse_object_literal()
 

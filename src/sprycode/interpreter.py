@@ -1843,6 +1843,11 @@ class Interpreter:
                     f"Cannot compound-assign property {node.property!r} on {type(obj).__name__}", node
                 )
             if node.op == "+":
+                # JS-style: if either operand is a string, coerce the other
+                if isinstance(current, str) and not isinstance(rhs, str):
+                    rhs = self._builtin_str(rhs)
+                elif isinstance(rhs, str) and not isinstance(current, str):
+                    current = self._builtin_str(current)
                 new_val = current + rhs
             elif node.op == "-":
                 new_val = current - rhs
@@ -1904,6 +1909,11 @@ class Interpreter:
             current = env.get(node.name)
             rhs = self._eval(node.value, env)
             if node.op == "+":
+                # JS-style: if either operand is a string, coerce the other
+                if isinstance(current, str) and not isinstance(rhs, str):
+                    rhs = self._builtin_str(rhs)
+                elif isinstance(rhs, str) and not isinstance(current, str):
+                    current = self._builtin_str(current)
                 new_val = current + rhs
             elif node.op == "-":
                 new_val = current - rhs
@@ -2856,16 +2866,21 @@ class Interpreter:
         child.define("arguments", list(args), mutable=False)
 
         for i, (pname, _ptype) in enumerate(fn.params):
-            # Dict destructuring param: __destruct__:a,b
+            # Dict destructuring param: __destruct__:a,b  or  __destruct__:key|alias,b
             if pname.startswith("__destruct__:"):
-                field_names = pname[len("__destruct__:"):].split(",")
+                field_specs = pname[len("__destruct__:"):].split(",")
                 arg_val = args[i] if i < len(args) else {}
                 if not isinstance(arg_val, dict):
                     raise SpryRuntimeError(
                         f"Function {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
                     )
-                for fname in field_names:
-                    child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    child.define(flocal, arg_val.get(fkey), mutable=False)
             # Array destructuring param: __array_destruct__:a,b...rest
             elif pname.startswith("__array_destruct__:"):
                 raw = pname[len("__array_destruct__:"):]
@@ -4431,8 +4446,41 @@ class Interpreter:
             child = lam.closure.child()
         else:
             child = env.child()
-        for i, param in enumerate(lam.params):
-            child.define(param, args[i] if i < len(args) else None, mutable=False)
+        # Separate rest param encoding from regular params
+        params = lam.params
+        rest_param_name: str | None = None
+        if params and params[-1].startswith("__rest__:"):
+            rest_param_name = params[-1][len("__rest__:"):]
+            params = params[:-1]
+        for i, param in enumerate(params):
+            arg_val = args[i] if i < len(args) else None
+            # Dict destructuring param: __destruct__:a,b  or  __destruct__:key|alias,b
+            if param.startswith("__destruct__:"):
+                field_specs = param[len("__destruct__:"):].split(",")
+                src = arg_val if isinstance(arg_val, dict) else {}
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    child.define(flocal, src.get(fkey), mutable=False)
+            # Array destructuring param: __array_destruct__:a,b...rest
+            elif param.startswith("__array_destruct__:"):
+                raw = param[len("__array_destruct__:"):]
+                arr_rest_name: str | None = None
+                if "..." in raw:
+                    raw, arr_rest_name = raw.split("...", 1)
+                arr_field_names = [f for f in raw.split(",") if f]
+                items = list(arg_val) if isinstance(arg_val, (list, tuple)) else []
+                for _j, _fname in enumerate(arr_field_names):
+                    child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
+                if arr_rest_name:
+                    child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
+            else:
+                child.define(param, arg_val, mutable=False)
+        if rest_param_name is not None:
+            child.define(rest_param_name, list(args[len(params):]), mutable=False)
         body = lam.body
         if isinstance(body, Block):
             try:

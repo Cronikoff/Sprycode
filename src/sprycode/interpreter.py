@@ -252,6 +252,17 @@ def _inst_has_ics(inst: Any) -> bool:
     return False
 
 
+def _owns_prop(obj: Any, key: str) -> bool:
+    """Return True if *obj* (dict or SpryInstance) has *key* as an own property."""
+    if isinstance(obj, dict):
+        return key in obj
+    # SpryInstance — check fields but exclude internal double-underscore keys
+    fields = getattr(obj, "fields", None)
+    if fields is not None:
+        return key in fields and not key.startswith("__")
+    return False
+
+
 def _strict_eq(left: Any, right: Any) -> bool:
     """Strict equality (===): same type AND same value; objects compared by identity."""
     if type(left) is not type(right):
@@ -3070,7 +3081,7 @@ class Interpreter:
             # Built-in instance methods
             if prop == "hasOwnProperty":
                 def _instance_has_own(key: Any, _inst: SpryInstance = obj) -> bool:
-                    return str(key) in _inst.fields and not str(key).startswith("__")
+                    return _owns_prop(_inst, str(key))
                 return _instance_has_own
             # Instance field or method lookup
             if prop in obj.fields:
@@ -3313,7 +3324,7 @@ class Interpreter:
                             if _dict_has_ics(other):
                                 n = int(other.get("length", 0))
                                 for i in range(n):
-                                    result.append(other.get(str(i), other.get(i)))
+                                    result.append(other.get(str(i)))
                             else:
                                 result.append(other)
                         elif isinstance(other, SpryInstance):
@@ -6535,12 +6546,7 @@ class _ObjectPrototypeHasOwnProperty:
     """Object.prototype.hasOwnProperty — supports .call(obj, key)."""
 
     def call(self, obj: Any, key: Any) -> bool:
-        key_s = str(key)
-        if isinstance(obj, dict):
-            return key_s in obj
-        if isinstance(obj, SpryInstance):
-            return key_s in obj.fields and not key_s.startswith("__")
-        return False
+        return _owns_prop(obj, str(key))
 
     def _spry_get_prop(self, prop: str) -> Any:
         if prop == "call":

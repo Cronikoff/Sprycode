@@ -3476,7 +3476,7 @@ class Parser:
             if self._check(TokenType.EXTENDS):
                 self._advance()
                 superclass = self._expect_ident().value
-            body = self._parse_block()
+            body = self._parse_class_body()
             return ClassExpression(name=name, superclass=superclass, body=body, line=tok.line, column=tok.column)
 
         if tok.type == TokenType.STRING:

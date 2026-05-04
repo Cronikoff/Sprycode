@@ -576,7 +576,7 @@ class SpryRegex:
         if m is None:
             return None
         groups = [m.group(0)] + list(m.groups())
-        return SpryRegexMatch(groups, m.start(), text)
+        return SpryRegexMatch(groups, m.start(), text, named_groups=m.groupdict() or {})
 
     def exec(self, text: str) -> Any:
         if self.global_flag and self.lastIndex > 0:
@@ -589,7 +589,7 @@ class SpryRegex:
         if self.global_flag:
             self.lastIndex = m.end()
         groups = [m.group(0)] + list(m.groups())
-        return SpryRegexMatch(groups, m.start(), text)
+        return SpryRegexMatch(groups, m.start(), text, named_groups=m.groupdict() or {})
 
     def replace(self, text: str, replacement: str, count: int = 1) -> str:
         actual_count = 0 if self.global_flag else count
@@ -606,11 +606,13 @@ class SpryRegex:
 
 
 class SpryRegexMatch(list):
-    """Array-like regex match result: [full, group1, group2, ...] with .index and .input."""
-    def __init__(self, groups: list, index: int, input_str: str) -> None:
+    """Array-like regex match result: [full, group1, group2, ...] with .index, .input, .groups."""
+    def __init__(self, groups: list, index: int, input_str: str,
+                 named_groups: "dict | None" = None) -> None:
         super().__init__(groups)
         self.index = index
         self.input = input_str
+        self.groups = named_groups or {}
 
     def __repr__(self) -> str:
         return f"RegexMatch({list(self)!r}, index={self.index})"
@@ -978,8 +980,21 @@ def _parse_regex_pattern(pattern: str) -> tuple[str, int]:
             if "s" in flag_str:
                 flags |= _re.DOTALL
             is_global = "g" in flag_str
-            return inner, flags, is_global
-    return pattern, 0, False
+            return _js_regex_to_python(inner), flags, is_global
+    return _js_regex_to_python(pattern), 0, False
+
+
+def _js_regex_to_python(pattern: str) -> str:
+    """Translate JS regex syntax to Python regex syntax.
+
+    Currently handles:
+      - Named capture groups: (?<name>...) → (?P<name>...)
+    """
+    import re as _re
+    # JS named capture: (?<name>...) → Python (?P<name>...)
+    # But not negative lookahead (?<!...) or (?<= ...)
+    result = _re.sub(r'\(\?<([A-Za-z_][A-Za-z0-9_]*)>', r'(?P<\1>', pattern)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2419,7 +2434,15 @@ class Interpreter:
             if isinstance(val, SpryPromise):
                 if val._settled:
                     return val._value
-                raise SpryRuntimeError(str(val._error) if val._error else "Promise rejected", node)
+                err = val._error
+                # If the rejection value is a SpryInstance (user-defined error class),
+                # SpryErrorObject (builtin error), or any non-string error value,
+                # re-raise as SpryUserError so try/catch in user code handles it properly
+                if isinstance(err, (SpryErrorObject, SpryInstance)):
+                    raise SpryUserError(err)
+                if err is not None and not isinstance(err, str):
+                    raise SpryUserError(err)
+                raise SpryRuntimeError(str(err) if err is not None else "Promise rejected", node)
             return val
 
         if isinstance(node, SequenceExpression):
@@ -2573,7 +2596,7 @@ class Interpreter:
             is_global = "g" in node.flags
             for f in node.flags:
                 re_flags |= flags_map.get(f, 0)
-            compiled = re.compile(node.pattern, re_flags)
+            compiled = re.compile(_js_regex_to_python(node.pattern), re_flags)
             return SpryRegex(compiled, global_flag=is_global, flags_str=node.flags)
 
         if isinstance(node, AnonymousFunctionExpression):
@@ -2937,6 +2960,9 @@ class Interpreter:
             return r.value
         except (SpryUserError, SpryRuntimeError) as e:
             if fn.is_async:
+                # Preserve the original error object for proper try/catch in user code
+                if isinstance(e, SpryUserError):
+                    return SpryPromise(value=None, error=e.value)
                 return SpryPromise(value=None, error=str(e))
             raise
         if fn.is_async:
@@ -3726,9 +3752,15 @@ class Interpreter:
             if prop == "includes":
                 return lambda sub: sub in obj
             if prop == "startsWith":
-                return lambda prefix: obj.startswith(prefix)
+                def _str_startswith(prefix: Any, position: Any = None, _obj: str = obj) -> bool:
+                    pos = int(position) if position is not None else 0
+                    return _obj[pos:].startswith(str(prefix))
+                return _str_startswith
             if prop == "endsWith":
-                return lambda suffix: obj.endswith(suffix)
+                def _str_endswith(suffix: Any, length: Any = None, _obj: str = obj) -> bool:
+                    s = _obj[:int(length)] if length is not None else _obj
+                    return s.endswith(str(suffix))
+                return _str_endswith
             if prop == "replace":
                 def _str_replace(old: Any, new: Any, _obj: str = obj) -> str:
                     import re as _re
@@ -3806,13 +3838,27 @@ class Interpreter:
                 import re as _re
                 def _str_match(pattern: Any, _obj: str = obj) -> Any:
                     if isinstance(pattern, SpryRegex):
-                        matches = list(pattern.pattern.finditer(_obj))
-                        if not matches:
-                            return None
-                        all_groups = [m.group(0) for m in matches]
-                        return SpryRegexMatch(all_groups, matches[0].start(), _obj)
+                        if pattern.global_flag:
+                            # global match: return all full-match strings (JS behaviour)
+                            matches = list(pattern.pattern.finditer(_obj))
+                            if not matches:
+                                return None
+                            all_groups = [m.group(0) for m in matches]
+                            return SpryRegexMatch(all_groups, matches[0].start(), _obj)
+                        else:
+                            # non-global: return first match with all capture groups + named groups
+                            m = pattern.pattern.search(_obj)
+                            if m is None:
+                                return None
+                            groups = [m.group(0)] + list(m.groups())
+                            return SpryRegexMatch(groups, m.start(), _obj,
+                                                  named_groups=m.groupdict() or {})
+                    # Plain string pattern: use findall to return all matches (legacy behaviour)
                     pat, flags, _g = _parse_regex_pattern(str(pattern))
-                    return _re.findall(pat, _obj, flags) or None
+                    try:
+                        return _re.findall(pat, _obj, flags) or None
+                    except _re.error:
+                        return None
                 return _str_match
             if prop == "matchAll":
                 import re as _re

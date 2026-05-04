@@ -3058,6 +3058,10 @@ class Parser:
             op_tok = self._advance()
             operand = self._parse_unary()
             return UnaryExpression(op=op_tok.value, operand=operand, line=op_tok.line, column=op_tok.column)
+        if self._check(TokenType.PLUS):
+            op_tok = self._advance()
+            operand = self._parse_unary()
+            return UnaryExpression(op="+", operand=operand, line=op_tok.line, column=op_tok.column)
         if self._check(TokenType.NOT):
             op_tok = self._advance()
             operand = self._parse_unary()

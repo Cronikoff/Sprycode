@@ -209,6 +209,27 @@ class _SpryUndefinedType:
 SPRY_UNDEFINED = _SpryUndefinedType()
 
 
+def _make_sequence_iter(items: list) -> Any:
+    """Return a callable that creates a fresh iterator dict over *items*.
+
+    Each call to the returned factory produces an independent iterator with
+    a ``next()`` method following the ``{value, done}`` protocol.
+    """
+    def _factory(_items: list = items) -> dict:
+        state: dict = {"i": 0}
+
+        def _next() -> dict:
+            if state["i"] < len(_items):
+                v = _items[state["i"]]
+                state["i"] += 1
+                return {"value": v, "done": False}
+            return {"value": SPRY_UNDEFINED, "done": True}
+
+        return {"next": _next}
+
+    return _factory
+
+
 def _strict_eq(left: Any, right: Any) -> bool:
     """Strict equality (===): same type AND same value; objects compared by identity."""
     if type(left) is not type(right):
@@ -1479,7 +1500,19 @@ class Interpreter:
         if isinstance(value, bool):
             return "true" if value else "false"
         if isinstance(value, SpryInstance):
-            # Prefer a user-defined toString() method
+            # Prefer [Symbol.toPrimitive]("string") first
+            sym_key = "Symbol('toPrimitive')"
+            if sym_key in value.fields:
+                fn = value.fields[sym_key]
+                if isinstance(fn, (SpryFunction, BoundMethod)):
+                    try:
+                        bm = fn if isinstance(fn, BoundMethod) else BoundMethod(instance=value, fn=fn)
+                        result = self._call_bound_method(bm, ["string"], None)
+                        if not isinstance(result, SpryInstance):
+                            return str(result)
+                    except Exception:
+                        pass
+            # Then a user-defined toString() method
             if "toString" in value.fields:
                 v = value.fields["toString"]
                 if isinstance(v, (SpryFunction, BoundMethod)):
@@ -1499,6 +1532,86 @@ class Interpreter:
         if isinstance(value, float) and value == int(value):
             return str(int(value))
         return str(value)
+
+    def _to_primitive(self, value: Any, hint: str = "default") -> Any:
+        """Coerce a SpryInstance to a primitive value (JS ToPrimitive semantics).
+
+        1. If the instance has a ``[Symbol.toPrimitive]`` method, call it with ``hint``.
+        2. Otherwise, for ``"string"`` hint try ``toString()`` then ``valueOf()``;
+           for ``"number"``/``"default"`` try ``valueOf()`` then ``toString()``.
+        Returns the original value unchanged if no coercion method is found.
+        """
+        if not isinstance(value, SpryInstance):
+            return value
+        # Check [Symbol.toPrimitive]
+        sym_key = "Symbol('toPrimitive')"
+        if sym_key in value.fields:
+            fn = value.fields[sym_key]
+            if isinstance(fn, (SpryFunction, BoundMethod)):
+                try:
+                    bm = fn if isinstance(fn, BoundMethod) else BoundMethod(instance=value, fn=fn)
+                    return self._call_bound_method(bm, [hint], None)
+                except Exception:
+                    pass
+        if hint == "string":
+            # Try toString first, then valueOf
+            for mname in ("toString", "valueOf"):
+                if mname in value.fields:
+                    fn = value.fields[mname]
+                    if isinstance(fn, (SpryFunction, BoundMethod)):
+                        try:
+                            bm = fn if isinstance(fn, BoundMethod) else BoundMethod(instance=value, fn=fn)
+                            result = self._call_bound_method(bm, [], None)
+                            if not isinstance(result, SpryInstance):
+                                return result
+                        except Exception:
+                            pass
+        else:
+            # "number" / "default": try valueOf first, then toString
+            for mname in ("valueOf", "toString"):
+                if mname in value.fields:
+                    fn = value.fields[mname]
+                    if isinstance(fn, (SpryFunction, BoundMethod)):
+                        try:
+                            bm = fn if isinstance(fn, BoundMethod) else BoundMethod(instance=value, fn=fn)
+                            result = self._call_bound_method(bm, [], None)
+                            if not isinstance(result, SpryInstance):
+                                return result
+                        except Exception:
+                            pass
+        return value
+
+    def _to_numeric(self, value: Any) -> Any:
+        """Coerce *value* to a numeric primitive (JS ToNumeric-lite).
+
+        For SpryInstance, tries ``Symbol.toPrimitive("number")``, then
+        ``valueOf()``, then ``toString()`` (parsed as a number).
+        Falls back to ``float("nan")`` if nothing works.
+        """
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if value is None:
+            return 0
+        if isinstance(value, _SpryUndefinedType):
+            return float("nan")
+        if isinstance(value, str):
+            v = value.strip()
+            if v == "":
+                return 0
+            try:
+                return int(v)
+            except ValueError:
+                try:
+                    return float(v)
+                except ValueError:
+                    return float("nan")
+        if isinstance(value, SpryInstance):
+            prim = self._to_primitive(value, "number")
+            if not isinstance(prim, SpryInstance):
+                return self._to_numeric(prim)
+        return float("nan")
 
     @staticmethod
     def _builtin_format(template: str, *args: Any) -> str:
@@ -1763,8 +1876,8 @@ class Interpreter:
                 else:
                     new_val = current % rhs
             elif node.op == "??":
-                # ??= : only assign if current value is null/None
-                if current is None:
+                # ??= : only assign if current value is null/None or undefined
+                if current is None or isinstance(current, _SpryUndefinedType):
                     new_val = rhs
                 else:
                     return None  # no-op
@@ -2274,12 +2387,29 @@ class Interpreter:
         if isinstance(node, IndexExpression):
             obj = self._eval(node.object, env)
             idx = self._eval(node.index, env)
-            # SpryInstance indexed with SprySymbol — use string repr as key
-            if isinstance(obj, SpryInstance) and isinstance(idx, SprySymbol):
-                key_str = str(idx)
-                if key_str in obj.fields:
-                    return obj.fields[key_str]
-                raise SpryRuntimeError(f"Key {key_str!r} not found in object", node)
+            # Symbol subscript — handle well-known symbols for built-in types
+            if isinstance(idx, SprySymbol):
+                if idx.description == "iterator":
+                    if isinstance(obj, (list, str, range)):
+                        return _make_sequence_iter(list(obj))
+                    if isinstance(obj, SprySet):
+                        return _make_sequence_iter(list(obj._data))
+                    if isinstance(obj, SpryMap):
+                        return _make_sequence_iter([[k, v] for k, v in obj._data.items()])
+                # SpryInstance indexed with SprySymbol — use string repr as key
+                if isinstance(obj, SpryInstance):
+                    key_str = str(idx)
+                    if key_str in obj.fields:
+                        return obj.fields[key_str]
+                    raise SpryRuntimeError(f"Key {key_str!r} not found in object", node)
+                if isinstance(obj, dict):
+                    key_str = str(idx)
+                    if key_str in obj:
+                        return obj[key_str]
+                    return None
+                raise SpryRuntimeError(
+                    f"Symbol subscript {idx!r} is not supported on {type(obj).__name__}", node
+                )
             try:
                 return obj[idx]
             except (KeyError, IndexError, TypeError) as e:
@@ -2305,7 +2435,7 @@ class Interpreter:
 
         if isinstance(node, NullCoalesceExpression):
             left_val = self._eval(node.left, env)
-            if left_val is not None:
+            if left_val is not None and not isinstance(left_val, _SpryUndefinedType):
                 return left_val
             return self._eval(node.right, env)
 
@@ -2481,6 +2611,11 @@ class Interpreter:
         if op == "+":
             if isinstance(left, (SpryMoney,)) and isinstance(right, (SpryMoney,)):
                 return left + right
+            # Coerce SpryInstance to primitive using "default" hint
+            if isinstance(left, SpryInstance):
+                left = self._to_primitive(left, "default")
+            if isinstance(right, SpryInstance):
+                right = self._to_primitive(right, "default")
             # When one operand is a string, coerce the other to string (JS-style)
             if isinstance(left, str) and not isinstance(right, str):
                 right = self._builtin_str(right)
@@ -2490,12 +2625,24 @@ class Interpreter:
         if op == "-":
             if isinstance(left, SpryMoney) and isinstance(right, SpryMoney):
                 return left - right
+            if isinstance(left, SpryInstance):
+                left = self._to_numeric(left)
+            if isinstance(right, SpryInstance):
+                right = self._to_numeric(right)
             return left - right
         if op == "*":
             if isinstance(left, SpryMoney):
                 return left * right
+            if isinstance(left, SpryInstance):
+                left = self._to_numeric(left)
+            if isinstance(right, SpryInstance):
+                right = self._to_numeric(right)
             return left * right
         if op == "/":
+            if isinstance(left, SpryInstance):
+                left = self._to_numeric(left)
+            if isinstance(right, SpryInstance):
+                right = self._to_numeric(right)
             if right == 0:
                 if isinstance(left, (int, float)):
                     if left == 0:
@@ -2504,10 +2651,18 @@ class Interpreter:
                 raise SpryRuntimeError("Division by zero", node)
             return left / right
         if op == "%":
+            if isinstance(left, SpryInstance):
+                left = self._to_numeric(left)
+            if isinstance(right, SpryInstance):
+                right = self._to_numeric(right)
             if right == 0:
                 return float("nan")
             return left % right
         if op == "**":
+            if isinstance(left, SpryInstance):
+                left = self._to_numeric(left)
+            if isinstance(right, SpryInstance):
+                right = self._to_numeric(right)
             return left ** right
         if op == "==":
             return left == right
@@ -2545,10 +2700,12 @@ class Interpreter:
         operand = self._eval(node.operand, env)
         if node.op in ("!", "not"):
             return not self._truthy(operand)
+        if node.op == "+":
+            return self._to_numeric(operand)
         if node.op == "-":
             if isinstance(operand, int) and operand == 0:
                 return float(-0.0)  # JS-style negative zero
-            return -operand
+            return -self._to_numeric(operand)
         if node.op == "~":
             return ~int(operand)
         if node.op == "void":

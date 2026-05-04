@@ -564,16 +564,19 @@ class Parser:
         return AppDeclaration(name=name_tok.value, version=version, line=tok.line, column=tok.column)
 
     def _parse_let(self) -> Node:
-        if self._check(TokenType.CONST):
-            tok = self._advance()  # consume 'const' (JS-compatible immutable binding, parsed like let)
+        is_const = self._check(TokenType.CONST)
+        if is_const:
+            tok = self._advance()  # consume 'const' (JS-compatible immutable binding)
         else:
             tok = self._expect(TokenType.LET)
+        # mutable=True for let (reassignable), mutable=False for const (immutable)
+        _mutable = not is_const
         # Check for list destructuring: let [a, b, c] = expr
         if self._check(TokenType.LBRACKET):
-            first: Node = self._parse_list_destructure(tok, mutable=False)
+            first: Node = self._parse_list_destructure(tok, mutable=_mutable)
         # Check for object destructuring: let {a, b} = expr
         elif self._check(TokenType.LBRACE):
-            first = self._parse_object_destructure(tok, mutable=False)
+            first = self._parse_object_destructure(tok, mutable=_mutable)
         else:
             name_tok = self._expect_ident()
             type_annotation = None
@@ -588,15 +591,16 @@ class Parser:
                 value=value,
                 line=tok.line,
                 column=tok.column,
+                is_const=is_const,
             )
         # Multiple declarations: let a = 1, b = 2, c = 3
         if self._check(TokenType.COMMA):
             decls: list[Node] = [first]
             while self._match(TokenType.COMMA):
                 if self._check(TokenType.LBRACKET):
-                    decls.append(self._parse_list_destructure(tok, mutable=False))
+                    decls.append(self._parse_list_destructure(tok, mutable=_mutable))
                 elif self._check(TokenType.LBRACE):
-                    decls.append(self._parse_object_destructure(tok, mutable=False))
+                    decls.append(self._parse_object_destructure(tok, mutable=_mutable))
                 else:
                     n_tok = self._expect_ident()
                     t_ann = None
@@ -607,7 +611,7 @@ class Parser:
                         v_node = self._parse_expression()
                     decls.append(LetDeclaration(
                         name=n_tok.value, type_annotation=t_ann, value=v_node,
-                        line=n_tok.line, column=n_tok.column,
+                        line=n_tok.line, column=n_tok.column, is_const=is_const,
                     ))
             return DeclarationList(body=decls, line=tok.line, column=tok.column)
         return first
@@ -2063,6 +2067,24 @@ class Parser:
                     ms_is_gen = True
                     self._advance()  # consume '*'
                     cur = self._current()
+                # *[expr]() { ... } — generator computed method shorthand
+                elif self._peek(1).type == TokenType.LBRACKET:
+                    self._advance()  # consume '*'
+                    self._advance()  # consume '['
+                    gc_key = self._parse_expression()
+                    self._expect(TokenType.RBRACKET)
+                    gc_params, gc_defaults, gc_rest = self._parse_method_params()
+                    if self._check(TokenType.ARROW):
+                        self._advance()
+                        self._parse_type_name()
+                    gc_body = self._parse_block()
+                    body.append(ComputedMethodDeclaration(
+                        key=gc_key, params=gc_params, body=gc_body,
+                        defaults=gc_defaults, rest_param=gc_rest,
+                        is_generator=True,
+                        line=cur.line, column=cur.column,
+                    ))
+                    continue
             if cur.type in self._IDENTIFIER_LIKE and self._peek(1).type == TokenType.LPAREN:
                 ms_tok = self._advance()
                 ms_params, ms_defaults, ms_rest = self._parse_method_params()

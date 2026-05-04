@@ -60,11 +60,14 @@ class DeclarationList(Node):
 
 @dataclass
 class LetDeclaration(Node):
-    """let <name>[: <type>] = <value>"""
+    """let <name>[: <type>] = <value>  (mutable block-scoped binding)
+    const <name> = <value>            (immutable binding, is_const=True)
+    """
     name: str = ""
     type_annotation: str | None = None
     value: Node | None = None
     privacy: str | None = None  # "private" | "sensitive" | None
+    is_const: bool = False  # True when declared with 'const'
 
 
 @dataclass

@@ -1181,7 +1181,9 @@ class Interpreter:
 
         # Global namespace objects (JS-style)
         env.define("JSON", _JsonNamespace())
-        env.define("Array", _ArrayNamespace())
+        _array_ns = _ArrayNamespace()
+        _array_ns._interp = self
+        env.define("Array", _array_ns)
         env.define("Object", _ObjectNamespace(call_fn=self._call_value))
         env.define("Number", _NumberNamespace())
 
@@ -1783,7 +1785,7 @@ class Interpreter:
 
         if isinstance(node, LetDeclaration):
             value = self._eval(node.value, env) if node.value is not None else None
-            env.define(node.name, value, mutable=False)
+            env.define(node.name, value, mutable=not node.is_const)
             return None
 
         if isinstance(node, VarDeclaration):
@@ -3864,9 +3866,17 @@ class Interpreter:
                 import re as _re
                 def _str_matchall(pattern: Any, _obj: str = obj) -> list:
                     if isinstance(pattern, SpryRegex):
-                        return [[m.group(), *m.groups()] for m in pattern.pattern.finditer(_obj)]
+                        return [SpryRegexMatch([m.group(), *m.groups()], m.start(), _obj,
+                                               named_groups=m.groupdict() or {})
+                                for m in pattern.pattern.finditer(_obj)]
                     pat, flags, _g = _parse_regex_pattern(str(pattern))
-                    return [[m.group(), *m.groups()] for m in _re.finditer(pat, _obj, flags)]
+                    try:
+                        compiled = _re.compile(pat, flags)
+                    except _re.error:
+                        return []
+                    return [SpryRegexMatch([m.group(), *m.groups()], m.start(), _obj,
+                                           named_groups=m.groupdict() or {})
+                            for m in compiled.finditer(_obj)]
                 return _str_matchall
             if prop == "search":
                 import re as _re
@@ -4828,7 +4838,16 @@ class Interpreter:
 
     def _consume_iterator(self, iterator: Any, node: Any) -> list:
         """Consume a JS-style iterator object (has `next()` method) into a list."""
-        items: list[Any] = []
+        # SpryGenerator: lazily call .next() until done
+        if isinstance(iterator, SpryGenerator):
+            items: list[Any] = []
+            while True:
+                res = iterator.next()
+                if res.get("done", False):
+                    break
+                items.append(res.get("value"))
+            return items
+        items = []
         next_fn: Any = None
         if isinstance(iterator, dict) and "next" in iterator:
             raw = iterator["next"]
@@ -5970,6 +5989,7 @@ class Interpreter:
                     closure=instance_env,
                     defaults=stmt.defaults,
                     rest_param=stmt.rest_param,
+                    is_generator=stmt.is_generator,
                 )
                 if stmt.is_getter:
                     # get [expr]() { ... } — store as computed getter
@@ -6542,6 +6562,9 @@ class _ArrayNamespace:
             result = [[k, v] for k, v in iterable._data.items()]
         elif isinstance(iterable, SprySet):
             result = list(iterable._data)
+        elif isinstance(iterable, (SpryInstance, SpryGenerator)):
+            # Use _iter_to_list for SpryInstance (supports [Symbol.iterator]()) and generators
+            result = self._interp._iter_to_list(iterable, None)
         elif isinstance(iterable, dict) and "length" in iterable:
             # Array-like: {length: N, "0": x, "1": y, ...}
             n = int(iterable["length"])

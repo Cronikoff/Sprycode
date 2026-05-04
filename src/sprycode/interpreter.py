@@ -209,6 +209,27 @@ class _SpryUndefinedType:
 SPRY_UNDEFINED = _SpryUndefinedType()
 
 
+def _make_sequence_iter(items: list) -> Any:
+    """Return a callable that creates a fresh iterator dict over *items*.
+
+    Each call to the returned factory produces an independent iterator with
+    a ``next()`` method following the ``{value, done}`` protocol.
+    """
+    def _factory(_items: list = items) -> dict:
+        state: dict = {"i": 0}
+
+        def _next() -> dict:
+            if state["i"] < len(_items):
+                v = _items[state["i"]]
+                state["i"] += 1
+                return {"value": v, "done": False}
+            return {"value": SPRY_UNDEFINED, "done": True}
+
+        return {"next": _next}
+
+    return _factory
+
+
 def _strict_eq(left: Any, right: Any) -> bool:
     """Strict equality (===): same type AND same value; objects compared by identity."""
     if type(left) is not type(right):
@@ -2370,41 +2391,11 @@ class Interpreter:
             if isinstance(idx, SprySymbol):
                 if idx.description == "iterator":
                     if isinstance(obj, (list, str, range)):
-                        def _make_list_iter(_o: Any = obj) -> dict:
-                            items = list(_o)
-                            state = {"i": 0}
-                            def _next() -> dict:
-                                if state["i"] < len(items):
-                                    v = items[state["i"]]
-                                    state["i"] += 1
-                                    return {"value": v, "done": False}
-                                return {"value": SPRY_UNDEFINED, "done": True}
-                            return {"next": _next}
-                        return _make_list_iter
+                        return _make_sequence_iter(list(obj))
                     if isinstance(obj, SprySet):
-                        def _make_set_iter(_o: SprySet = obj) -> dict:
-                            items = list(_o._data)
-                            state = {"i": 0}
-                            def _next() -> dict:
-                                if state["i"] < len(items):
-                                    v = items[state["i"]]
-                                    state["i"] += 1
-                                    return {"value": v, "done": False}
-                                return {"value": SPRY_UNDEFINED, "done": True}
-                            return {"next": _next}
-                        return _make_set_iter
+                        return _make_sequence_iter(list(obj._data))
                     if isinstance(obj, SpryMap):
-                        def _make_map_iter(_o: SpryMap = obj) -> dict:
-                            entries = [[k, v] for k, v in _o._data.items()]
-                            state = {"i": 0}
-                            def _next() -> dict:
-                                if state["i"] < len(entries):
-                                    v = entries[state["i"]]
-                                    state["i"] += 1
-                                    return {"value": v, "done": False}
-                                return {"value": SPRY_UNDEFINED, "done": True}
-                            return {"next": _next}
-                        return _make_map_iter
+                        return _make_sequence_iter([[k, v] for k, v in obj._data.items()])
                 # SpryInstance indexed with SprySymbol — use string repr as key
                 if isinstance(obj, SpryInstance):
                     key_str = str(idx)

@@ -471,9 +471,29 @@ class SpryClass:
         self.closure = closure
         self.superclass = superclass
         self._static_fields: dict = {}  # mutable static field storage
+        self._prototype: "SpryClassPrototype | None" = None  # lazily created
+
+    @property
+    def prototype(self) -> "SpryClassPrototype":
+        if self._prototype is None:
+            self._prototype = SpryClassPrototype(self)
+        return self._prototype
 
     def __repr__(self) -> str:
         return f"<class {self.name}>"
+
+
+class SpryClassPrototype:
+    """Represents `SomeClass.prototype` — used for identity comparisons with Object.getPrototypeOf."""
+
+    def __init__(self, cls: SpryClass) -> None:
+        self.cls = cls
+
+    def toString(self) -> str:
+        return f"[object {self.cls.name}]"
+
+    def __repr__(self) -> str:
+        return f"{self.cls.name}.prototype"
 
 
 class SpryInstance:
@@ -2279,22 +2299,33 @@ class Interpreter:
                 # yield* iterable — iterate and forward each value via the yield hook
                 iterable = self._eval(node.value, env) if node.value is not None else []
                 yield_hook = getattr(self._tl, "yield_hook", None)
+                delegate_return_val = None
                 if isinstance(iterable, SpryGenerator):
-                    iterable._materialise()
-                    items = list(iterable._collected)
-                elif isinstance(iterable, (list, tuple)):
-                    items = list(iterable)
+                    # Use the generator's next() protocol so we get the return value
+                    while True:
+                        item = iterable.next()
+                        if item["done"]:
+                            delegate_return_val = item["value"]
+                            break
+                        val_ = item["value"]
+                        if yield_hook is not None:
+                            yield_hook(val_)
+                        else:
+                            raise YieldSignal(val_)
                 else:
-                    try:
+                    if isinstance(iterable, (list, tuple)):
                         items = list(iterable)
-                    except TypeError:
-                        items = []
-                for item in items:
-                    if yield_hook is not None:
-                        yield_hook(item)
                     else:
-                        raise YieldSignal(item)
-                return None
+                        try:
+                            items = list(iterable)
+                        except TypeError:
+                            items = []
+                    for item_ in items:
+                        if yield_hook is not None:
+                            yield_hook(item_)
+                        else:
+                            raise YieldSignal(item_)
+                return delegate_return_val
             value = self._eval(node.value, env) if node.value is not None else None
             # Check for thread-local generator yield hook (used by coroutine generators)
             yield_hook = getattr(self._tl, "yield_hook", None)
@@ -4151,6 +4182,8 @@ class Interpreter:
                 return lambda *args: self._construct_class(obj, list(args), node)
             if prop == "name":
                 return obj.name
+            if prop == "prototype":
+                return obj.prototype
             # Check mutable static field storage first
             if prop in obj._static_fields:
                 return obj._static_fields[prop]
@@ -6536,20 +6569,61 @@ class _JsonNamespace:
     """JSON global namespace — JSON.stringify(), JSON.parse()."""
 
     def stringify(self, value: Any, replacer: Any = None, indent: Any = None) -> str:
-        """Serialize a value to a JSON string. replacer is ignored (null/None accepted)."""
+        """Serialize a value to a JSON string."""
         import json as _json
 
-        def _default(o: Any) -> Any:
-            if hasattr(o, "__repr__"):
-                return repr(o)
-            return str(o)
-
         indent_val = int(indent) if indent is not None else None
+
+        def _spry_to_json(obj: Any) -> Any:
+            """Recursively convert SpryCode values to JSON-serializable Python values."""
+            if isinstance(obj, (SpryFunction, SpryLambda, SpryMultiLambda, SpryTask)):
+                return None  # functions are serialized as null in JS
+            if isinstance(obj, SpryInstance):
+                return {k: _spry_to_json(v) for k, v in obj.fields.items()
+                        if not isinstance(v, (SpryFunction, SpryLambda, SpryMultiLambda,
+                                              SpryTask)) and not callable(v)}
+            if isinstance(obj, SpryMap):
+                return {str(k): _spry_to_json(v) for k, v in obj._data.items()}
+            if isinstance(obj, SprySet):
+                return list(obj._data)
+            if isinstance(obj, list):
+                return [_spry_to_json(v) for v in obj]
+            if isinstance(obj, dict):
+                return {k: _spry_to_json(v) for k, v in obj.items()
+                        if not isinstance(v, (SpryFunction, SpryLambda, SpryMultiLambda, SpryTask))}
+            return obj
+
+        # Convert SpryCode objects first so filters operate on plain dicts/lists
+        value = _spry_to_json(value)
+
+        # Apply array-key replacer filter
+        if isinstance(replacer, list):
+            allowed = set(str(k) for k in replacer)
+
+            def _filter(obj: Any) -> Any:
+                if isinstance(obj, dict):
+                    return {k: _filter(v) for k, v in obj.items() if k in allowed}
+                if isinstance(obj, list):
+                    return [_filter(v) for v in obj]
+                return obj
+            value = _filter(value)
+
+        # Apply function replacer
+        if callable(replacer) and not isinstance(replacer, list):
+            def _replace(key: str, obj: Any) -> Any:
+                result = replacer(key, obj)
+                if isinstance(result, dict):
+                    return {k: _replace(k, v) for k, v in result.items()}
+                if isinstance(result, list):
+                    return [_replace(str(i), v) for i, v in enumerate(result)]
+                return result
+            value = _replace("", value)
+
         # Use compact separators (no spaces) when no indent — matches JS JSON.stringify behavior
         separators = (',', ':') if indent_val is None else None
         try:
             return _json.dumps(value, indent=indent_val, separators=separators,
-                               ensure_ascii=False, default=_default)
+                               ensure_ascii=False)
         except (TypeError, ValueError) as e:
             raise ValueError(f"JSON.stringify error: {e}") from e
 
@@ -6856,10 +6930,13 @@ class _ObjectNamespace:
         """Return the prototype of an object.
 
         For objects created with Object.create(proto), returns proto.
+        For SpryInstances, returns the class prototype (ClassName.prototype).
         For plain objects/instances/null, returns None.
         """
         if isinstance(obj, dict) and "__spry_proto__" in obj:
             return obj["__spry_proto__"]
+        if isinstance(obj, SpryInstance):
+            return obj.cls.prototype
         return None
 
     def setPrototypeOf(self, obj: Any, proto: Any) -> Any:
@@ -8833,6 +8910,46 @@ class SpryDate:
 
 class _DateNamespace:
     """Date global namespace."""
+
+    def __call__(self, *args: Any) -> "SpryDate":
+        """Called as `new Date(...)` from SpryCode."""
+        import datetime
+        if not args:
+            # new Date() → current local time
+            now = datetime.datetime.now()
+            return SpryDate(now.year, now.month, now.day,
+                            now.hour, now.minute, now.second,
+                            now.microsecond // 1000)
+        if len(args) == 1:
+            arg = args[0]
+            if isinstance(arg, (int, float)):
+                # new Date(ms) → Unix timestamp in milliseconds
+                epoch = datetime.datetime(1970, 1, 1)
+                dt = epoch + datetime.timedelta(milliseconds=arg)
+                return SpryDate(dt.year, dt.month, dt.day,
+                                dt.hour, dt.minute, dt.second,
+                                dt.microsecond // 1000)
+            # new Date(string) → parse ISO/common formats
+            formats = ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+                       "%Y-%m-%d", "%m/%d/%Y"]
+            for fmt in formats:
+                try:
+                    dt = datetime.datetime.strptime(str(arg), fmt)
+                    return SpryDate(dt.year, dt.month, dt.day,
+                                    dt.hour, dt.minute, dt.second,
+                                    dt.microsecond // 1000)
+                except ValueError:
+                    continue
+            return SpryDate(1970, 1, 1, 0, 0, 0, 0)  # fallback NaN-like
+        # new Date(year, month, day, ...) — month is 0-indexed in JS
+        year = int(args[0])
+        month = int(args[1]) + 1 if len(args) > 1 else 1  # JS: 0-indexed
+        day = int(args[2]) if len(args) > 2 else 1
+        hour = int(args[3]) if len(args) > 3 else 0
+        minute = int(args[4]) if len(args) > 4 else 0
+        second = int(args[5]) if len(args) > 5 else 0
+        ms = int(args[6]) if len(args) > 6 else 0
+        return SpryDate(year, month, day, hour, minute, second, ms)
 
     def now(self) -> float:
         """Return current time as milliseconds since epoch."""

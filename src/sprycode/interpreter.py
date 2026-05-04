@@ -1899,6 +1899,10 @@ class Interpreter:
                     return None
                 obj.fields[key_str] = value
                 return None
+            # Plain dict with Symbol key — use the symbol object itself as key (identity semantics)
+            if isinstance(idx, SprySymbol) and isinstance(obj, dict):
+                obj[idx] = value
+                return None
             try:
                 obj[idx] = value
             except (TypeError, KeyError, IndexError) as e:
@@ -2458,7 +2462,8 @@ class Interpreter:
                     raise SpryRuntimeError(
                         f"Symbol subscript {idx!r} is not supported on SpryClass", node
                     )
-                # SpryInstance indexed with SprySymbol — use string repr as key
+                # SpryInstance indexed with SprySymbol — use str(sym) as key for consistency
+                # with how computed methods are stored in _exec_class
                 if isinstance(obj, SpryInstance):
                     key_str = str(idx)
                     # Check for computed getter first
@@ -2467,13 +2472,14 @@ class Interpreter:
                         getter_fn = obj.fields[getter_key]
                         return self._call_function(getter_fn, [], node)
                     if key_str in obj.fields:
-                        return obj.fields[key_str]
-                    raise SpryRuntimeError(f"Key {key_str!r} not found in object", node)
-                if isinstance(obj, dict):
-                    key_str = str(idx)
-                    if key_str in obj:
-                        return obj[key_str]
+                        v = obj.fields[key_str]
+                        if isinstance(v, SpryFunction):
+                            return BoundMethod(instance=obj, fn=v)
+                        return v
                     return None
+                # Plain dict with SprySymbol — use symbol object itself as key (identity semantics)
+                if isinstance(obj, dict):
+                    return obj.get(idx)
                 raise SpryRuntimeError(
                     f"Symbol subscript {idx!r} is not supported on {type(obj).__name__}", node
                 )
@@ -2880,7 +2886,13 @@ class Interpreter:
                         fkey, flocal = fspec.split("|", 1)
                     else:
                         fkey = flocal = fspec
-                    child.define(flocal, arg_val.get(fkey), mutable=False)
+                    val = arg_val.get(fkey)
+                    # Apply default if value is None and a default is defined
+                    if val is None:
+                        default_key = f"__destruct_default__{flocal}"
+                        if default_key in fn.defaults:
+                            val = self._eval(fn.defaults[default_key], fn.closure)
+                    child.define(flocal, val, mutable=False)
             # Array destructuring param: __array_destruct__:a,b...rest
             elif pname.startswith("__array_destruct__:"):
                 raw = pname[len("__array_destruct__:"):]
@@ -2924,6 +2936,78 @@ class Interpreter:
         if fn.is_async:
             return SpryPromise(value=None)
         return None
+
+    def _call_function_with_this(self, fn: "SpryFunction", args: list[Any], this_arg: Any, node: "Node") -> Any:
+        """Call fn with `this` and `self` bound to this_arg in the execution env."""
+        child = fn.closure.child()
+        child.define("arguments", list(args), mutable=False)
+        child.define("this", this_arg, mutable=False)
+        child.define("self", this_arg, mutable=False)
+        # Expose instance fields if this_arg is a SpryInstance
+        initial_field_values: dict[str, Any] = {}
+        if isinstance(this_arg, SpryInstance):
+            for fname, fval in this_arg.fields.items():
+                if fname not in child._vars:
+                    child.define(fname, fval, mutable=True)
+                    initial_field_values[fname] = fval
+        for i, (pname, _ptype) in enumerate(fn.params):
+            if pname.startswith("__destruct__:"):
+                field_specs = pname[len("__destruct__:"):].split(",")
+                arg_val = args[i] if i < len(args) else {}
+                if isinstance(arg_val, SpryInstance):
+                    arg_val = arg_val.fields
+                if not isinstance(arg_val, dict):
+                    arg_val = {}
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    fval = arg_val.get(fkey)
+                    if fval is None:
+                        default_key = f"__destruct_default__{flocal}"
+                        if default_key in fn.defaults:
+                            fval = self._eval(fn.defaults[default_key], fn.closure)
+                    child.define(flocal, fval, mutable=False)
+            elif pname.startswith("__array_destruct__:"):
+                raw = pname[len("__array_destruct__:"):]
+                arr_rest_name: str | None = None
+                if "..." in raw:
+                    raw, arr_rest_name = raw.split("...", 1)
+                arr_field_names = [f for f in raw.split(",") if f]
+                arg_val = args[i] if i < len(args) else []
+                items = list(arg_val) if not isinstance(arg_val, list) else arg_val
+                for _j, _fname in enumerate(arr_field_names):
+                    child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
+                if arr_rest_name:
+                    child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
+            elif i < len(args):
+                child.define(pname, args[i], mutable=False)
+            elif pname in fn.defaults:
+                child.define(pname, self._eval(fn.defaults[pname], fn.closure), mutable=False)
+            else:
+                child.define(pname, None, mutable=False)
+        if fn.rest_param is not None:
+            child.define(fn.rest_param, list(args[len(fn.params):]), mutable=False)
+        return_val = None
+        try:
+            self._exec_block(fn.body, child)
+        except ReturnSignal as r:
+            return_val = r.value
+        # Sync back mutated fields if this_arg is a SpryInstance
+        if isinstance(this_arg, SpryInstance) and initial_field_values:
+            param_names = {p for p, _ in fn.params}
+            for fname, initial in initial_field_values.items():
+                if fname in param_names:
+                    continue
+                try:
+                    child_val = child.get(fname)
+                except SpryRuntimeError:
+                    continue
+                if child_val != initial:
+                    this_arg.fields[fname] = child_val
+        return return_val
 
     def _call_task(self, task: SpryTask) -> Any:
         child = task.closure.child()
@@ -4258,11 +4342,26 @@ class Interpreter:
                 return _fn_bind
             if prop == "call":
                 def _fn_call(this_arg: Any, *call_args: Any, _fn=obj) -> Any:
+                    if isinstance(_fn, BoundMethod):
+                        # Rebind the underlying function to the new this_arg
+                        underlying = _fn.fn
+                        if this_arg is not None:
+                            return self._call_function_with_this(underlying, list(call_args), this_arg, node)
+                        return self._call_bound_method(_fn, list(call_args), node)
+                    if this_arg is not None and isinstance(_fn, SpryFunction):
+                        return self._call_function_with_this(_fn, list(call_args), this_arg, node)
                     return self._call_value(_fn, list(call_args))
                 return _fn_call
             if prop == "apply":
                 def _fn_apply(this_arg: Any, args_list: Any = None, _fn=obj) -> Any:
                     args = list(args_list) if args_list is not None else []
+                    if isinstance(_fn, BoundMethod):
+                        underlying = _fn.fn
+                        if this_arg is not None:
+                            return self._call_function_with_this(underlying, args, this_arg, node)
+                        return self._call_bound_method(_fn, args, node)
+                    if this_arg is not None and isinstance(_fn, SpryFunction):
+                        return self._call_function_with_this(_fn, args, this_arg, node)
                     return self._call_value(_fn, args)
                 return _fn_apply
             if prop == "name":
@@ -4287,6 +4386,24 @@ class Interpreter:
                 return lambda _s=obj: _s
             # symbols have no other properties
             return None
+
+        # Python callables: add JS-style call/apply/bind support
+        if callable(obj) and prop in ("call", "apply", "bind"):
+            if prop == "call":
+                def _py_call(this_arg: Any, *call_args: Any, _fn=obj) -> Any:
+                    return _fn(*call_args)
+                return _py_call
+            if prop == "apply":
+                def _py_apply(this_arg: Any, args_list: Any = None, _fn=obj) -> Any:
+                    args = list(args_list) if args_list is not None else []
+                    return _fn(*args)
+                return _py_apply
+            if prop == "bind":
+                def _py_bind(this_arg: Any, *bound_args: Any, _fn=obj) -> Any:
+                    def _bound(*call_args: Any) -> Any:
+                        return _fn(*(list(bound_args) + list(call_args)))
+                    return _bound
+                return _py_bind
 
         # Try attribute access
         try:
@@ -5841,14 +5958,25 @@ class Interpreter:
 
         for i, (pname, _ptype) in enumerate(fn.params):
             if pname.startswith("__destruct__:"):
-                field_names = pname[len("__destruct__:"):].split(",")
+                field_specs = pname[len("__destruct__:"):].split(",")
                 arg_val = args[i] if i < len(args) else {}
                 if not isinstance(arg_val, dict):
                     raise SpryRuntimeError(
                         f"Method {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
                     )
-                for fname in field_names:
-                    child.define(fname.strip(), arg_val.get(fname.strip()), mutable=False)
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    fval = arg_val.get(fkey)
+                    # Apply default if value is None and a default is defined
+                    if fval is None:
+                        default_key = f"__destruct_default__{flocal}"
+                        if default_key in fn.defaults:
+                            fval = self._eval(fn.defaults[default_key], fn.closure)
+                    child.define(flocal, fval, mutable=False)
             elif pname.startswith("__array_destruct__:"):
                 raw = pname[len("__array_destruct__:"):]
                 arr_rest_name: str | None = None

@@ -454,6 +454,44 @@ class Parser:
             return LabeledStatement(label=label_tok.value, body=body_stmt,
                                     line=label_tok.line, column=label_tok.column)
 
+        # Array destructuring assignment at statement start: [a, b, c] = expr
+        # Must be checked BEFORE expression parsing to avoid [a, b] being consumed
+        # as a subscript on the previous statement's trailing value (newlines are stripped).
+        if tok.type == TokenType.LBRACKET:
+            saved_pos = self.pos
+            try:
+                self._advance()  # consume '['
+                names: list[str] = []
+                rest_name_s: str | None = None
+                ok = True
+                while not self._check(TokenType.RBRACKET) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        if self._current().type in self._IDENTIFIER_LIKE:
+                            rest_name_s = self._advance().value
+                        else:
+                            ok = False
+                        break
+                    if self._current().type in self._IDENTIFIER_LIKE:
+                        names.append(self._advance().value)
+                    else:
+                        ok = False
+                        break
+                    if not self._match(TokenType.COMMA):
+                        break
+                if ok and self._check(TokenType.RBRACKET):
+                    self._advance()  # consume ']'
+                    if self._check(TokenType.EQ):
+                        self._advance()  # consume '='
+                        rhs = self._parse_expression()
+                        return ListDestructureAssignment(
+                            names=names, value=rhs, rest_name=rest_name_s,
+                            line=tok.line, column=tok.column,
+                        )
+            except Exception:
+                pass
+            self.pos = saved_pos
+
         # Standalone block statement: { stmt; stmt; ... }
         # Disambiguate from object literals by peeking at the first token inside.
         # Treat as block when the first inner token is:
@@ -646,8 +684,10 @@ class Parser:
             # Dict destructuring param: {a, b}
             if self._check(TokenType.LBRACE):
                 # Accept as a synthetic param name "__destruct__" and store original names
-                param_names = self._parse_dict_destruct_param()
+                param_names, param_defaults = self._parse_dict_destruct_param()
                 params.append(("__destruct__:" + ",".join(param_names), None))
+                for _fname, _dflt in param_defaults.items():
+                    defaults[f"__destruct_default__{_fname}"] = _dflt
                 if not self._match(TokenType.COMMA):
                     break
                 continue
@@ -740,32 +780,37 @@ class Parser:
         inner = self._parse_statement()
         return ExportStatement(declaration=inner, line=tok.line, column=tok.column)
 
-    def _parse_dict_destruct_param(self) -> list[str]:
+    def _parse_dict_destruct_param(self) -> tuple[list[str], dict[str, "Node"]]:
         """Parse {a, b, c} or {a: alias, key = default} destructuring pattern in function params.
 
-        Each element in the returned list is either:
-        - ``"name"``          → key=name, local=name
-        - ``"key|alias"``     → key=key, local=alias  (rename)
+        Returns a tuple of:
+        - names: list of field specs, each either ``"name"`` or ``"key|alias"``
+        - defaults: dict mapping local name → default AST node
         """
+        from .ast_nodes import Node as _Node  # noqa: F401 (avoid circular at module top)
         self._expect(TokenType.LBRACE)
         names: list[str] = []
+        defaults: dict[str, Any] = {}
         while not self._check(TokenType.RBRACE) and not self._at_end():
             name_tok = self._expect_ident()
             key = name_tok.value
             if self._match(TokenType.COLON):
-                # rename: {key: localName}
+                # rename: {key: localName} — optionally followed by = default
                 alias_tok = self._expect_ident()
-                names.append(key + "|" + alias_tok.value)
+                local = alias_tok.value
+                names.append(key + "|" + local)
+                if self._match(TokenType.EQ):
+                    defaults[local] = self._parse_expression()
             elif self._match(TokenType.EQ):
-                # default: {key = defaultExpr} — consume default; only key name stored
-                self._parse_expression()  # consume default expression (ignored for now)
+                # default: {key = defaultExpr}
+                defaults[key] = self._parse_expression()
                 names.append(key)
             else:
                 names.append(key)
             if not self._match(TokenType.COMMA):
                 break
         self._expect(TokenType.RBRACE)
-        return names
+        return names, defaults
 
     def _parse_task(self) -> TaskDeclaration:
         tok = self._expect(TokenType.TASK)
@@ -2003,8 +2048,10 @@ class Parser:
                 rest_param = self._expect_ident().value
                 break
             if self._check(TokenType.LBRACE):
-                param_names = self._parse_dict_destruct_param()
+                param_names, param_defaults = self._parse_dict_destruct_param()
                 params.append(("__destruct__:" + ",".join(param_names), None))
+                for _fname, _dflt in param_defaults.items():
+                    defaults[f"__destruct_default__{_fname}"] = _dflt
                 if not self._match(TokenType.COMMA):
                     break
                 continue
@@ -3169,9 +3216,13 @@ class Parser:
 
     def _parse_postfix(self) -> Node:
         expr = self._parse_primary()
+        # Track the line of the last consumed token — used for ASI-like disambiguation:
+        # a '[' on a different line is not a subscript on the previous expression.
+        _last_line = self.tokens[self.pos - 1].line if self.pos > 0 else 0
         while True:
             if self._check(TokenType.DOT):
-                self._advance()
+                _dot_tok = self._advance()
+                _last_line = _dot_tok.line
                 prop_tok = self._current()
                 # Handle private field access: self.#name  (DOT followed by PRIVATE_IDENT)
                 if prop_tok.type == TokenType.PRIVATE_IDENT:
@@ -3180,11 +3231,13 @@ class Parser:
                 else:
                     # Property can be any identifier or keyword used as a property
                     prop = self._advance().value
+                _last_line = self.tokens[self.pos - 1].line
                 if self._check(TokenType.LPAREN):
                     # Method call
                     self._advance()
                     args = self._parse_arg_list()
                     self._expect(TokenType.RPAREN)
+                    _last_line = self.tokens[self.pos - 1].line
                     callee = MemberExpression(
                         object=expr, property=prop, line=prop_tok.line, column=prop_tok.column
                     )
@@ -3198,27 +3251,32 @@ class Parser:
             elif self._check(TokenType.QUESTION_DOT):
                 # Optional chaining: obj?.prop
                 qt = self._advance()
+                _last_line = qt.line
                 if self._check(TokenType.LPAREN):
                     # Optional call: fn?.() — call fn only if non-null
                     self._advance()  # consume '('
                     args = self._parse_arg_list()
                     self._expect(TokenType.RPAREN)
+                    _last_line = self.tokens[self.pos - 1].line
                     expr = OptionalCallExpression(callee=expr, args=args, line=qt.line, column=qt.column)
                 elif self._check(TokenType.LBRACKET):
                     # Optional index: arr?.[i]
                     self._advance()  # consume [
                     index = self._parse_expression()
                     self._expect(TokenType.RBRACKET)
+                    _last_line = self.tokens[self.pos - 1].line
                     expr = OptionalIndexExpression(object=expr, index=index, line=qt.line, column=qt.column)
                 else:
                     prop_tok = self._current()
                     prop = self._advance().value
+                    _last_line = self.tokens[self.pos - 1].line
                     if self._check(TokenType.LPAREN):
                         # Optional method call: obj?.method(args)
                         # Parsed as OptionalCallExpression so callee=None short-circuits the call
                         self._advance()
                         args = self._parse_arg_list()
                         self._expect(TokenType.RPAREN)
+                        _last_line = self.tokens[self.pos - 1].line
                         callee = OptionalMemberExpression(
                             object=expr, property=prop, line=qt.line, column=qt.column
                         )
@@ -3230,29 +3288,39 @@ class Parser:
                             object=expr, property=prop, line=qt.line, column=qt.column
                         )
             elif self._check(TokenType.LBRACKET):
+                # ASI: if '[' is on a different line from the end of the previous expression,
+                # don't treat it as a subscript — it's the start of a new statement.
+                if self._current().line != _last_line:
+                    break
                 op_tok = self._advance()
+                _last_line = op_tok.line
                 index = self._parse_expression()
                 self._expect(TokenType.RBRACKET)
+                _last_line = self.tokens[self.pos - 1].line
                 expr = IndexExpression(object=expr, index=index, line=op_tok.line, column=op_tok.column)
             elif self._check(TokenType.LPAREN):
                 op_tok = self._advance()
+                _last_line = op_tok.line
                 args = self._parse_arg_list()
                 self._expect(TokenType.RPAREN)
+                _last_line = self.tokens[self.pos - 1].line
                 expr = CallExpression(callee=expr, args=args, line=op_tok.line, column=op_tok.column)
             elif self._check(TokenType.FAILED):
                 # result.failed shorthand
-                self._advance()
+                op_tok = self._advance()
+                _last_line = op_tok.line
                 expr = MemberExpression(
                     object=expr,
                     property="failed",
-                    line=self._current().line,
-                    column=self._current().column,
+                    line=op_tok.line,
+                    column=op_tok.column,
                 )
             elif self._check(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
                 # Only apply postfix ++/-- to lvalues (Identifier or MemberExpression)
                 if not isinstance(expr, (Identifier, MemberExpression)):
                     break
                 op_tok = self._advance()
+                _last_line = op_tok.line
                 expr = PostfixExpression(
                     operand=expr,
                     op=op_tok.value,
@@ -3262,6 +3330,7 @@ class Parser:
             elif self._check(TokenType.INSTANCEOF):
                 inst_tok = self._advance()
                 type_tok = self._advance()  # consume the type name token
+                _last_line = type_tok.line
                 expr = InstanceofExpression(
                     operand=expr,
                     type_name=type_tok.value,
@@ -3271,6 +3340,7 @@ class Parser:
             elif self._check(TokenType.FSTRING):
                 # Tagged template literal: tag`...`
                 tmpl_tok = self._advance()
+                _last_line = tmpl_tok.line
                 # Token value is "processed\x00raw" from the lexer
                 _parts = tmpl_tok.value.split("\x00", 1)
                 _processed = _parts[0]
@@ -3406,8 +3476,10 @@ class Parser:
                     rest_param = rest_tok.value
                     break
                 if self._check(TokenType.LBRACE):
-                    param_names = self._parse_dict_destruct_param()
+                    param_names, param_defaults = self._parse_dict_destruct_param()
                     params.append(("__destruct__:" + ",".join(param_names), None))
+                    for _fname, _dflt in param_defaults.items():
+                        defaults[f"__destruct_default__{_fname}"] = _dflt
                     if not self._match(TokenType.COMMA):
                         break
                     continue

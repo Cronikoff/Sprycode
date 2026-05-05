@@ -6662,7 +6662,7 @@ class _JsonNamespace:
             if isinstance(obj, list):
                 return [_spry_to_json(v) for v in obj]
             if isinstance(obj, dict):
-                return {str(k): _spry_to_json(v) for k, v in obj.items()
+                return {k: _spry_to_json(v) for k, v in obj.items()
                         if not isinstance(k, SprySymbol)  # JSON ignores symbol-keyed properties
                         and not isinstance(v, (SpryFunction, SpryLambda, SpryMultiLambda, SpryTask))}
             return obj
@@ -9523,7 +9523,7 @@ class _IntlSegmenterSegment:
             "segment": segment,
             "index": index,
             "input": input_str,
-            "isWordLike": granularity == "word" and bool(re.match(r'\w', segment)) if segment else False,
+            "isWordLike": granularity == "word" and bool(re.match(r'\w', segment) if segment else False),
         }
 
     def _spry_get_prop(self, prop: str) -> Any:
@@ -9581,7 +9581,7 @@ class _IntlSegmenter:
                 segments.append(_IntlSegmenterSegment(tok, m.start(), s, gran))
         elif gran == "sentence":
             import re as _re
-            for m in _re.finditer(r'[^.!?]*[.!?]+\s*|[^.!?]+$', s):
+            for m in _re.finditer(r'[^.!?]+[.!?]+\s*|[^.!?]+$', s):
                 tok = m.group(0)
                 segments.append(_IntlSegmenterSegment(tok, m.start(), s, gran))
         else:

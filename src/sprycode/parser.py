@@ -1331,7 +1331,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             return ForStatement(
                 var=dest_vars[0] if dest_vars else "_",
                 vars=dest_vars,
@@ -1355,7 +1355,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             synth_var = "__obj_destruct__:" + ",".join(obj_dest_vars)
             return ForStatement(
                 var=synth_var,
@@ -1507,7 +1507,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             return ForStatement(
                 var=synth_name,
                 vars=[synth_name],
@@ -1530,7 +1530,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             return ForStatement(
                 var=synth_name2,
                 vars=[synth_name2],
@@ -1561,7 +1561,7 @@ class Parser:
                                         line=iterable.line, column=iterable.column)
         if has_paren:
             self._expect(TokenType.RPAREN)
-        body = self._parse_block()
+        body = self._parse_block_or_stmt()
         all_vars = [var_tok.value] + extra_vars
         return ForStatement(
             var=var_tok.value,

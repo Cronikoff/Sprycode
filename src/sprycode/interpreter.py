@@ -2739,6 +2739,12 @@ class Interpreter:
             try:
                 if isinstance(obj, dict):
                     return obj.get(idx, SPRY_UNDEFINED)
+                if isinstance(obj, (list, str, SpryTypedArray)):
+                    # Out-of-bounds on optional chaining returns undefined (JS semantics)
+                    try:
+                        return obj[idx]
+                    except IndexError:
+                        return SPRY_UNDEFINED
                 return obj[idx]
             except (KeyError, IndexError, TypeError) as e:
                 raise SpryRuntimeError(f"Index error: {e}", node)
@@ -3798,7 +3804,7 @@ class Interpreter:
             if prop in ("some", "any"):
                 return lambda pred: any(self._truthy(pred(x)) for x in obj)
             if prop == "reduce":
-                def _list_reduce(first_arg: Any, second_arg: Any = _SENTINEL) -> Any:
+                def _list_reduce(first_arg: Any, second_arg: Any = _SENTINEL, _o: list = obj) -> Any:
                     # Support both:
                     #   reduce(fn)        — no init, use first element as seed
                     #   reduce(fn, init)  — fn first, init second (JS/SpryCode convention)
@@ -3806,11 +3812,12 @@ class Interpreter:
                     if second_arg is _SENTINEL:
                         # Single arg must be the function
                         _fn = first_arg
-                        if not obj:
+                        if not _o:
                             return None
-                        acc = obj[0]
-                        for _item in obj[1:]:
-                            acc = _fn(acc, _item)
+                        acc = _o[0]
+                        _arity = getattr(_fn, "_spry_arity", 1)
+                        for _i, _item in enumerate(_o[1:], 1):
+                            acc = _fn(acc, _item, _i, _o) if _arity >= 3 else _fn(acc, _item)
                         return acc
                     # Two args: detect which is fn by callability
                     if callable(first_arg) and not callable(second_arg):
@@ -3825,8 +3832,9 @@ class Interpreter:
                         # Both callable: assume (fn, init) convention
                         _fn2 = first_arg
                         acc = second_arg
-                    for _item in obj:
-                        acc = _fn2(acc, _item)
+                    _arity2 = getattr(_fn2, "_spry_arity", 1)
+                    for _i2, _item2 in enumerate(_o):
+                        acc = _fn2(acc, _item2, _i2, _o) if _arity2 >= 3 else _fn2(acc, _item2)
                     return acc
                 return _list_reduce
             if prop == "reduceRight":
@@ -6467,6 +6475,12 @@ class Interpreter:
                     fields[k] = v
                     instance_env.define(k, v, mutable=True)
 
+        # Create the instance early so field initializers can reference `this`
+        # (fields dict is shared by reference, so instance.fields updates as we add fields)
+        _early_instance = SpryInstance(cls=cls, fields=fields)
+        instance_env.define("self", _early_instance, mutable=False)
+        instance_env.define("this", _early_instance, mutable=False)
+
         # Execute the class body to pick up var/fn declarations (subclass overrides superclass)
         for stmt in cls.body.body:  # type: ignore[union-attr]
             if isinstance(stmt, VarDeclaration):
@@ -6555,11 +6569,7 @@ class Interpreter:
                 fields[stmt.name] = val
                 instance_env.define(stmt.name, val, mutable=True)
 
-        instance = SpryInstance(cls=cls, fields=fields)
-
-        # Bind "self" so methods can use it
-        instance_env.define("self", instance, mutable=False)
-        instance_env.define("this", instance, mutable=False)
+        instance = _early_instance  # already created with the shared fields dict
 
         # Re-bind all methods with updated instance_env that includes `self`
         for fname, fval in list(fields.items()):

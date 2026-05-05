@@ -3804,11 +3804,12 @@ class Interpreter:
             if prop in ("some", "any"):
                 return lambda pred: any(self._truthy(pred(x)) for x in obj)
             if prop == "reduce":
-                def _list_reduce(first_arg: Any, second_arg: Any = _SENTINEL, _o: list = obj) -> Any:
+                def _list_reduce(first_arg: Any, second_arg: Any = _SENTINEL) -> Any:
                     # Support both:
                     #   reduce(fn)        — no init, use first element as seed
                     #   reduce(fn, init)  — fn first, init second (JS/SpryCode convention)
                     #   reduce(init, fn)  — init first, fn second (legacy convention)
+                    _o = obj  # capture current list reference from closure
                     if second_arg is _SENTINEL:
                         # Single arg must be the function
                         _fn = first_arg

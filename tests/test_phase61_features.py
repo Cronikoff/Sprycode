@@ -135,10 +135,8 @@ class TestOptionalChainingIndex:
 
     def test_optional_index_out_of_bounds_returns_undefined(self):
         """arr?.[n] where arr is not null but index is out of bounds → undefined."""
-        i = run("let arr = [1,2,3]; let v = arr?.[10]")
-        assert val(i) is not None or True  # SPRY_UNDEFINED (not exception)
-        # The key test: no exception was raised
         from sprycode.interpreter import SPRY_UNDEFINED
+        i = run("let arr = [1,2,3]; let v = arr?.[10]")
         assert val(i) is SPRY_UNDEFINED
 
     def test_optional_index_in_bounds_works(self):

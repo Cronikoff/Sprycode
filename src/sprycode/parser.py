@@ -128,6 +128,7 @@ from .ast_nodes import (
     SequenceExpression,
     DeclarationList,
     NewTargetExpression,
+    NewExpression,
     UsingDeclaration,
 )
 from .lexer import Token, TokenType
@@ -3753,7 +3754,7 @@ class Parser:
                 self._expect(TokenType.RPAREN)
             return SuperExpression(args=args, line=tok.line, column=tok.column)
 
-        # new ClassName(args) → CallExpression on ClassName
+        # new ClassName(args) → NewExpression (handles both SpryClass and plain functions)
         # new.target → NewTargetExpression (meta-property)
         if tok.type == TokenType.IDENTIFIER and tok.value == "new":
             self._advance()   # consume 'new'
@@ -3764,9 +3765,24 @@ class Parser:
                     self._advance()  # consume '.'
                     self._advance()  # consume 'target'
                     return NewTargetExpression(line=tok.line, column=tok.column)
-            # next token is the class name identifier
+            # Parse the constructor expression — allow dotted identifiers like Intl.Segmenter
             name_tok = self._expect_ident()
-            return Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)
+            callee: Node = Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)
+            # Allow chaining: new A.B.C(args)
+            while self._check(TokenType.DOT):
+                dot_tok = self._advance()
+                prop_tok = self._current()
+                prop = self._advance().value
+                callee = MemberExpression(
+                    object=callee, property=prop, line=dot_tok.line, column=dot_tok.column
+                )
+            # Parse the argument list if present
+            new_args: list = []
+            if self._check(TokenType.LPAREN):
+                self._advance()  # consume '('
+                new_args = self._parse_arg_list()
+                self._expect(TokenType.RPAREN)
+            return NewExpression(callee=callee, args=new_args, line=tok.line, column=tok.column)
 
         # null keyword → NullLiteral
         if tok.type == TokenType.IDENTIFIER and tok.value == "null":

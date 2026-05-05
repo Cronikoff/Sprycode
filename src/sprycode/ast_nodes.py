@@ -1004,6 +1004,13 @@ class NewTargetExpression(Node):
 
 
 @dataclass
+class NewExpression(Node):
+    """new Fn(args) — construct an instance from a plain function."""
+    callee: "Node | None" = None
+    args: list = field(default_factory=list)
+
+
+@dataclass
 class ComputedMethodDeclaration(Node):
     """[Symbol.iterator]() { ... } — class method with computed name."""
     key: "Node | None" = None        # expression yielding the key

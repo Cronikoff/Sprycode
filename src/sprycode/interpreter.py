@@ -136,6 +136,7 @@ from .ast_nodes import (
     ComputedMethodDeclaration,
     SequenceExpression,
     NewTargetExpression,
+    NewExpression,
     UsingDeclaration,
 )
 from .permissions import PermissionSet
@@ -2613,6 +2614,9 @@ class Interpreter:
         if isinstance(node, CallExpression):
             return self._eval_call(node, env)
 
+        if isinstance(node, NewExpression):
+            return self._eval_new_expr(node, env)
+
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
             if callee is None or callee is SPRY_UNDEFINED:
@@ -2789,6 +2793,8 @@ class Interpreter:
                 return coll_val.has(item_val)
             if isinstance(coll_val, SpryMap):
                 return item_val in coll_val._data
+            if isinstance(coll_val, SpryProxy):
+                return coll_val._spry_has_prop(str(item_val))
             raise SpryRuntimeError(f"'in' requires a list, object, or string, got {type(coll_val).__name__}", node)
 
         if isinstance(node, FStringExpression):
@@ -3064,6 +3070,50 @@ class Interpreter:
             return None  # void operator evaluates expression and returns null
         raise SpryRuntimeError(f"Unknown unary operator: {node.op!r}", node)
 
+    def _eval_new_expr(self, node: "NewExpression", env: Environment) -> Any:
+        """Handle `new Fn(args)` where Fn may be a SpryClass or a plain function."""
+        callee = self._eval(node.callee, env)
+        args: list[Any] = []
+        for a in node.args:
+            if isinstance(a, SpreadElement):
+                spread_val = self._eval(a.expr, env)
+                try:
+                    args.extend(self._iter_to_list(spread_val, a))
+                except SpryRuntimeError:
+                    args.append(spread_val)
+            else:
+                args.append(self._eval(a, env))
+
+        # SpryClass → use normal construction path
+        if isinstance(callee, SpryClass):
+            return self._construct_class(callee, args, node)
+
+        # SpryProxy wrapping a class
+        if isinstance(callee, SpryProxy):
+            target = object.__getattribute__(callee, '_target')
+            if isinstance(target, SpryClass):
+                return self._construct_class(target, args, node)
+            # Plain callable proxy
+            return self._call_value(callee, args)
+
+        # Plain function — create a `this` dict, call function with it bound
+        if isinstance(callee, SpryFunction):
+            this_obj: dict = {}
+            result = self._call_function_with_this(callee, args, this_obj, node)
+            # If the function explicitly returns an object, use that; else return this
+            if result is not None and not isinstance(result, _SpryUndefinedType) and isinstance(result, (dict, SpryInstance)):
+                return result
+            return this_obj
+
+        # Python callable (e.g. built-in constructors not yet SpryClass)
+        if callable(callee):
+            try:
+                return callee(*[self._to_py_callable(a, env) for a in args])
+            except Exception as e:
+                raise SpryRuntimeError(str(e), node)
+
+        raise SpryRuntimeError(f"Cannot use 'new' on {type(callee).__name__}", node)
+
     def _eval_call(self, node: CallExpression, env: Environment) -> Any:
         callee = self._eval(node.callee, env)
         # Evaluate args, expanding any SpreadElements
@@ -3082,6 +3132,9 @@ class Interpreter:
 
         if isinstance(callee, SpryClass):
             return self._construct_class(callee, args, node)
+
+        if isinstance(callee, SpryProxy):
+            return self._call_proxy(callee, args, node)
 
         if isinstance(callee, SpryStruct):
             return callee.create(args)
@@ -3120,6 +3173,17 @@ class Interpreter:
         raise SpryRuntimeError(
             f"Cannot call {type(callee).__name__} (value: {callee!r})", node
         )
+
+    def _call_proxy(self, proxy: "SpryProxy", args: list[Any], node: "Node") -> Any:
+        """Call a SpryProxy — invokes apply trap if present, else calls the underlying target."""
+        target = object.__getattribute__(proxy, '_target')
+        handler = object.__getattribute__(proxy, '_handler')
+        if isinstance(handler, dict) and 'apply' in handler:
+            trap = handler['apply']
+            # apply(target, thisArg, argumentsList)
+            return proxy._invoke_trap(trap, target, None, args)
+        # No apply trap — call target directly
+        return self._call_value(target, args)
 
     def _call_function(self, fn: SpryFunction, args: list[Any], node: Node) -> Any:
         # Generator functions return a SpryGenerator object immediately
@@ -5024,6 +5088,18 @@ class Interpreter:
                 if isinstance(node.path, MemberExpression)
                 else self._eval(node.path.index, env)
             )
+            if isinstance(obj, SpryProxy):
+                handler = object.__getattribute__(obj, '_handler')
+                target = object.__getattribute__(obj, '_target')
+                if isinstance(handler, dict) and 'deleteProperty' in handler:
+                    trap = handler['deleteProperty']
+                    return obj._invoke_trap(trap, target, prop)
+                # No trap — delete from target directly
+                if isinstance(target, dict):
+                    target.pop(str(prop), None)
+                elif isinstance(target, SpryInstance):
+                    target.fields.pop(str(prop), None)
+                return True
             if isinstance(obj, dict):
                 obj.pop(prop, None)
             elif isinstance(obj, SpryInstance):
@@ -9345,6 +9421,14 @@ class _ReflectNamespace:
 
     def ownKeys(self, obj: Any) -> list:
         """Return own enumerable keys of an object."""
+        if isinstance(obj, SpryProxy):
+            target = object.__getattribute__(obj, '_target')
+            handler = object.__getattribute__(obj, '_handler')
+            if isinstance(handler, dict) and 'ownKeys' in handler:
+                trap = handler['ownKeys']
+                return obj._invoke_trap(trap, target)
+            # Fallthrough to target
+            return self.ownKeys(target)
         if isinstance(obj, dict):
             return [k for k in obj.keys() if not str(k).startswith("__getter__") and not str(k).startswith("__setter__")]
         if isinstance(obj, SpryInstance):

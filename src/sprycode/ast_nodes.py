@@ -990,6 +990,12 @@ class OptionalCallExpression(Node):
 
 
 @dataclass
+class NewTargetExpression(Node):
+    """new.target — the constructor that was called with `new`, or undefined."""
+    pass
+
+
+@dataclass
 class ComputedMethodDeclaration(Node):
     """[Symbol.iterator]() { ... } — class method with computed name."""
     key: "Node | None" = None        # expression yielding the key

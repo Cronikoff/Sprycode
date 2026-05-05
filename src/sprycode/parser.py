@@ -127,6 +127,7 @@ from .ast_nodes import (
     ComputedMethodDeclaration,
     SequenceExpression,
     DeclarationList,
+    NewTargetExpression,
 )
 from .lexer import Token, TokenType
 
@@ -3737,8 +3738,16 @@ class Parser:
             return SuperExpression(args=args, line=tok.line, column=tok.column)
 
         # new ClassName(args) → CallExpression on ClassName
+        # new.target → NewTargetExpression (meta-property)
         if tok.type == TokenType.IDENTIFIER and tok.value == "new":
             self._advance()   # consume 'new'
+            # Check for new.target meta-property
+            if self._check(TokenType.DOT):
+                peek_tok = self._peek()
+                if peek_tok.type == TokenType.IDENTIFIER and peek_tok.value == "target":
+                    self._advance()  # consume '.'
+                    self._advance()  # consume 'target'
+                    return NewTargetExpression(line=tok.line, column=tok.column)
             # next token is the class name identifier
             name_tok = self._expect_ident()
             return Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)

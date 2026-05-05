@@ -2833,7 +2833,15 @@ class Interpreter:
                         pass
                 return item_val in coll_val
             if isinstance(coll_val, dict):
-                return item_val in coll_val
+                if item_val in coll_val:
+                    return True
+                # Walk prototype chain for dict-based instances created via new SpryFunction()
+                _proto = coll_val.get("__spry_proto__")
+                while isinstance(_proto, dict):
+                    if item_val in _proto:
+                        return True
+                    _proto = _proto.get("__spry_proto__")
+                return False
             if isinstance(coll_val, str):
                 return str(item_val) in coll_val
             if isinstance(coll_val, SpryInstance):
@@ -2959,6 +2967,16 @@ class Interpreter:
                             if getattr(cls_check, '_builtin_error_superclass', None) is target:
                                 return True
                             cls_check = cls_check.superclass
+                    return False
+                # SpryFunction-based constructors: val is a dict with __spry_proto__
+                # `val instanceof Fn` → walk __spry_proto__ chain looking for Fn._prototype
+                if isinstance(target, SpryFunction) and isinstance(val, dict):
+                    fn_proto = target._prototype
+                    _proto = val.get("__spry_proto__")
+                    while isinstance(_proto, dict):
+                        if _proto is fn_proto:
+                            return True
+                        _proto = _proto.get("__spry_proto__")
                     return False
             except SpryRuntimeError:
                 pass
@@ -4574,6 +4592,26 @@ class Interpreter:
                         rest_param=None,
                     )
                     return self._call_function(getter_fn, [], node)
+            # Walk the superclass chain for inherited static members
+            _super = obj.superclass
+            while _super is not None:
+                if prop in _super._static_fields:
+                    return _super._static_fields[prop]
+                _super_env = _super.closure.child()
+                for _stmt in _super.body.body:  # type: ignore[union-attr]
+                    if isinstance(_stmt, FunctionDeclaration) and _stmt.name == prop:
+                        return SpryFunction(
+                            name=_stmt.name,
+                            params=_stmt.params,
+                            body=_stmt.body,  # type: ignore
+                            closure=_super_env,
+                            defaults=_stmt.defaults,
+                            rest_param=_stmt.rest_param,
+                        )
+                    if isinstance(_stmt, (LetDeclaration, VarDeclaration)) and _stmt.name == prop:
+                        _val = self._eval(_stmt.value, _super_env) if _stmt.value is not None else None
+                        return _val
+                _super = _super.superclass
             raise SpryRuntimeError(f"Class {obj.name!r} has no static member {prop!r}", node)
 
         if isinstance(obj, SpryStruct):
@@ -5367,7 +5405,19 @@ class Interpreter:
                                           SpryMultiLambda, BoundMethod))
             ):
                 return self._consume_iterator(value, node)
-            return [k for k in value.keys() if not isinstance(k, SprySymbol) and not k.startswith("__spry_")]
+            # Collect own enumerable keys first (excluding internal __spry_* and Symbol keys)
+            _own_keys = [k for k in value.keys() if not isinstance(k, SprySymbol) and not str(k).startswith("__spry_") and not str(k).startswith("__getter__") and not str(k).startswith("__setter__")]
+            # Walk prototype chain to collect inherited enumerable keys (JS for...in semantics)
+            _seen = set(_own_keys)
+            _all_keys = list(_own_keys)
+            _proto = value.get("__spry_proto__")
+            while isinstance(_proto, dict):
+                for _k in _proto.keys():
+                    if not isinstance(_k, SprySymbol) and not str(_k).startswith("__") and _k != "constructor" and _k not in _seen:
+                        _seen.add(_k)
+                        _all_keys.append(_k)
+                _proto = _proto.get("__spry_proto__")
+            return _all_keys
         raise SpryRuntimeError(
             f"Value is not iterable: {type(value).__name__}", node
         )

@@ -10,7 +10,6 @@ Covers:
 """
 
 import pytest
-import math
 from sprycode.interpreter import Interpreter
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser

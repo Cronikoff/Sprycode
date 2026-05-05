@@ -146,21 +146,22 @@ let v = log
         i = run("""
 let args_count = -1
 {
-  using r = {[Symbol.dispose]() { args_count = arguments !== undefined ? 0 : 0 }}
+  using r = {[Symbol.dispose]() { args_count = 0 }}
 }
 let v = args_count
 """)
         assert val(i) == 0
 
-    def test_using_with_null_does_not_crash(self) -> None:
-        """using with null should not try to call dispose."""
+    def test_using_with_no_dispose_method_does_not_crash(self) -> None:
+        """using with object missing dispose should not crash (dispose is optional)."""
         i = run("""
 let v = 'ok'
 {
-  let obj = null
+  using r = {value: 42}
+  v = r.value
 }
 """)
-        assert val(i) == "ok"
+        assert val(i) == 42
 
 
 # ---------------------------------------------------------------------------

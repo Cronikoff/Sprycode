@@ -9630,7 +9630,7 @@ class _IntlSegmenterSegment:
             "segment": segment,
             "index": index,
             "input": input_str,
-            "isWordLike": granularity == "word" and bool(re.match(r'\w', segment) if segment else False),
+            "isWordLike": granularity == "word" and bool(segment and re.match(r'\w', segment)),
         }
 
     def _spry_get_prop(self, prop: str) -> Any:

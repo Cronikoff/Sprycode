@@ -128,6 +128,7 @@ from .ast_nodes import (
     SequenceExpression,
     DeclarationList,
     NewTargetExpression,
+    UsingDeclaration,
 )
 from .lexer import Token, TokenType
 
@@ -445,6 +446,12 @@ class Parser:
             return self._parse_debit()
         if tok.type == TokenType.CREDIT:
             return self._parse_credit()
+        if tok.type == TokenType.USING:
+            return self._parse_using(is_async=False)
+        # await using <name> = <expr>
+        if tok.type == TokenType.AWAIT and self._peek().type == TokenType.USING:
+            self._advance()  # consume 'await'
+            return self._parse_using(is_async=True)
 
         # Labeled statement: label: for/while/do {...}
         # Detect: IDENTIFIER followed immediately by COLON
@@ -505,7 +512,7 @@ class Parser:
                 TokenType.FN, TokenType.FN_STAR, TokenType.IF, TokenType.FOR,
                 TokenType.WHILE, TokenType.DO, TokenType.RETURN, TokenType.THROW,
                 TokenType.TRY, TokenType.BREAK, TokenType.CONTINUE,
-                TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC,
+                TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC, TokenType.USING,
             }
             peek1 = self._peek(1)
             peek2 = self._peek(2)
@@ -2391,6 +2398,15 @@ class Parser:
         amount = self._parse_expression()
         return CreditStatement(account=account, amount=amount,
                                line=tok.line, column=tok.column)
+
+    def _parse_using(self, is_async: bool = False) -> UsingDeclaration:
+        """using <name> = <expr>  — resource binding."""
+        tok = self._expect(TokenType.USING)
+        name_tok = self._expect(TokenType.IDENTIFIER)
+        self._expect(TokenType.EQ)
+        value = self._parse_expression()
+        return UsingDeclaration(name=name_tok.value, value=value, is_async=is_async,
+                                line=tok.line, column=tok.column)
 
     def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
         """Parse let [a, b = default, ...rest] = expr  — list destructuring with defaults"""

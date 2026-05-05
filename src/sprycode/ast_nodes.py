@@ -71,6 +71,14 @@ class LetDeclaration(Node):
 
 
 @dataclass
+class UsingDeclaration(Node):
+    """using <name> = <expr>  — resource binding; calls [Symbol.dispose]() at block end."""
+    name: str = ""
+    value: "Node | None" = None
+    is_async: bool = False  # True for `await using`
+
+
+@dataclass
 class VarDeclaration(Node):
     """var <name>[: <type>] = <value>"""
     name: str = ""

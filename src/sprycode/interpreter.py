@@ -136,6 +136,7 @@ from .ast_nodes import (
     ComputedMethodDeclaration,
     SequenceExpression,
     NewTargetExpression,
+    UsingDeclaration,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -637,6 +638,33 @@ class SpryRegexMatch(list):
 
     def __repr__(self) -> str:
         return f"RegexMatch({list(self)!r}, index={self.index})"
+
+
+class _RegExpNamespace:
+    """RegExp global — new RegExp(pattern, flags) creates a SpryRegex."""
+
+    def __call__(self, pattern: Any = "", flags: Any = "") -> "SpryRegex":
+        return self._build(pattern, flags)
+
+    def new(self, pattern: Any = "", flags: Any = "") -> "SpryRegex":
+        return self._build(pattern, flags)
+
+    def _build(self, pattern: Any, flags: Any) -> "SpryRegex":
+        if isinstance(pattern, SpryRegex):
+            # new RegExp(regex) clones the regex
+            return SpryRegex(pattern.pattern, pattern.global_flag, pattern.flags_str)
+        pat_str = str(pattern) if pattern is not None else ""
+        flags_str = str(flags) if flags is not None else ""
+        flags_map = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
+        re_flags = 0
+        is_global = "g" in flags_str
+        for f in flags_str:
+            re_flags |= flags_map.get(f, 0)
+        compiled = re.compile(_js_regex_to_python(pat_str), re_flags)
+        return SpryRegex(compiled, global_flag=is_global, flags_str=flags_str)
+
+    def __repr__(self) -> str:
+        return "RegExp"
 
 
 class SpryWebSocket:
@@ -1420,6 +1448,10 @@ class Interpreter:
 
         # AbortController / AbortSignal
         env.define("AbortController", _AbortControllerNamespace())
+        env.define("AbortSignal", _AbortSignalNamespace())
+
+        # RegExp constructor
+        env.define("RegExp", _RegExpNamespace())
 
         # ArrayBuffer and TypedArrays
         env.define("ArrayBuffer", _ArrayBufferNamespace())
@@ -1817,9 +1849,50 @@ class Interpreter:
 
     def _exec_block(self, block: Block, env: Environment) -> Any:
         result = None
-        for stmt in block.body:
-            result = self._exec(stmt, env)
+        disposables: list[Any] = []
+        exc_to_raise = None
+        try:
+            for stmt in block.body:
+                if isinstance(stmt, UsingDeclaration):
+                    val = self._eval(stmt.value, env) if stmt.value is not None else None
+                    env.define(stmt.name, val, mutable=False)
+                    if val is not None:
+                        disposables.append(val)
+                    result = None
+                else:
+                    result = self._exec(stmt, env)
+        except Exception as e:
+            exc_to_raise = e
+        # Call [Symbol.dispose]() on all registered disposables in LIFO order
+        if disposables:
+            for disposable in reversed(disposables):
+                dispose_fn = self._get_dispose_fn(disposable)
+                if dispose_fn is not None:
+                    try:
+                        self._call_value(dispose_fn, [])
+                    except Exception:
+                        pass
+        if exc_to_raise is not None:
+            raise exc_to_raise
         return result
+
+    def _get_dispose_fn(self, obj: Any) -> Any:
+        """Return the [Symbol.dispose]() callable from obj, or None."""
+        dispose_sym_key = "Symbol('dispose')"
+        if isinstance(obj, dict):
+            # Look up by SprySymbol key with description 'dispose'
+            for k, v in obj.items():
+                if isinstance(k, SprySymbol) and k.description == "dispose":
+                    return v
+            return obj.get(dispose_sym_key)
+        if isinstance(obj, SpryInstance):
+            for k, v in obj.fields.items():
+                if isinstance(k, SprySymbol) and k.description == "dispose":
+                    return v
+            fn = obj.fields.get(dispose_sym_key)
+            if fn is not None:
+                return BoundMethod(instance=obj, fn=fn) if isinstance(fn, SpryFunction) else fn
+        return None
 
     def _exec(self, node: Node, env: Environment) -> Any:  # noqa: C901
         if isinstance(node, Program):
@@ -1842,6 +1915,13 @@ class Interpreter:
         if isinstance(node, LetDeclaration):
             value = self._eval(node.value, env) if node.value is not None else None
             env.define(node.name, value, mutable=not node.is_const)
+            return None
+
+        if isinstance(node, UsingDeclaration):
+            # At statement level (outside a block with using-scope tracking),
+            # just define the variable; disposal is handled by _exec_block
+            value = self._eval(node.value, env) if node.value is not None else None
+            env.define(node.name, value, mutable=False)
             return None
 
         if isinstance(node, VarDeclaration):
@@ -1889,6 +1969,8 @@ class Interpreter:
                 obj[node.property] = value
             elif isinstance(obj, SpryClass):
                 obj._static_fields[node.property] = value
+            elif hasattr(obj, "_spry_set_prop"):
+                obj._spry_set_prop(node.property, value)
             else:
                 raise SpryRuntimeError(
                     f"Cannot assign property {node.property!r} on {type(obj).__name__}", node
@@ -3186,6 +3268,10 @@ class Interpreter:
                 return obj.spry_map
             if prop == "clone":
                 return obj.spry_clone
+            if prop == "getOrInsert":
+                return obj.spry_getOrInsert
+            if prop == "getOrInsertComputed":
+                return obj.spry_getOrInsertComputed
             if prop == "isEmpty":
                 return len(obj._data) == 0
             raise SpryRuntimeError(f"Map has no property {prop!r}", node)
@@ -4475,6 +4561,7 @@ class Interpreter:
                              SpryTypedArray, SpryDataView,
                              SpryTextEncoder, SpryTextDecoder,
                              SpryAbortController, SpryAbortSignal,
+                             _AbortSignalNamespace,
                              _AtomicsNamespace)):
             return obj._spry_get_prop(prop)
 
@@ -4565,6 +4652,13 @@ class Interpreter:
                         return _fn(*(list(bound_args) + list(call_args)))
                     return _bound
                 return _py_bind
+
+        # Try _spry_get_prop for objects with custom property dispatch
+        if hasattr(obj, "_spry_get_prop"):
+            try:
+                return obj._spry_get_prop(prop)
+            except (SpryRuntimeError, AttributeError):
+                pass
 
         # Try attribute access
         try:
@@ -8288,6 +8382,18 @@ class SpryMap:
         result._data = dict(self._data)
         return result
 
+    def spry_getOrInsert(self, key: Any, default_val: Any) -> Any:
+        """ES2025 Map.prototype.getOrInsert — return existing value or insert default."""
+        if key not in self._data:
+            self._data[key] = default_val
+        return self._data[key]
+
+    def spry_getOrInsertComputed(self, key: Any, fn: Any) -> Any:
+        """ES2025 Map.prototype.getOrInsertComputed — insert computed value if missing."""
+        if key not in self._data:
+            self._data[key] = fn(key) if callable(fn) else None
+        return self._data[key]
+
     def __repr__(self) -> str:
         return f"Map({self._data!r})"
 
@@ -8546,6 +8652,7 @@ class _SymbolNamespace:
         "iterator", "asyncIterator", "toPrimitive", "toStringTag",
         "species", "hasInstance", "isConcatSpreadable", "unscopables",
         "match", "matchAll", "replace", "search", "split",
+        "dispose", "asyncDispose",
     }
 
     def __repr__(self) -> str:
@@ -10229,6 +10336,53 @@ class _AbortControllerNamespace:
         return "AbortController"
 
 
+class _AbortSignalNamespace:
+    """AbortSignal global namespace — static methods abort(), timeout(), any()."""
+
+    def abort(self, reason: Any = "AbortError") -> SpryAbortSignal:
+        """Return an already-aborted AbortSignal."""
+        sig = SpryAbortSignal()
+        sig._abort(reason)
+        return sig
+
+    def timeout(self, milliseconds: Any = 0) -> SpryAbortSignal:
+        """Return a signal that will abort after timeout (stub — never actually aborts)."""
+        return SpryAbortSignal()
+
+    def any(self, signals: Any = None) -> SpryAbortSignal:
+        """Return a signal that aborts when any of the given signals abort."""
+        result = SpryAbortSignal()
+        if isinstance(signals, list):
+            for sig in signals:
+                if isinstance(sig, SpryAbortSignal) and sig.aborted:
+                    result._abort(sig.reason)
+                    break
+                elif isinstance(sig, SpryAbortSignal):
+                    # Forward future abort
+                    def _forward(s: SpryAbortSignal = sig, r: SpryAbortSignal = result) -> None:
+                        r._abort(s.reason)
+                    sig.addEventListener("abort", _forward)
+        return result
+
+    def new(self) -> SpryAbortSignal:
+        return SpryAbortSignal()
+
+    def __call__(self) -> SpryAbortSignal:
+        return SpryAbortSignal()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "abort":
+            return self.abort
+        if prop == "timeout":
+            return self.timeout
+        if prop == "any":
+            return self.any
+        raise SpryRuntimeError(f"AbortSignal has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "AbortSignal"
+
+
 # ---------------------------------------------------------------------------
 # ArrayBuffer and TypedArrays
 # ---------------------------------------------------------------------------
@@ -10768,6 +10922,9 @@ class SpryErrorObject:
 class _ErrorNamespace:
     """Error global — Error.new(message), also callable as Error(message)."""
 
+    # Shared class-level stackTraceLimit (same as JS Error.stackTraceLimit)
+    _stack_trace_limit: int = 10
+
     def __init__(self, name: str) -> None:
         self._name = name
 
@@ -10782,6 +10939,17 @@ class _ErrorNamespace:
         if isinstance(options, dict) and "cause" in options:
             cause = options["cause"]
         return SpryErrorObject(self._name, str(message), cause=cause)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "stackTraceLimit":
+            return _ErrorNamespace._stack_trace_limit
+        raise SpryRuntimeError(f"Property {prop!r} not found on {self._name}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        if prop == "stackTraceLimit":
+            _ErrorNamespace._stack_trace_limit = int(value) if value is not None else 10
+            return
+        raise SpryRuntimeError(f"Cannot assign property {prop!r} on {self._name}", None)
 
     def __repr__(self) -> str:
         return self._name

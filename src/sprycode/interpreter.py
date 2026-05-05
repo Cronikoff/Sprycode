@@ -1081,6 +1081,26 @@ def _js_regex_to_python(pattern: str) -> str:
     return result
 
 
+def _is_nan_coerce(interp: Any, x: Any) -> bool:
+    """JS-style global isNaN: coerce x to number first, then test for NaN."""
+    if isinstance(x, bool):
+        return False
+    try:
+        return math.isnan(interp._to_numeric(x))
+    except Exception:
+        return True  # coercion failure ≡ NaN
+
+
+def _is_finite_coerce(interp: Any, x: Any) -> bool:
+    """JS-style global isFinite: coerce x to number first, then test for finite."""
+    if isinstance(x, bool):
+        return True
+    try:
+        return math.isfinite(interp._to_numeric(x))
+    except Exception:
+        return False  # coercion failure ≡ not finite
+
+
 # ---------------------------------------------------------------------------
 # Interpreter
 # ---------------------------------------------------------------------------
@@ -1238,8 +1258,8 @@ class Interpreter:
 
         env.define("parseInt", _js_parse_int)
         env.define("parseFloat", _js_parse_float)
-        env.define("isNaN", lambda x: math.isnan(self._to_numeric(x)) if not isinstance(x, bool) else False)
-        env.define("isFinite", lambda x: math.isfinite(self._to_numeric(x)) if not isinstance(x, bool) else True)
+        env.define("isNaN", lambda x: _is_nan_coerce(self, x))
+        env.define("isFinite", lambda x: _is_finite_coerce(self, x))
 
         # URI encoding/decoding (JS-compat)
         import urllib.parse as _urllib_parse
@@ -9723,7 +9743,7 @@ class _IntlSegmenterSegment:
             "segment": segment,
             "index": index,
             "input": input_str,
-            "isWordLike": granularity == "word" and bool(segment and re.match(r'\w', segment)),
+            "isWordLike": granularity == "word" and bool(segment and re.match(r'^\w+$', segment)),
         }
 
     def _spry_get_prop(self, prop: str) -> Any:

@@ -47,14 +47,15 @@ let v = disposed
     def test_dispose_not_called_before_block_end(self) -> None:
         i = run("""
 let disposed = false
+let inside_val = false
 {
   using r = {[Symbol.dispose]() { disposed = true }}
-  let v = disposed
+  inside_val = disposed
 }
-let v = disposed
+let v = [inside_val, disposed]
 """)
-        # Inside the block disposed is still false, but we test the outer let v
-        assert val(i) is True  # outer v is set after block exits
+        # Inside the block disposed is still false; after block exits it becomes true
+        assert val(i) == [False, True]
 
     def test_lifo_disposal_order(self) -> None:
         i = run("""

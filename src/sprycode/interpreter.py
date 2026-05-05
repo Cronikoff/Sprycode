@@ -383,6 +383,14 @@ class Environment:
 # ---------------------------------------------------------------------------
 
 
+class _TaggedTemplateStrings(list):
+    """Tagged template strings array — behaves like a list but has a .raw property."""
+
+    def __init__(self, cooked: list, raw: list) -> None:
+        super().__init__(cooked)
+        self.raw = raw
+
+
 class SpryFunction:
     def __init__(
         self,
@@ -1594,69 +1602,82 @@ class Interpreter:
     def _eval_tagged_template(self, node: "TaggedTemplateExpression", env: "Environment") -> Any:
         """Evaluate a tagged template literal: tag`hello ${expr} world`.
 
-        Calls tag(strings, ...values) where strings is the list of raw string parts
-        and values are the evaluated expressions.
+        Calls tag(strings, ...values) where strings is the list of cooked string parts
+        (escape sequences processed) with a .raw property holding unprocessed parts.
         """
         tag_fn = self._eval(node.tag, env)
-        # Use raw_template when available (preserves \\n etc for String.raw)
-        template = node.raw_template if node.raw_template else node.template
-        strings: list[str] = []
-        values: list[Any] = []
-        i = 0
-        n = len(template)
-        current_str = ""
-        while i < n:
-            if template[i] == "{":
-                i += 1
-                depth = 1
-                expr_start = i
-                while i < n and depth > 0:
-                    c = template[i]
-                    if c == "{":
-                        depth += 1
-                        i += 1
-                    elif c == "}":
-                        depth -= 1
-                        i += 1
-                    elif c == "`":
-                        i += 1
-                        while i < n:
-                            bc = template[i]
-                            if bc == "\\":
-                                i += 2
-                            elif bc == "`":
-                                i += 1
-                                break
-                            elif bc == "$" and i + 1 < n and template[i + 1] == "{":
-                                i += 2
-                                inner_d = 1
-                                while i < n and inner_d > 0:
-                                    ic = template[i]
-                                    if ic == "{":
-                                        inner_d += 1
-                                    elif ic == "}":
-                                        inner_d -= 1
+
+        def _split_template(tmpl: str) -> tuple[list[str], list[Any]]:
+            """Split a template string into string parts and expression sources."""
+            parts: list[str] = []
+            expr_srcs: list[str] = []
+            current = ""
+            i = 0
+            n = len(tmpl)
+            while i < n:
+                if tmpl[i] == "{":
+                    i += 1
+                    depth = 1
+                    expr_start = i
+                    while i < n and depth > 0:
+                        c = tmpl[i]
+                        if c == "{":
+                            depth += 1
+                            i += 1
+                        elif c == "}":
+                            depth -= 1
+                            i += 1
+                        elif c == "`":
+                            i += 1
+                            while i < n:
+                                bc = tmpl[i]
+                                if bc == "\\":
+                                    i += 2
+                                elif bc == "`":
                                     i += 1
-                            else:
-                                i += 1
-                    else:
-                        i += 1
-                expr_src = template[expr_start:i - 1]
-                strings.append(current_str)
-                current_str = ""
-                try:
-                    from .lexer import Lexer as _Lexer
-                    from .parser import Parser as _Parser
-                    _tokens = _Lexer(expr_src).tokenize()
-                    _prog = _Parser(_tokens).parse()
-                    val = self._eval(_prog.body[0], env)
-                    values.append(val)
-                except Exception:
-                    values.append(None)
-            else:
-                current_str += template[i]
-                i += 1
-        strings.append(current_str)
+                                    break
+                                elif bc == "$" and i + 1 < n and tmpl[i + 1] == "{":
+                                    i += 2
+                                    inner_d = 1
+                                    while i < n and inner_d > 0:
+                                        ic = tmpl[i]
+                                        if ic == "{":
+                                            inner_d += 1
+                                        elif ic == "}":
+                                            inner_d -= 1
+                                        i += 1
+                                else:
+                                    i += 1
+                        else:
+                            i += 1
+                    parts.append(current)
+                    current = ""
+                    expr_srcs.append(tmpl[expr_start:i - 1])
+                else:
+                    current += tmpl[i]
+                    i += 1
+            parts.append(current)
+            return parts, expr_srcs
+
+        raw_tmpl = node.raw_template if node.raw_template else node.template
+        cooked_tmpl = node.template
+
+        raw_parts, _ = _split_template(raw_tmpl)
+        cooked_parts, expr_srcs = _split_template(cooked_tmpl)
+
+        values: list[Any] = []
+        for expr_src in expr_srcs:
+            try:
+                from .lexer import Lexer as _Lexer
+                from .parser import Parser as _Parser
+                _tokens = _Lexer(expr_src).tokenize()
+                _prog = _Parser(_tokens).parse()
+                val = self._eval(_prog.body[0], env)
+                values.append(val)
+            except Exception:
+                values.append(None)
+
+        strings = _TaggedTemplateStrings(cooked_parts, raw_parts)
         return self._call_value(tag_fn, [strings, *values])
 
     def _builtin_str(self, value: Any) -> str:
@@ -3624,6 +3645,9 @@ class Interpreter:
         if isinstance(obj, list):
             if prop == "length":
                 return len(obj)
+            if prop == "raw":
+                # TaggedTemplateStrings — return the raw property (list of raw strings)
+                return getattr(obj, "raw", obj)
             if prop == "at":
                 return lambda n, _obj=obj: _obj[int(n)] if -len(_obj) <= int(n) < len(_obj) else None
             if prop == "first":
@@ -5267,6 +5291,18 @@ class Interpreter:
                 if not k.startswith("__") and not isinstance(v, SpryFunction)
             ]
         if isinstance(value, dict):
+            # Check for [Symbol.iterator] function on the dict
+            for _k, _v in value.items():
+                if isinstance(_k, SprySymbol) and _k.description == "iterator":
+                    if isinstance(_v, SpryFunction):
+                        _iter = self._call_function_with_this(_v, [], value, node)
+                    elif isinstance(_v, (SpryLambda, SpryMultiLambda, BoundMethod, DictBoundMethod)) or callable(_v):
+                        _iter = self._call_value(_v, [])
+                    else:
+                        break
+                    if isinstance(_iter, SpryGenerator):
+                        return list(_iter)
+                    return self._consume_iterator(_iter, node)
             # Check if it's an iterator (has 'next') — if so consume it
             next_val = value.get("next")
             if next_val is not None and (
@@ -5275,7 +5311,7 @@ class Interpreter:
                                           SpryMultiLambda, BoundMethod))
             ):
                 return self._consume_iterator(value, node)
-            return [k for k in value.keys() if not k.startswith("__spry_")]
+            return [k for k in value.keys() if not isinstance(k, SprySymbol) and not k.startswith("__spry_")]
         raise SpryRuntimeError(
             f"Value is not iterable: {type(value).__name__}", node
         )
@@ -5378,6 +5414,27 @@ class Interpreter:
 
         # Dict iterator (has 'next' callable): lazy iteration
         if isinstance(iterable, dict):
+            # Check for [Symbol.iterator] function on the dict
+            for _dk, _dv in iterable.items():
+                if isinstance(_dk, SprySymbol) and _dk.description == "iterator":
+                    if isinstance(_dv, SpryFunction):
+                        _dict_iter: Any = self._call_function_with_this(_dv, [], iterable, node)
+                    elif isinstance(_dv, (SpryLambda, SpryMultiLambda, BoundMethod, DictBoundMethod)) or callable(_dv):
+                        _dict_iter = self._call_value(_dv, [])
+                    else:
+                        break
+                    if isinstance(_dict_iter, dict):
+                        _lazy_iter_dict(_dict_iter)
+                    elif isinstance(_dict_iter, SpryGenerator):
+                        while True:
+                            _res = _dict_iter.next()
+                            if isinstance(_res, SpryPromise):
+                                _res = _res._value if _res.status == "fulfilled" else {"value": None, "done": True}
+                            if _res.get("done", False):
+                                break
+                            if _exec_body_for_item(_res.get("value")):
+                                break
+                    return None
             next_val = iterable.get("next")
             if next_val is not None and (
                 callable(next_val)
@@ -7001,6 +7058,9 @@ class _ArrayNamespace:
             for i in range(max(n, 0)):
                 # Try numeric string key first, then integer key
                 result.append(iterable.get(str(i), iterable.get(i, None)))
+        elif isinstance(iterable, dict):
+            # Check for [Symbol.iterator] on the dict
+            result = self._interp._iter_to_list(iterable, None)
         else:
             try:
                 result = list(iterable)
@@ -7254,6 +7314,22 @@ class _ObjectNamespace:
     def isSealed(self, obj: Any) -> bool:
         """Always returns False — SpryCode objects are mutable."""
         return False
+
+    def preventExtensions(self, obj: Any) -> Any:
+        """Prevent new properties from being added to an object (no-op in SpryCode)."""
+        if isinstance(obj, dict):
+            obj["__spry_not_extensible__"] = True
+        elif isinstance(obj, SpryInstance):
+            obj.fields["__spry_not_extensible__"] = True
+        return obj
+
+    def isExtensible(self, obj: Any) -> bool:
+        """Return True if new properties can be added to the object."""
+        if isinstance(obj, dict):
+            return not bool(obj.get("__spry_not_extensible__", False)) and not bool(obj.get("__spry_frozen__", False))
+        if isinstance(obj, SpryInstance):
+            return not bool(obj.fields.get("__spry_not_extensible__", False)) and not bool(obj.fields.get("__spry_frozen__", False))
+        return True
 
     def getOwnPropertyNames(self, obj: Any) -> list:
         """Return a list of all own property names."""
@@ -8718,15 +8794,18 @@ class _StringNamespace:
     def raw(self, strings: Any, *values: Any) -> str:
         """String.raw tagged template — return the raw template string without escape processing.
 
-        When used as a tagged template (String.raw`foo\\nbar`), `strings` is a list of
-        raw string parts and `values` are the substituted expressions.
+        When used as a tagged template (String.raw`foo\\nbar`), `strings` is the cooked
+        strings array (with a .raw property holding the unprocessed raw parts).
         """
-        if isinstance(strings, list):
-            result = strings[0] if strings else ""
+        # Prefer strings.raw when available (set by _eval_tagged_template)
+        raw_parts = getattr(strings, "raw", None) if isinstance(strings, list) else None
+        parts = raw_parts if raw_parts is not None else strings
+        if isinstance(parts, list):
+            result = parts[0] if parts else ""
             for i, val in enumerate(values):
                 result += self._spry_str(val)
-                if i + 1 < len(strings):
-                    result += strings[i + 1]
+                if i + 1 < len(parts):
+                    result += parts[i + 1]
             return result
         # Fallback: just return strings as-is
         return self._spry_str(strings)
@@ -11260,6 +11339,9 @@ class _ErrorNamespace:
             return _ErrorNamespace._stack_trace_limit
         if prop == "isError":
             return _error_is_error
+        if prop == "captureStackTrace":
+            # Stub: Error.captureStackTrace(obj, constructorOpt) — no-op in SpryCode
+            return lambda *args: None
         raise SpryRuntimeError(f"Property {prop!r} not found on {self._name}", None)
 
     def _spry_set_prop(self, prop: str, value: Any) -> None:

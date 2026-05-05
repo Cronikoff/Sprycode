@@ -255,6 +255,7 @@ class Parser:
         TokenType.DEFAULT,       # "default"
         TokenType.TO,            # "to" — commonly used as variable name in ranges
         TokenType.STOP,          # "stop" — commonly used as variable name
+        TokenType.FN,            # "fn" / "function" — may appear as a function name after "function"
     })
 
     def _expect_ident(self) -> Token:
@@ -1405,7 +1406,7 @@ class Parser:
                         )
                     if has_paren:
                         self._expect(TokenType.RPAREN)
-                    body = self._parse_block()
+                    body = self._parse_block_or_stmt()
                     return ForCStyleStatement(
                         init=init_stmt, condition=condition, update=update, body=body,
                         line=tok.line, column=tok.column,
@@ -3574,53 +3575,69 @@ class Parser:
             # (named functions are statements; anonymous ones are expressions)
             if self._peek().type != TokenType.LPAREN:
                 # It's a named function statement — shouldn't be here, fall through
-                raise ParseError("Unexpected token in expression", tok)
-            self._advance()  # consume fn
-            self._expect(TokenType.LPAREN)
-            params: list[tuple[str, str | None]] = []
-            defaults: dict[str, Node] = {}
-            rest_param: str | None = None
-            while not self._check(TokenType.RPAREN) and not self._at_end():
-                if self._check(TokenType.ELLIPSIS):
-                    self._advance()
-                    rest_tok = self._expect_ident()
-                    rest_param = rest_tok.value
-                    break
-                if self._check(TokenType.LBRACE):
-                    param_names, param_defaults = self._parse_dict_destruct_param()
-                    params.append(("__destruct__:" + ",".join(param_names), None))
-                    for _fname, _dflt in param_defaults.items():
-                        defaults[f"__destruct_default__{_fname}"] = _dflt
+                # But "fn" itself may be used as an identifier (e.g. a var named "fn")
+                self._advance()
+                return Identifier(name=tok.value, line=tok.line, column=tok.column)
+            # fn(... — could be anonymous function expression OR a call to a variable named "fn".
+            # Use backtracking: try to parse as anonymous function (fn(params){body}).
+            # After consuming params, if we see { or => it's a function expression.
+            # Otherwise, fall back to treating "fn" as an identifier (a call site).
+            saved_pos = self.pos
+            try:
+                self._advance()  # consume fn
+                self._expect(TokenType.LPAREN)
+                fn_params: list[tuple[str, str | None]] = []
+                fn_defaults: dict[str, Node] = {}
+                fn_rest: str | None = None
+                while not self._check(TokenType.RPAREN) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        fn_rest = self._expect_ident().value
+                        break
+                    if self._check(TokenType.LBRACE):
+                        param_names, param_defaults = self._parse_dict_destruct_param()
+                        fn_params.append(("__destruct__:" + ",".join(param_names), None))
+                        for _fname, _dflt in param_defaults.items():
+                            fn_defaults[f"__destruct_default__{_fname}"] = _dflt
+                        if not self._match(TokenType.COMMA):
+                            break
+                        continue
+                    pname = self._expect_ident()
+                    ptype = None
+                    if self._match(TokenType.COLON):
+                        ptype = self._parse_type_name()
+                    default_expr = None
+                    if self._match(TokenType.EQ):
+                        default_expr = self._parse_null_coalesce()
+                    fn_params.append((pname.value, ptype))
+                    if default_expr is not None:
+                        fn_defaults[pname.value] = default_expr
                     if not self._match(TokenType.COMMA):
                         break
-                    continue
-                pname = self._expect_ident()
-                ptype = None
-                if self._match(TokenType.COLON):
-                    ptype = self._parse_type_name()
-                default_expr = None
-                if self._match(TokenType.EQ):
-                    default_expr = self._parse_null_coalesce()
-                params.append((pname.value, ptype))
-                if default_expr is not None:
-                    defaults[pname.value] = default_expr
-                if not self._match(TokenType.COMMA):
-                    break
-            self._expect(TokenType.RPAREN)
-            return_type = None
-            if self._match(TokenType.ARROW):
-                return_type = self._parse_type_name()
-            if self._check(TokenType.FAT_ARROW):
-                self._advance()
-                expr = self._parse_expression()
-                fn_body = Block(body=[ReturnStatement(value=expr, line=tok.line, column=tok.column)])
-            else:
-                fn_body = self._parse_block()
-            return AnonymousFunctionExpression(
-                params=params, return_type=return_type, body=fn_body,
-                defaults=defaults, rest_param=rest_param,
-                line=tok.line, column=tok.column,
-            )
+                self._expect(TokenType.RPAREN)
+                fn_return_type = None
+                if self._match(TokenType.ARROW):
+                    fn_return_type = self._parse_type_name()
+                # Only treat as function expression if followed by { or =>
+                if self._check(TokenType.LBRACE) or self._check(TokenType.FAT_ARROW):
+                    if self._check(TokenType.FAT_ARROW):
+                        self._advance()
+                        expr = self._parse_expression()
+                        fn_body: Node = Block(body=[ReturnStatement(value=expr, line=tok.line, column=tok.column)])
+                    else:
+                        fn_body = self._parse_block()
+                    return AnonymousFunctionExpression(
+                        params=fn_params, return_type=fn_return_type, body=fn_body,
+                        defaults=fn_defaults, rest_param=fn_rest,
+                        line=tok.line, column=tok.column,
+                    )
+                # No { or => — it's a call to a variable named "fn", fall back
+                self.pos = saved_pos
+            except Exception:
+                self.pos = saved_pos
+            # Treat "fn" as an identifier
+            self._advance()
+            return Identifier(name=tok.value, line=tok.line, column=tok.column)
 
         if tok.type == TokenType.LPAREN:
             self._advance()

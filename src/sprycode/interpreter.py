@@ -1238,8 +1238,8 @@ class Interpreter:
 
         env.define("parseInt", _js_parse_int)
         env.define("parseFloat", _js_parse_float)
-        env.define("isNaN", lambda x: math.isnan(float(x)) if isinstance(x, (int, float)) else False)
-        env.define("isFinite", lambda x: math.isfinite(float(x)) if isinstance(x, (int, float)) else True)
+        env.define("isNaN", lambda x: math.isnan(self._to_numeric(x)) if not isinstance(x, bool) else False)
+        env.define("isFinite", lambda x: math.isfinite(self._to_numeric(x)) if not isinstance(x, bool) else True)
 
         # URI encoding/decoding (JS-compat)
         import urllib.parse as _urllib_parse
@@ -1249,6 +1249,10 @@ class Interpreter:
         _URI_SAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();/?:@&=+$,#"
         env.define("encodeURI", lambda s: _urllib_parse.quote(str(s), safe=_URI_SAFE))
         env.define("decodeURI", lambda s: _urllib_parse.unquote(str(s)))
+
+        # btoa / atob — Base64 encode/decode (browser-compat globals)
+        env.define("btoa", lambda s: _builtin_encode_base64(str(s)))
+        env.define("atob", lambda s: _builtin_decode_base64(str(s)))
 
         # Constants
         env.define("ok", SPRY_OK)
@@ -1333,7 +1337,9 @@ class Interpreter:
         env.define("TransformStream", _TransformStreamNamespace(self._call_value))
 
         # Promise namespace
-        env.define("Promise", _PromiseNamespace())
+        _promise_ns = _PromiseNamespace()
+        _promise_ns._interp = self
+        env.define("Promise", _promise_ns)
 
         # Error types
         for _ename in ("Error", "TypeError", "RangeError", "SyntaxError",
@@ -1637,6 +1643,11 @@ class Interpreter:
             return "null"
         if isinstance(value, bool):
             return "true" if value else "false"
+        if isinstance(value, dict):
+            # Try [Symbol.toPrimitive]("string") on dicts
+            prim = self._dict_toPrimitive(value, "string")
+            if prim is not value:
+                return self._builtin_str(prim)
         if isinstance(value, SpryInstance):
             # Prefer [Symbol.toPrimitive]("string") first
             sym_key = "Symbol('toPrimitive')"
@@ -1670,6 +1681,26 @@ class Interpreter:
         if isinstance(value, float) and value == int(value):
             return str(int(value))
         return str(value)
+
+    def _dict_toPrimitive(self, obj: dict, hint: str = "default") -> Any:
+        """Try to call [Symbol.toPrimitive](hint) on a plain dict.
+
+        Returns the primitive result, or obj unchanged if no [Symbol.toPrimitive] is present.
+        """
+        # Find Symbol.toPrimitive key (SprySymbol with description 'toPrimitive' or string key)
+        tp_fn = None
+        for k, v in obj.items():
+            if isinstance(k, SprySymbol) and k.description == "toPrimitive":
+                tp_fn = v
+                break
+        if tp_fn is None:
+            tp_fn = obj.get("Symbol('toPrimitive')")
+        if tp_fn is None:
+            return obj
+        try:
+            return self._call_value(tp_fn, [hint])
+        except Exception:
+            return obj
 
     def _to_primitive(self, value: Any, hint: str = "default") -> Any:
         """Coerce a SpryInstance to a primitive value (JS ToPrimitive semantics).
@@ -1748,6 +1779,10 @@ class Interpreter:
         if isinstance(value, SpryInstance):
             prim = self._to_primitive(value, "number")
             if not isinstance(prim, SpryInstance):
+                return self._to_numeric(prim)
+        if isinstance(value, dict):
+            prim = self._dict_toPrimitive(value, "number")
+            if prim is not value:
                 return self._to_numeric(prim)
         return float("nan")
 
@@ -2893,6 +2928,11 @@ class Interpreter:
                 left = self._to_primitive(left, "default")
             if isinstance(right, SpryInstance):
                 right = self._to_primitive(right, "default")
+            # Coerce dicts with [Symbol.toPrimitive] using "default" hint
+            if isinstance(left, dict):
+                left = self._dict_toPrimitive(left, "default")
+            if isinstance(right, dict):
+                right = self._dict_toPrimitive(right, "default")
             # When one operand is a string, coerce the other to string (JS-style)
             if isinstance(left, str) and not isinstance(right, str):
                 right = self._builtin_str(right)
@@ -2906,6 +2946,10 @@ class Interpreter:
                 left = self._to_numeric(left)
             if isinstance(right, SpryInstance):
                 right = self._to_numeric(right)
+            if isinstance(left, dict):
+                left = self._to_numeric(self._dict_toPrimitive(left, "number"))
+            if isinstance(right, dict):
+                right = self._to_numeric(self._dict_toPrimitive(right, "number"))
             return left - right
         if op == "*":
             if isinstance(left, SpryMoney):
@@ -2914,12 +2958,20 @@ class Interpreter:
                 left = self._to_numeric(left)
             if isinstance(right, SpryInstance):
                 right = self._to_numeric(right)
+            if isinstance(left, dict):
+                left = self._to_numeric(self._dict_toPrimitive(left, "number"))
+            if isinstance(right, dict):
+                right = self._to_numeric(self._dict_toPrimitive(right, "number"))
             return left * right
         if op == "/":
             if isinstance(left, SpryInstance):
                 left = self._to_numeric(left)
             if isinstance(right, SpryInstance):
                 right = self._to_numeric(right)
+            if isinstance(left, dict):
+                left = self._to_numeric(self._dict_toPrimitive(left, "number"))
+            if isinstance(right, dict):
+                right = self._to_numeric(self._dict_toPrimitive(right, "number"))
             if right == 0:
                 if isinstance(left, (int, float)):
                     if left == 0:
@@ -4371,10 +4423,14 @@ class Interpreter:
         if isinstance(obj, SpryPromise):
             if prop == "status":
                 return obj.status
+            if prop == "state":
+                return obj.state
             if prop == "value":
                 return obj._value
             if prop == "error":
                 return obj._error
+            if prop == "reason":
+                return obj.reason
             if prop in ("then", "catch", "finally"):
                 # Return a wrapper that invokes SpryLambda callbacks through the interpreter
                 _interp = self
@@ -8889,8 +8945,18 @@ class SpryPromise:
         return self._error
 
     @property
+    def reason(self) -> Any:
+        """JS-compat: rejection reason (same as .error on rejected promises)."""
+        return self._error
+
+    @property
     def status(self) -> str:
         return "fulfilled" if self._settled else "rejected"
+
+    @property
+    def state(self) -> str:
+        """JS-compat alias for .status."""
+        return self.status
 
     def then(self, on_fulfilled: Any = None, on_rejected: Any = None) -> "SpryPromise":
         if self._settled and on_fulfilled is not None and callable(on_fulfilled):
@@ -8996,6 +9062,33 @@ class _PromiseNamespace:
                 return repr(container["_p"])
 
         return {"promise": _LazyPromise(), "resolve": _resolve, "reject": _reject}
+
+    def try_(self, fn: Any) -> SpryPromise:
+        """ES2025: Promise.try(fn) — call fn and wrap result in a promise.
+
+        If fn returns a value (or a SpryPromise), that becomes the fulfillment value.
+        If fn throws, the promise is rejected with the thrown error.
+        """
+        try:
+            interp: Any = getattr(self, "_interp", None)
+            if interp is not None:
+                result = interp._call_value(fn, [])
+            elif callable(fn):
+                result = fn()
+            else:
+                result = fn
+            if isinstance(result, SpryPromise):
+                return result
+            return SpryPromise(value=result)
+        except SpryUserError as exc:
+            return SpryPromise(value=None, error=exc.value)
+        except Exception as exc:
+            return SpryPromise(value=None, error=str(exc))
+
+    def __getattr__(self, prop: str) -> Any:
+        if prop == "try":
+            return self.try_
+        raise AttributeError(prop)
 
     def __repr__(self) -> str:
         return "Promise"
@@ -10919,6 +11012,11 @@ class SpryErrorObject:
         return self.__repr__()
 
 
+def _error_is_error(value: Any) -> bool:
+    """TC39 Error.isError(val) — return True if val is an Error-like object."""
+    return isinstance(value, (SpryErrorObject, SpryUserError))
+
+
 class _ErrorNamespace:
     """Error global — Error.new(message), also callable as Error(message)."""
 
@@ -10943,6 +11041,8 @@ class _ErrorNamespace:
     def _spry_get_prop(self, prop: str) -> Any:
         if prop == "stackTraceLimit":
             return _ErrorNamespace._stack_trace_limit
+        if prop == "isError":
+            return _error_is_error
         raise SpryRuntimeError(f"Property {prop!r} not found on {self._name}", None)
 
     def _spry_set_prop(self, prop: str, value: Any) -> None:

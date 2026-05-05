@@ -309,6 +309,7 @@ KEYWORDS: dict[str, TokenType] = {
     "let": TokenType.LET,
     "var": TokenType.VAR,
     "fn": TokenType.FN,
+    "function": TokenType.FN,  # JS-compat alias for fn
     "task": TokenType.TASK,
     "app": TokenType.APP,
     "use": TokenType.USE,

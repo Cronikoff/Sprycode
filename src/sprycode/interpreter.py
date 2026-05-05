@@ -1404,7 +1404,10 @@ class Interpreter:
         env.define("eval", _spry_eval)
 
         # Reflect namespace
-        env.define("Reflect", _ReflectNamespace())
+        # Reflect namespace
+        _reflect_ns = _ReflectNamespace()
+        _reflect_ns._interp = self
+        env.define("Reflect", _reflect_ns)
 
         # globalThis — reference to the interpreter's global env dict
         env.define("globalThis", {"__type__": "GlobalThis", "undefined": SPRY_UNDEFINED})
@@ -5335,6 +5338,9 @@ class Interpreter:
             iterable = self._iter_to_list(iterable, node)
 
         for item in iterable:
+            # for await...of: unwrap SpryPromise items
+            if node.is_async and isinstance(item, SpryPromise):
+                item = item._value if item._settled else item._error
             if _exec_body_for_item(item):
                 break
         return None
@@ -7046,17 +7052,48 @@ class _ObjectNamespace:
 
     def defineProperty(self, obj: Any, key: str, descriptor: Any) -> Any:
         """Define/modify a property on an object. Mutates and returns obj."""
-        if isinstance(obj, dict) and isinstance(descriptor, dict):
-            if "value" in descriptor:
-                obj[str(key)] = descriptor["value"]
-            elif "get" in descriptor and callable(descriptor["get"]):
-                obj[str(key)] = descriptor["get"]()
+        if isinstance(descriptor, dict):
+            key_str = str(key)
+            if isinstance(obj, dict):
+                if "value" in descriptor:
+                    obj[key_str] = descriptor["value"]
+                if "get" in descriptor:
+                    obj[f"__getter__{key_str}"] = descriptor["get"]
+                    # Remove any plain value key to avoid shadowing the getter
+                    obj.pop(key_str, None)
+                if "set" in descriptor:
+                    obj[f"__setter__{key_str}"] = descriptor["set"]
+            elif isinstance(obj, SpryInstance):
+                if "value" in descriptor:
+                    obj.fields[key_str] = descriptor["value"]
+                if "get" in descriptor:
+                    obj.fields[f"__getter__{key_str}"] = descriptor["get"]
+                    obj.fields.pop(key_str, None)
+                if "set" in descriptor:
+                    obj.fields[f"__setter__{key_str}"] = descriptor["set"]
         return obj
 
     def getOwnPropertyDescriptor(self, obj: Any, key: str) -> Any:
         """Return a property descriptor dict."""
-        if isinstance(obj, dict) and str(key) in obj:
-            return {"value": obj[str(key)], "writable": True, "enumerable": True, "configurable": True}
+        key_str = str(key)
+        if isinstance(obj, dict):
+            getter_key = f"__getter__{key_str}"
+            setter_key = f"__setter__{key_str}"
+            if getter_key in obj or setter_key in obj:
+                desc: dict = {"enumerable": False, "configurable": True}
+                if getter_key in obj:
+                    desc["get"] = obj[getter_key]
+                if setter_key in obj:
+                    desc["set"] = obj[setter_key]
+                return desc
+            if key_str in obj:
+                return {"value": obj[key_str], "writable": True, "enumerable": True, "configurable": True}
+        if isinstance(obj, SpryInstance):
+            getter_key = f"__getter__{key_str}"
+            if getter_key in obj.fields:
+                return {"get": obj.fields[getter_key], "enumerable": False, "configurable": True}
+            if key_str in obj.fields:
+                return {"value": obj.fields[key_str], "writable": True, "enumerable": True, "configurable": True}
         return None
 
     def defineProperties(self, obj: Any, props: Any) -> Any:
@@ -9309,9 +9346,9 @@ class _ReflectNamespace:
     def ownKeys(self, obj: Any) -> list:
         """Return own enumerable keys of an object."""
         if isinstance(obj, dict):
-            return list(obj.keys())
+            return [k for k in obj.keys() if not str(k).startswith("__getter__") and not str(k).startswith("__setter__")]
         if isinstance(obj, SpryInstance):
-            return list(obj.fields.keys())
+            return [k for k in obj.fields.keys() if not k.startswith("__getter__") and not k.startswith("__setter__")]
         return []
 
     def has(self, obj: Any, key: Any) -> bool:
@@ -9352,25 +9389,101 @@ class _ReflectNamespace:
 
     def apply(self, target: Any, this_arg: Any, args: Any) -> Any:
         """Call target with the given args list."""
+        interp: Any = getattr(self, "_interp", None)
+        arg_list = list(args) if isinstance(args, (list, tuple)) else []
+        if interp is not None:
+            return interp._call_value(target, arg_list)
         if callable(target):
-            return target(*(args if isinstance(args, (list, tuple)) else []))
+            return target(*arg_list)
         return None
 
-    def construct(self, target: Any, args: Any) -> Any:
+    def construct(self, target: Any, args: Any, new_target: Any = None) -> Any:
         """Construct a new instance using target (SpryClass) with args."""
+        interp: Any = getattr(self, "_interp", None)
+        arg_list = list(args) if isinstance(args, (list, tuple)) else []
+        if interp is not None and isinstance(target, SpryClass):
+            return interp._construct_class(target, arg_list, None)
         if callable(target):
-            return target(*(args if isinstance(args, (list, tuple)) else []))
+            return target(*arg_list)
         return None
 
     def defineProperty(self, obj: Any, key: Any, descriptor: Any) -> bool:
-        """Define a property (simplified — just sets value from descriptor)."""
-        if isinstance(descriptor, dict) and "value" in descriptor:
-            return self.set(obj, key, descriptor["value"])
+        """Define a property (simplified — value or getter/setter descriptors)."""
+        if isinstance(descriptor, dict):
+            key_str = str(key)
+            if isinstance(obj, dict):
+                if "value" in descriptor:
+                    obj[key_str] = descriptor["value"]
+                if "get" in descriptor:
+                    obj[f"__getter__{key_str}"] = descriptor["get"]
+                    obj.pop(key_str, None)
+                if "set" in descriptor:
+                    obj[f"__setter__{key_str}"] = descriptor["set"]
+                return True
+            if isinstance(obj, SpryInstance):
+                if "value" in descriptor:
+                    obj.fields[key_str] = descriptor["value"]
+                if "get" in descriptor:
+                    obj.fields[f"__getter__{key_str}"] = descriptor["get"]
+                return True
         return False
 
-    def getPrototypeOf(self, obj: Any) -> Any:
-        """Return None (prototype chain not modelled in SpryCode)."""
+    def getOwnPropertyDescriptor(self, obj: Any, key: Any) -> Any:
+        """Return a property descriptor dict for the given key."""
+        key_str = str(key)
+        if isinstance(obj, dict):
+            getter_key = f"__getter__{key_str}"
+            setter_key = f"__setter__{key_str}"
+            if getter_key in obj or setter_key in obj:
+                desc: dict = {"enumerable": False, "configurable": True}
+                if getter_key in obj:
+                    desc["get"] = obj[getter_key]
+                if setter_key in obj:
+                    desc["set"] = obj[setter_key]
+                return desc
+            if key_str in obj:
+                return {"value": obj[key_str], "writable": True, "enumerable": True, "configurable": True}
+        if isinstance(obj, SpryInstance):
+            getter_key = f"__getter__{key_str}"
+            if getter_key in obj.fields:
+                return {"get": obj.fields[getter_key], "enumerable": False, "configurable": True}
+            if key_str in obj.fields:
+                return {"value": obj.fields[key_str], "writable": True, "enumerable": True, "configurable": True}
         return None
+
+    def getPrototypeOf(self, obj: Any) -> Any:
+        """Return the prototype (SpryClassPrototype) of an instance, or None."""
+        if isinstance(obj, SpryInstance):
+            cls = obj.cls
+            if hasattr(cls, "prototype"):
+                return cls.prototype
+        return None
+
+    def setPrototypeOf(self, obj: Any, proto: Any) -> bool:
+        """Set the prototype on an instance (stored as __proto__ for simple dispatch)."""
+        if isinstance(obj, SpryInstance):
+            obj.fields["__proto__"] = proto
+            return True
+        if isinstance(obj, dict):
+            obj["__proto__"] = proto
+            return True
+        return False
+
+    def isExtensible(self, obj: Any) -> bool:
+        """Return True unless the object has been frozen/sealed."""
+        if isinstance(obj, dict):
+            return not obj.get("__frozen__", False) and not obj.get("__sealed__", False)
+        if isinstance(obj, SpryInstance):
+            return not obj.fields.get("__frozen__", False) and not obj.fields.get("__sealed__", False)
+        return True
+
+    def preventExtensions(self, obj: Any) -> Any:
+        """Mark an object as non-extensible (sealed)."""
+        if isinstance(obj, dict):
+            obj["__sealed__"] = True
+        elif isinstance(obj, SpryInstance):
+            obj.fields["__sealed__"] = True
+        return obj
 
     def __repr__(self) -> str:
         return "Reflect"

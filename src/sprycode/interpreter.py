@@ -1343,6 +1343,9 @@ class Interpreter:
         # Boolean callable converter
         env.define("Boolean", _BooleanCallable())
 
+        # Function constructor — new Function(arg1, ..., body)
+        env.define("Function", _FunctionNamespace(self))
+
         # WeakRef global
         env.define("WeakRef", _WeakRefNamespace())
 
@@ -2077,6 +2080,17 @@ class Interpreter:
                     obj._prototype[node.property] = value
             elif hasattr(obj, "_spry_set_prop"):
                 obj._spry_set_prop(node.property, value)
+            elif isinstance(obj, list):
+                if node.property == "length" and isinstance(value, (int, float)) and not isinstance(value, bool):
+                    new_len = int(value)
+                    if new_len < len(obj):
+                        del obj[new_len:]
+                    elif new_len > len(obj):
+                        obj.extend([None] * (new_len - len(obj)))
+                else:
+                    raise SpryRuntimeError(
+                        f"Cannot assign property {node.property!r} on list", node
+                    )
             else:
                 raise SpryRuntimeError(
                     f"Cannot assign property {node.property!r} on {type(obj).__name__}", node
@@ -3183,6 +3197,10 @@ class Interpreter:
         if isinstance(callee, (_TypedArrayNamespace, _ArrayBufferNamespace)):
             return callee.new(*args)
 
+        # Function constructor — new Function(arg1, ..., body)
+        if isinstance(callee, _FunctionNamespace):
+            return callee._make_function(tuple(args))
+
         # Python callable (e.g. built-in constructors not yet SpryClass)
         if callable(callee):
             try:
@@ -3800,9 +3818,19 @@ class Interpreter:
                     return results
                 return _list_map
             if prop in ("every", "all"):
-                return lambda pred: all(self._truthy(pred(x)) for x in obj)
+                def _list_every(pred: Any, _o: list = obj) -> bool:
+                    _arity = getattr(pred, "_spry_arity", 1)
+                    if _arity > 1:
+                        return all(self._truthy(pred(_x, _i, _o)) for _i, _x in enumerate(_o))
+                    return all(self._truthy(pred(_x)) for _x in _o)
+                return _list_every
             if prop in ("some", "any"):
-                return lambda pred: any(self._truthy(pred(x)) for x in obj)
+                def _list_some(pred: Any, _o: list = obj) -> bool:
+                    _arity = getattr(pred, "_spry_arity", 1)
+                    if _arity > 1:
+                        return any(self._truthy(pred(_x, _i, _o)) for _i, _x in enumerate(_o))
+                    return any(self._truthy(pred(_x)) for _x in _o)
+                return _list_some
             if prop == "reduce":
                 def _list_reduce(first_arg: Any, second_arg: Any = _SENTINEL) -> Any:
                     # Support both:
@@ -9007,6 +9035,51 @@ class SprySymbol:
 
     def __hash__(self) -> int:
         return id(self)
+
+
+class _FunctionNamespace:
+    """new Function(arg1, arg2, ..., body) — dynamically create a callable from source."""
+
+    def __init__(self, interp: Any) -> None:
+        self._interp = interp
+
+    def __call__(self, *args: Any) -> Any:
+        """Called as Function(arg1, ..., body) without new (returns a function directly)."""
+        return self._make_function(args)
+
+    def _make_function(self, args: tuple) -> Any:
+        from .lexer import Lexer as _Lexer
+        from .parser import Parser as _Parser
+        if not args:
+            # Function() with no args — empty function
+            param_names: list[str] = []
+            body_src = ""
+        else:
+            param_names = [str(a) for a in args[:-1]]
+            body_src = str(args[-1])
+        # Build an arrow fn source and parse it
+        params_str = ", ".join(param_names)
+        fn_src = f"({params_str}) => {{ {body_src} }}"
+        try:
+            tokens = _Lexer(fn_src).tokenize()
+            prog = _Parser(tokens).parse()
+            # The program is [ExpressionStatement(LambdaExpression/FnExpression)]
+            fn_val = self._interp._eval(prog.body[0], self._interp.globals)
+            return fn_val
+        except Exception as e:
+            raise RuntimeError(f"Function constructor: {e}") from e
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "prototype":
+            return {}
+        if prop == "name":
+            return "Function"
+        if prop == "length":
+            return 1
+        return None
+
+    def __repr__(self) -> str:
+        return "Function"
 
 
 class _BooleanCallable:

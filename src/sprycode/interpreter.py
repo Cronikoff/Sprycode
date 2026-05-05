@@ -411,6 +411,8 @@ class SpryFunction:
         self.rest_param: str | None = rest_param
         self.is_generator: bool = is_generator
         self.is_async: bool = is_async
+        # prototype object — used when function is called as a constructor (new Fn())
+        self._prototype: dict = {"constructor": self}
 
     def __repr__(self) -> str:
         return f"<fn{'*' if self.is_generator else ''} {self.name}>"
@@ -587,6 +589,22 @@ class DictBoundMethod:
     def __repr__(self) -> str:
         name = getattr(self.fn, "name", "<anonymous>")
         return f"<dict method {name}>"
+
+
+class _ProtoBoundMethod:
+    """A SpryFunction from the prototype chain bound to the receiver dict.
+
+    This is used when a property lookup walks the `__spry_proto__` chain and finds
+    a SpryFunction on a prototype object. The function is called with `this` bound
+    to the original receiver dict (not the prototype dict where it was found).
+    """
+
+    def __init__(self, receiver: dict, fn: "SpryFunction") -> None:
+        self.receiver = receiver
+        self.fn = fn
+
+    def __repr__(self) -> str:
+        return f"<proto method {self.fn.name}>"
 
 
 class SpryRegex:
@@ -2049,6 +2067,14 @@ class Interpreter:
                 obj[node.property] = value
             elif isinstance(obj, SpryClass):
                 obj._static_fields[node.property] = value
+            elif isinstance(obj, SpryFunction):
+                if node.property == "prototype":
+                    if isinstance(value, dict):
+                        obj._prototype = value
+                    # else ignore non-dict prototype assignment
+                else:
+                    # Treat as setting a property on the prototype
+                    obj._prototype[node.property] = value
             elif hasattr(obj, "_spry_set_prop"):
                 obj._spry_set_prop(node.property, value)
             else:
@@ -2664,6 +2690,8 @@ class Interpreter:
                 return self._call_bound_method(callee, args, node)
             if isinstance(callee, DictBoundMethod):
                 return self._call_dict_bound_method(callee.fn, callee.obj, args, node)
+            if isinstance(callee, _ProtoBoundMethod):
+                return self._call_function_with_this(callee.fn, args, callee.receiver, node)
             if isinstance(callee, SpryFunction):
                 return self._call_function(callee, args, node)
             if isinstance(callee, SpryLambda):
@@ -3119,12 +3147,17 @@ class Interpreter:
 
         # Plain function — create a `this` dict, call function with it bound
         if isinstance(callee, SpryFunction):
-            this_obj: dict = {}
+            # Seed `this` with the function's prototype so inherited props are visible
+            this_obj: dict = {"__spry_proto__": callee._prototype}
             result = self._call_function_with_this(callee, args, this_obj, node)
             # If the function explicitly returns an object, use that; else return this
             if result is not None and not isinstance(result, _SpryUndefinedType) and isinstance(result, (dict, SpryInstance)):
                 return result
             return this_obj
+
+        # _TypedArrayNamespace or _ArrayBufferNamespace — delegate to .new()
+        if isinstance(callee, (_TypedArrayNamespace, _ArrayBufferNamespace)):
+            return callee.new(*args)
 
         # Python callable (e.g. built-in constructors not yet SpryClass)
         if callable(callee):
@@ -3174,6 +3207,9 @@ class Interpreter:
 
         if isinstance(callee, DictBoundMethod):
             return self._call_dict_bound_method(callee.fn, callee.obj, args, node)
+
+        if isinstance(callee, _ProtoBoundMethod):
+            return self._call_function_with_this(callee.fn, args, callee.receiver, node)
 
         if isinstance(callee, SpryFunction):
             return self._call_function(callee, args, node)
@@ -3598,6 +3634,22 @@ class Interpreter:
                 if isinstance(val, SpryFunction):
                     return DictBoundMethod(obj, val)
                 return val
+            # Walk the prototype chain (__spry_proto__ set by new SpryFunction or Object.create)
+            _proto = obj.get("__spry_proto__")
+            while isinstance(_proto, dict):
+                _getter_k = f"__getter__{prop}"
+                if _getter_k in _proto:
+                    _gfn = _proto[_getter_k]
+                    if isinstance(_gfn, SpryFunction):
+                        return self._call_function_with_this(_gfn, [], obj, node)
+                    elif callable(_gfn):
+                        return _gfn()
+                if prop in _proto:
+                    _pv = _proto[prop]
+                    if isinstance(_pv, SpryFunction):
+                        return _ProtoBoundMethod(obj, _pv)
+                    return _pv
+                _proto = _proto.get("__spry_proto__")
             # Built-in dict properties/methods
             if prop == "keys":
                 return list(obj.keys())
@@ -4748,6 +4800,10 @@ class Interpreter:
             return obj._spry_get_prop(prop)
 
         if isinstance(obj, (SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod)):
+            if prop == "prototype":
+                if isinstance(obj, SpryFunction):
+                    return obj._prototype
+                return {}
             if prop == "bind":
                 def _fn_bind(this_arg: Any, *bound_args: Any, _fn=obj) -> Any:
                     def _bound(*call_args: Any) -> Any:
@@ -6505,6 +6561,18 @@ class Interpreter:
                 line: int = 0
                 column: int = 0
             return self._call_bound_method(fn, args, _DummyNode())
+        if isinstance(fn, DictBoundMethod):
+            from .ast_nodes import Node as _Node
+            class _DummyNode(_Node):
+                line: int = 0
+                column: int = 0
+            return self._call_dict_bound_method(fn.fn, fn.obj, args, _DummyNode())
+        if isinstance(fn, _ProtoBoundMethod):
+            from .ast_nodes import Node as _Node
+            class _DummyNode(_Node):
+                line: int = 0
+                column: int = 0
+            return self._call_function_with_this(fn.fn, args, fn.receiver, _DummyNode())
         if isinstance(fn, (SpryLambda, LambdaExpression)):
             return self._apply_lambda(fn, args[0] if args else None, self.globals)
         if isinstance(fn, (SpryMultiLambda, MultiParamLambda)):
@@ -7149,17 +7217,30 @@ class _ObjectNamespace:
             return {str(k): v for k, v in entries._iterator}
         return {}
 
-    def assign(self, *objs: Any) -> dict:
+    def assign(self, *objs: Any) -> Any:
         """Mutate the first object by merging all subsequent objects into it.
 
         Object.assign({a:1}, {b:2}, {c:3}) → mutates first arg, returns it.
+        Also supports SpryInstance as target.
         """
         if not objs:
             return {}
-        target = objs[0] if isinstance(objs[0], dict) else {}
+        target = objs[0]
         for obj in objs[1:]:
             if isinstance(obj, dict):
-                target.update(obj)
+                if isinstance(target, SpryInstance):
+                    for k, v in obj.items():
+                        if not k.startswith("__spry_"):
+                            target.fields[k] = v
+                elif isinstance(target, dict):
+                    target.update(obj)
+            elif isinstance(obj, SpryInstance):
+                for k, v in obj.fields.items():
+                    if not k.startswith("__"):
+                        if isinstance(target, SpryInstance):
+                            target.fields[k] = v
+                        elif isinstance(target, dict):
+                            target[k] = v
         return target
 
     def freeze(self, obj: Any) -> Any:
@@ -10796,7 +10877,10 @@ class SpryArrayBuffer:
 
 
 class _ArrayBufferNamespace:
-    def new(self, byte_length: Any) -> SpryArrayBuffer:
+    def __call__(self, byte_length: Any = 0) -> "SpryArrayBuffer":
+        return SpryArrayBuffer(int(byte_length))
+
+    def new(self, byte_length: Any) -> "SpryArrayBuffer":
         return SpryArrayBuffer(int(byte_length))
 
     def isView(self, obj: Any) -> bool:
@@ -11209,6 +11293,9 @@ class _TypedArrayNamespace:
     def BYTES_PER_ELEMENT(self) -> int:
         return self._element_size
 
+    def __call__(self, length_or_buffer: Any = 0) -> SpryTypedArray:
+        return SpryTypedArray(self._type_name, self._element_size, length_or_buffer)
+
     def new(self, length_or_buffer: Any = 0) -> SpryTypedArray:
         return SpryTypedArray(self._type_name, self._element_size, length_or_buffer)
 
@@ -11235,6 +11322,7 @@ class _TypedArrayNamespace:
 
     def __repr__(self) -> str:
         return self._type_name
+
 
 
 class _Uint8ClampedArrayNamespace:

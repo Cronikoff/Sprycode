@@ -3771,7 +3771,6 @@ class Parser:
             # Allow chaining: new A.B.C(args)
             while self._check(TokenType.DOT):
                 dot_tok = self._advance()
-                prop_tok = self._current()
                 prop = self._advance().value
                 callee = MemberExpression(
                     object=callee, property=prop, line=dot_tok.line, column=dot_tok.column

@@ -137,6 +137,7 @@ from .ast_nodes import (
     SequenceExpression,
     NewTargetExpression,
     UsingDeclaration,
+    ComputedFieldDeclaration,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -919,6 +920,12 @@ class _GeneratorThrowSentinel:
         self.error = error
 
 
+class _GeneratorReturnSentinel:
+    """Sentinel sent via the generator's send queue to force-return."""
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
 class SpryGenerator:
     """Runtime generator object produced by calling a generator function (fn*).
 
@@ -966,6 +973,9 @@ class SpryGenerator:
             if isinstance(sent, _GeneratorThrowSentinel):
                 # Wrap in SpryUserError so the generator's try/catch can handle it
                 raise SpryUserError(sent.error)
+            if isinstance(sent, _GeneratorReturnSentinel):
+                # Force-return: raise a special ReturnSignal so finally blocks run
+                raise ReturnSignal(sent.value)
             return sent  # becomes the result of the yield expression
 
         # Install thread-local hook so _eval intercepts yield in THIS thread only
@@ -974,7 +984,13 @@ class SpryGenerator:
         env = self._fn.closure.child()
         normal_params = [p for p in self._fn.params if not p[0].startswith("__destruct__:")]
         for i, (pname, _) in enumerate(normal_params):
-            env.define(pname, self._args[i] if i < len(self._args) else None, mutable=True)
+            if i < len(self._args):
+                arg_val = self._args[i]
+            elif pname in self._fn.defaults:
+                arg_val = interp._eval(self._fn.defaults[pname], env)
+            else:
+                arg_val = None
+            env.define(pname, arg_val, mutable=True)
 
         try:
             try:
@@ -1041,10 +1057,21 @@ class SpryGenerator:
         return iter(self._materialise())
 
     def spry_return(self, val: Any = None) -> Any:
-        """Force-complete the generator."""
+        """Force-complete the generator, running any finally blocks."""
+        if self._done:
+            return {"value": val, "done": True}
+        if not self._started:
+            # Generator never started — just mark done
+            self._done = True
+            return {"value": val, "done": True}
+        # Send a return sentinel so the generator thread runs finally blocks
+        self._send_q.put(_GeneratorReturnSentinel(val))
+        try:
+            kind, _v = self._yield_q.get(timeout=10)
+        except Exception:
+            pass
         self._done = True
-        result: dict = {"value": val, "done": True}
-        return result
+        return {"value": val, "done": True}
 
     def spry_throw(self, error: Any = None) -> Any:
         """Throw an error into the generator at the current yield point.
@@ -2638,6 +2665,16 @@ class Interpreter:
                         key_expr_node, value_node_inner = val_node  # type: ignore[misc]
                         computed_key = str(self._eval(key_expr_node, env))
                         result[computed_key] = self._eval(value_node_inner, env)
+                    elif key_or_marker == "__computed_getter__":
+                        key_expr_node, fn_node = val_node  # type: ignore[misc]
+                        computed_key = str(self._eval(key_expr_node, env))
+                        getter_fn = self._eval(fn_node, env)
+                        result[f"__getter__{computed_key}"] = getter_fn
+                    elif key_or_marker == "__computed_setter__":
+                        key_expr_node, fn_node = val_node  # type: ignore[misc]
+                        computed_key = str(self._eval(key_expr_node, env))
+                        setter_fn = self._eval(fn_node, env)
+                        result[f"__setter__{computed_key}"] = setter_fn
                     else:
                         result[key_or_marker] = self._eval(val_node, env)
             else:
@@ -6220,7 +6257,11 @@ class Interpreter:
                 self._exec_block(stmt.body, static_env)
         # Store static computed methods (e.g. static [Symbol.hasInstance]()) in _static_fields
         for stmt in node.body.body:
-            if isinstance(stmt, ComputedMethodDeclaration) and stmt.is_static:
+            if isinstance(stmt, ComputedFieldDeclaration) and stmt.is_static:
+                computed_key = self._eval(stmt.key, env)
+                computed_key_str = str(computed_key) if computed_key is not None else "__computed__"
+                cls._static_fields[computed_key_str] = self._eval(stmt.value, env) if stmt.value is not None else None
+            elif isinstance(stmt, ComputedMethodDeclaration) and stmt.is_static:
                 computed_key = self._eval(stmt.key, env)
                 computed_key_str = str(computed_key) if computed_key is not None else "__computed__"
                 fn = SpryFunction(
@@ -9980,7 +10021,11 @@ class SpryWeakMap:
         return id(key) in self._data
 
     def delete(self, key: Any) -> bool:
-        return bool(self._data.pop(id(key), None))
+        key_id = id(key)
+        if key_id in self._data:
+            del self._data[key_id]
+            return True
+        return False
 
     def __repr__(self) -> str:
         return f"WeakMap({len(self._data)} entries)"
@@ -10013,6 +10058,8 @@ class SpryWeakSet:
         self._data: dict = {}
 
     def add(self, key: Any) -> "SpryWeakSet":
+        if isinstance(key, (bool, int, float, str)) or key is None:
+            raise SpryRuntimeError("WeakSet values must be objects")
         self._data[id(key)] = key
         return self
 
@@ -10020,7 +10067,11 @@ class SpryWeakSet:
         return id(key) in self._data
 
     def delete(self, key: Any) -> bool:
-        return bool(self._data.pop(id(key), None))
+        key_id = id(key)
+        if key_id in self._data:
+            del self._data[key_id]
+            return True
+        return False
 
     def __repr__(self) -> str:
         return f"WeakSet({len(self._data)} entries)"

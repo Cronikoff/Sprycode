@@ -1021,3 +1021,12 @@ class UsingDeclaration(Node):
 
 
 
+
+
+
+@dataclass
+class ComputedFieldDeclaration(Node):
+    """static [expr] = value — static class field with computed name."""
+    key: "Node | None" = None
+    value: "Node | None" = None
+    is_static: bool = True

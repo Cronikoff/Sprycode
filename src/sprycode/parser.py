@@ -127,6 +127,7 @@ from .ast_nodes import (
     ComputedMethodDeclaration,
     SequenceExpression,
     DeclarationList,
+    ComputedFieldDeclaration,
 )
 from .lexer import Token, TokenType
 
@@ -1928,12 +1929,21 @@ class Parser:
                                                       body=setter_body,
                                                       line=cur.line, column=cur.column))
                     continue
-                # static [expr]() { ... } — static computed method (e.g. static [Symbol.hasInstance]())
+                # static [expr]() { ... } or static [expr] = val — static computed method/field
                 if next_tok.type == TokenType.LBRACKET:
                     self._advance()  # consume 'static'
                     self._advance()  # consume '['
                     sc_key = self._parse_expression()
                     self._expect(TokenType.RBRACKET)
+                    # static [expr] = value — static computed field
+                    if self._match(TokenType.EQ):
+                        sc_field_val = self._parse_expression()
+                        body.append(ComputedFieldDeclaration(
+                            key=sc_key, value=sc_field_val,
+                            is_static=True,
+                            line=cur.line, column=cur.column,
+                        ))
+                        continue
                     self._expect(TokenType.LPAREN)
                     sc_params: list[tuple[str, str | None]] = []
                     sc_defaults: dict = {}
@@ -4046,7 +4056,7 @@ class Parser:
             else:
                 key_tok = self._current()
                 key = self._advance().value
-                # Object getter: get propName() { ... }
+                # Object getter: get propName() { ... } or get [expr]() { ... }
                 if (key in ("get", "set")
                         and self._current().type in self._IDENTIFIER_LIKE
                         and not self._check(TokenType.COLON)
@@ -4079,6 +4089,34 @@ class Parser:
                         setter_key = f"__setter__{name_tok2.value}"
                         pairs[setter_key] = fn_val
                         entries.append((setter_key, fn_val))
+                elif (key in ("get", "set")
+                        and self._check(TokenType.LBRACKET)):
+                    # Computed getter/setter: get [expr]() { } / set [expr](v) { }
+                    has_computed = True
+                    accessor_kind = key
+                    self._advance()  # consume '['
+                    cg_key_expr = self._parse_expression()
+                    self._expect(TokenType.RBRACKET)
+                    self._expect(TokenType.LPAREN)
+                    if accessor_kind == "get":
+                        self._expect(TokenType.RPAREN)
+                        acc_body = self._parse_block()
+                        fn_val = AnonymousFunctionExpression(
+                            params=[], return_type=None, body=acc_body,
+                            defaults={}, rest_param=None,
+                            line=key_tok.line, column=key_tok.column,
+                        )
+                        entries.append(("__computed_getter__", (cg_key_expr, fn_val)))
+                    else:  # set
+                        cg_param = self._expect_ident().value
+                        self._expect(TokenType.RPAREN)
+                        acc_body = self._parse_block()
+                        fn_val = AnonymousFunctionExpression(
+                            params=[(cg_param, None)], return_type=None, body=acc_body,
+                            defaults={}, rest_param=None,
+                            line=key_tok.line, column=key_tok.column,
+                        )
+                        entries.append(("__computed_setter__", (cg_key_expr, fn_val)))
                 elif self._check(TokenType.LPAREN):
                     # Method shorthand: { greet(x) { return x } }
                     self._advance()  # consume '('

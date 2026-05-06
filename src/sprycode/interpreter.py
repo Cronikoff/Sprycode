@@ -4068,7 +4068,7 @@ class Interpreter:
                     return _s[n] if 0 <= n < len(_s) else None
                 return _str_at
             if prop == "localeCompare":
-                def _locale_compare(other: Any, _s: str = obj) -> int:
+                def _locale_compare(other: Any, locale: Any = None, _s: str = obj) -> int:
                     o = str(other)
                     if _s < o:
                         return -1
@@ -4357,7 +4357,7 @@ class Interpreter:
                 return math.degrees(float(obj))
             # --- Phase 10 number formatting ---
             if prop == "toLocaleString":
-                def _to_locale_string(_obj: Any = obj) -> str:
+                def _to_locale_string(locale: Any = None, _obj: Any = obj) -> str:
                     v = float(_obj)
                     if v == int(v):
                         return f"{int(v):,}"
@@ -4677,6 +4677,8 @@ class Interpreter:
                 def _fn_bind(this_arg: Any, *bound_args: Any, _fn=obj) -> Any:
                     def _bound(*call_args: Any) -> Any:
                         all_args = list(bound_args) + list(call_args)
+                        if this_arg is not None and isinstance(_fn, SpryFunction):
+                            return self._call_function_with_this(_fn, all_args, this_arg, node)
                         return self._call_value(_fn, all_args)
                     return _bound
                 return _fn_bind
@@ -5510,12 +5512,21 @@ class Interpreter:
     def _exec_switch(self, node: SwitchStatement, env: Environment) -> Any:
         subject_val = self._eval(node.subject, env)
         try:
+            # Find first matching case and execute it. Empty cases (no body) fall
+            # through to the next non-empty case. Cases with a body stop after
+            # execution unless a break raises BreakSignal. This matches JS semantics
+            # where empty cases fall through but non-empty cases require an explicit
+            # break to continue falling through.
+            executing = False
             for case in node.cases:
                 case_val = self._eval(case.value, env)
-                if subject_val == case_val:
-                    self._exec_block(case.body, env)
-                    return None
-            if node.default_body is not None:
+                if not executing and subject_val == case_val:
+                    executing = True
+                if executing:
+                    if case.body and case.body.body:
+                        self._exec_block(case.body, env)
+                        return None
+            if not executing and node.default_body is not None:
                 self._exec_block(node.default_body, env)
         except BreakSignal:
             pass
@@ -5832,6 +5843,13 @@ class Interpreter:
             if type_name == "Number":
                 return isinstance(val, (int, float)) and not isinstance(val, bool)
             return isinstance(val, py_type)
+        # TypedArray instanceof checks
+        if isinstance(val, SpryTypedArray) and val._type_name == type_name:
+            return True
+        if isinstance(val, SpryArrayBuffer) and type_name == "ArrayBuffer":
+            return True
+        if isinstance(val, SpryTypedArray) and type_name == "TypedArray":
+            return True
         return actual == type_name
 
     def _exec_assert(self, node: AssertStatement, env: Environment) -> Any:
@@ -7065,25 +7083,25 @@ class _ObjectNamespace:
         self._call_fn = call_fn
 
     def keys(self, obj: Any) -> list:
-        """Return the keys of an object/dict."""
+        """Return the string-keyed enumerable properties (excludes symbol keys)."""
         if isinstance(obj, dict):
-            return list(obj.keys())
+            return [k for k in obj.keys() if not isinstance(k, SprySymbol)]
         if isinstance(obj, SpryInstance):
             return [k for k in obj.fields if not k.startswith("__") and not callable(obj.fields[k]) and not isinstance(obj.fields[k], SpryFunction)]
         return []
 
     def values(self, obj: Any) -> list:
-        """Return the values of an object/dict."""
+        """Return the values of an object/dict (excludes symbol-keyed entries)."""
         if isinstance(obj, dict):
-            return list(obj.values())
+            return [v for k, v in obj.items() if not isinstance(k, SprySymbol)]
         if isinstance(obj, SpryInstance):
             return [v for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
 
     def entries(self, obj: Any) -> list:
-        """Return [[key, value], ...] pairs."""
+        """Return [[key, value], ...] pairs (excludes symbol-keyed entries)."""
         if isinstance(obj, dict):
-            return [[k, v] for k, v in obj.items()]
+            return [[k, v] for k, v in obj.items() if not isinstance(k, SprySymbol)]
         if isinstance(obj, SpryInstance):
             return [[k, v] for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
@@ -9892,6 +9910,9 @@ class _IntlNumberFormat:
             maximumFractionDigits = self._options.get("maximumFractionDigits", 3) if isinstance(self._options, dict) else 3
             if minimumFractionDigits > 0:
                 return f"{v:,.{maximumFractionDigits}f}"
+            # Return as integer if no fractional part
+            if v == int(v):
+                return f"{int(v):,}"
             return f"{v:,}"
         except (TypeError, ValueError):
             return str(value)
@@ -10755,6 +10776,9 @@ class _ArrayBufferNamespace:
     def new(self, byte_length: Any) -> SpryArrayBuffer:
         return SpryArrayBuffer(int(byte_length))
 
+    def __call__(self, byte_length: Any = 0) -> SpryArrayBuffer:
+        return SpryArrayBuffer(int(byte_length))
+
     def isView(self, obj: Any) -> bool:
         return isinstance(obj, (SpryTypedArray, SpryDataView))
 
@@ -11073,8 +11097,22 @@ class SpryTypedArray:
     def get(self, index: Any) -> Any:
         return self._data[int(index)]
 
-    def set(self, index: Any, value: Any) -> None:
-        self._data[int(index)] = self._coerce(value)
+    def set(self, index_or_array: Any, value_or_offset: Any = 0) -> None:
+        if isinstance(index_or_array, (list, SpryTypedArray)):
+            # Bulk copy: set(array, offset)
+            offset = int(value_or_offset)
+            src = list(index_or_array)
+            for i, v in enumerate(src):
+                self._data[offset + i] = self._coerce(v)
+        else:
+            self._data[int(index_or_array)] = self._coerce(value_or_offset)
+
+    def slice(self, start: Any = 0, end: Any = None) -> "SpryTypedArray":
+        s = int(start)
+        e = len(self._data) if end is None else int(end)
+        result = SpryTypedArray(self._type_name, self._element_size, e - s)
+        result._data = list(self._data[s:e])
+        return result
 
     def __getitem__(self, index: Any) -> Any:
         return self._data[int(index)]
@@ -11129,6 +11167,8 @@ class SpryTypedArray:
             return self.fill
         if prop == "subarray":
             return self.subarray
+        if prop == "slice":
+            return self.slice
         raise SpryRuntimeError(f"{self._type_name} has no property {prop!r}", None)
 
     def __repr__(self) -> str:
@@ -11166,6 +11206,9 @@ class _TypedArrayNamespace:
         return self._element_size
 
     def new(self, length_or_buffer: Any = 0) -> SpryTypedArray:
+        return SpryTypedArray(self._type_name, self._element_size, length_or_buffer)
+
+    def __call__(self, length_or_buffer: Any = 0) -> SpryTypedArray:
         return SpryTypedArray(self._type_name, self._element_size, length_or_buffer)
 
     def from_(self, iterable: Any) -> SpryTypedArray:

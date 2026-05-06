@@ -278,6 +278,58 @@ def _strict_eq(left: Any, right: Any) -> bool:
     return left == right
 
 
+def _abstract_eq(left: Any, right: Any) -> bool:
+    """Abstract (loose) equality (==): JS-style type coercion rules."""
+    # Same type — use strict equality
+    if type(left) is type(right):
+        if isinstance(left, (dict, list)) or isinstance(left, SpryInstance):
+            return left is right
+        return left == right
+    # null == undefined (and vice versa), but nothing else
+    if left is None and isinstance(right, _SpryUndefinedType):
+        return True
+    if isinstance(left, _SpryUndefinedType) and right is None:
+        return True
+    if (left is None or isinstance(left, _SpryUndefinedType)) and (right is None or isinstance(right, _SpryUndefinedType)):
+        return True
+    if left is None or isinstance(left, _SpryUndefinedType):
+        return False
+    if right is None or isinstance(right, _SpryUndefinedType):
+        return False
+    # bool → number
+    if isinstance(left, bool):
+        left = 1 if left else 0
+        return _abstract_eq(left, right)
+    if isinstance(right, bool):
+        right = 1 if right else 0
+        return _abstract_eq(left, right)
+    # string + number → coerce string to number
+    if isinstance(left, str) and isinstance(right, (int, float)):
+        try:
+            s = left.strip()
+            lv: float | int = int(s) if s else 0
+        except ValueError:
+            try:
+                lv = float(s)
+            except ValueError:
+                lv = float("nan")
+        return lv == right
+    if isinstance(right, str) and isinstance(left, (int, float)):
+        try:
+            s = right.strip()
+            rv: float | int = int(s) if s else 0
+        except ValueError:
+            try:
+                rv = float(s)
+            except ValueError:
+                rv = float("nan")
+        return left == rv
+    # numeric interop int/float
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    return left == right
+
+
 class ReturnSignal(Exception):
     def __init__(self, value: Any) -> None:
         self.value = value
@@ -661,6 +713,15 @@ class _RegExpNamespace:
 
     def __repr__(self) -> str:
         return "RegExp"
+
+
+class SpryTaggedStringList(list):
+    """Array-like strings argument for tagged template literals.
+    Behaves like a list, but also has a `.raw` property containing
+    the raw (unescaped) string parts."""
+    def __init__(self, cooked: list, raw: list) -> None:
+        super().__init__(cooked)
+        self.raw = raw
 
 
 class SpryRegexMatch(list):
@@ -1590,65 +1651,78 @@ class Interpreter:
         and values are the evaluated expressions.
         """
         tag_fn = self._eval(node.tag, env)
-        # Use raw_template when available (preserves \\n etc for String.raw)
-        template = node.raw_template if node.raw_template else node.template
-        strings: list[str] = []
-        values: list[Any] = []
-        i = 0
-        n = len(template)
-        current_str = ""
-        while i < n:
-            if template[i] == "{":
-                i += 1
-                depth = 1
-                expr_start = i
-                while i < n and depth > 0:
-                    c = template[i]
-                    if c == "{":
-                        depth += 1
-                        i += 1
-                    elif c == "}":
-                        depth -= 1
-                        i += 1
-                    elif c == "`":
-                        i += 1
-                        while i < n:
-                            bc = template[i]
-                            if bc == "\\":
-                                i += 2
-                            elif bc == "`":
-                                i += 1
-                                break
-                            elif bc == "$" and i + 1 < n and template[i + 1] == "{":
-                                i += 2
-                                inner_d = 1
-                                while i < n and inner_d > 0:
-                                    ic = template[i]
-                                    if ic == "{":
-                                        inner_d += 1
-                                    elif ic == "}":
-                                        inner_d -= 1
+
+        def _parse_template(template: str) -> "tuple[list[str], list[Any]]":
+            """Split template into string parts and expression sources."""
+            parts: list[str] = []
+            exprs: list[str] = []
+            i = 0
+            n = len(template)
+            current_str = ""
+            while i < n:
+                if template[i] == "{":
+                    i += 1
+                    depth = 1
+                    expr_start = i
+                    while i < n and depth > 0:
+                        c = template[i]
+                        if c == "{":
+                            depth += 1
+                            i += 1
+                        elif c == "}":
+                            depth -= 1
+                            i += 1
+                        elif c == "`":
+                            i += 1
+                            while i < n:
+                                bc = template[i]
+                                if bc == "\\":
+                                    i += 2
+                                elif bc == "`":
                                     i += 1
-                            else:
-                                i += 1
-                    else:
-                        i += 1
-                expr_src = template[expr_start:i - 1]
-                strings.append(current_str)
-                current_str = ""
-                try:
-                    from .lexer import Lexer as _Lexer
-                    from .parser import Parser as _Parser
-                    _tokens = _Lexer(expr_src).tokenize()
-                    _prog = _Parser(_tokens).parse()
-                    val = self._eval(_prog.body[0], env)
-                    values.append(val)
-                except Exception:
-                    values.append(None)
-            else:
-                current_str += template[i]
-                i += 1
-        strings.append(current_str)
+                                    break
+                                elif bc == "$" and i + 1 < n and template[i + 1] == "{":
+                                    i += 2
+                                    inner_d = 1
+                                    while i < n and inner_d > 0:
+                                        ic = template[i]
+                                        if ic == "{":
+                                            inner_d += 1
+                                        elif ic == "}":
+                                            inner_d -= 1
+                                        i += 1
+                                else:
+                                    i += 1
+                        else:
+                            i += 1
+                    parts.append(current_str)
+                    current_str = ""
+                    exprs.append(template[expr_start:i - 1])
+                else:
+                    current_str += template[i]
+                    i += 1
+            parts.append(current_str)
+            return parts, exprs
+
+        # Build cooked strings from the processed template (escape sequences resolved)
+        cooked_template = node.template
+        raw_template = node.raw_template if node.raw_template else node.template
+        cooked_parts, expr_srcs = _parse_template(cooked_template)
+        raw_parts, _ = _parse_template(raw_template)
+
+        values: list[Any] = []
+        for expr_src in expr_srcs:
+            try:
+                from .lexer import Lexer as _Lexer
+                from .parser import Parser as _Parser
+                _tokens = _Lexer(expr_src).tokenize()
+                _prog = _Parser(_tokens).parse()
+                val = self._eval(_prog.body[0], env)
+                values.append(val)
+            except Exception:
+                values.append(None)
+
+        strings = SpryTaggedStringList(cooked_parts, raw_parts)
         return self._call_value(tag_fn, [strings, *values])
 
     def _builtin_str(self, value: Any) -> str:
@@ -2947,6 +3021,10 @@ class Interpreter:
                 right = self._builtin_str(right)
             elif isinstance(right, str) and not isinstance(left, str):
                 left = self._builtin_str(left)
+            # JS numeric addition: null→0, undefined→NaN, bool→0/1
+            elif isinstance(left, (type(None), _SpryUndefinedType, bool)) or isinstance(right, (type(None), _SpryUndefinedType, bool)):
+                left = self._to_numeric(left)
+                right = self._to_numeric(right)
             return left + right
         if op == "-":
             if isinstance(left, SpryMoney) and isinstance(right, SpryMoney):
@@ -2991,9 +3069,9 @@ class Interpreter:
                 right = self._to_numeric(right)
             return left ** right
         if op == "==":
-            return left == right
+            return _abstract_eq(left, right)
         if op == "!=":
-            return left != right
+            return not _abstract_eq(left, right)
         if op == "===":
             return _strict_eq(left, right)
         if op == "!==":
@@ -3534,6 +3612,8 @@ class Interpreter:
             return None
 
         if isinstance(obj, list):
+            if prop == "raw" and isinstance(obj, SpryTaggedStringList):
+                return obj.raw
             if prop == "length":
                 return len(obj)
             if prop == "at":
@@ -8787,11 +8867,13 @@ class _StringNamespace:
         raw string parts and `values` are the substituted expressions.
         """
         if isinstance(strings, list):
-            result = strings[0] if strings else ""
+            # Use .raw parts if available (SpryTaggedStringList), otherwise cooked
+            raw_parts = getattr(strings, "raw", None) or strings
+            result = raw_parts[0] if raw_parts else ""
             for i, val in enumerate(values):
                 result += self._spry_str(val)
-                if i + 1 < len(strings):
-                    result += strings[i + 1]
+                if i + 1 < len(raw_parts):
+                    result += raw_parts[i + 1]
             return result
         # Fallback: just return strings as-is
         return self._spry_str(strings)

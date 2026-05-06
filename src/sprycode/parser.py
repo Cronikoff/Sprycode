@@ -127,6 +127,9 @@ from .ast_nodes import (
     ComputedMethodDeclaration,
     SequenceExpression,
     DeclarationList,
+    NewTargetExpression,
+    NewExpression,
+    UsingDeclaration,
 )
 from .lexer import Token, TokenType
 
@@ -252,6 +255,7 @@ class Parser:
         TokenType.DEFAULT,       # "default"
         TokenType.TO,            # "to" — commonly used as variable name in ranges
         TokenType.STOP,          # "stop" — commonly used as variable name
+        TokenType.FN,            # "fn" / "function" — may appear as a function name after "function"
     })
 
     def _expect_ident(self) -> Token:
@@ -409,7 +413,12 @@ class Parser:
         if tok.type == TokenType.SCHEDULE:
             return self._parse_schedule()
         if tok.type == TokenType.TEST:
-            return self._parse_test_block()
+            # Only parse as a test block if next token is a STRING (test "name" { ... })
+            # Otherwise treat `test` as a plain identifier expression
+            peek = self.tokens[self.pos + 1] if self.pos + 1 < len(self.tokens) else None
+            if peek is not None and peek.type == TokenType.STRING:
+                return self._parse_test_block()
+            # Fall through to expression parsing
         if tok.type == TokenType.EXPECT:
             return self._parse_expect()
         if tok.type == TokenType.MATCH:
@@ -444,6 +453,12 @@ class Parser:
             return self._parse_debit()
         if tok.type == TokenType.CREDIT:
             return self._parse_credit()
+        if tok.type == TokenType.USING:
+            return self._parse_using(is_async=False)
+        # await using <name> = <expr>
+        if tok.type == TokenType.AWAIT and self._peek().type == TokenType.USING:
+            self._advance()  # consume 'await'
+            return self._parse_using(is_async=True)
 
         # Labeled statement: label: for/while/do {...}
         # Detect: IDENTIFIER followed immediately by COLON
@@ -504,7 +519,7 @@ class Parser:
                 TokenType.FN, TokenType.FN_STAR, TokenType.IF, TokenType.FOR,
                 TokenType.WHILE, TokenType.DO, TokenType.RETURN, TokenType.THROW,
                 TokenType.TRY, TokenType.BREAK, TokenType.CONTINUE,
-                TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC,
+                TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC, TokenType.USING,
             }
             peek1 = self._peek(1)
             peek2 = self._peek(2)
@@ -1321,7 +1336,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             return ForStatement(
                 var=dest_vars[0] if dest_vars else "_",
                 vars=dest_vars,
@@ -1345,7 +1360,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             synth_var = "__obj_destruct__:" + ",".join(obj_dest_vars)
             return ForStatement(
                 var=synth_var,
@@ -1396,7 +1411,7 @@ class Parser:
                         )
                     if has_paren:
                         self._expect(TokenType.RPAREN)
-                    body = self._parse_block()
+                    body = self._parse_block_or_stmt()
                     return ForCStyleStatement(
                         init=init_stmt, condition=condition, update=update, body=body,
                         line=tok.line, column=tok.column,
@@ -1497,7 +1512,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             return ForStatement(
                 var=synth_name,
                 vars=[synth_name],
@@ -1520,7 +1535,7 @@ class Parser:
             iterable = self._parse_value_expression()
             if has_paren:
                 self._expect(TokenType.RPAREN)
-            body = self._parse_block()
+            body = self._parse_block_or_stmt()
             return ForStatement(
                 var=synth_name2,
                 vars=[synth_name2],
@@ -1551,7 +1566,7 @@ class Parser:
                                         line=iterable.line, column=iterable.column)
         if has_paren:
             self._expect(TokenType.RPAREN)
-        body = self._parse_block()
+        body = self._parse_block_or_stmt()
         all_vars = [var_tok.value] + extra_vars
         return ForStatement(
             var=var_tok.value,
@@ -2390,6 +2405,15 @@ class Parser:
         amount = self._parse_expression()
         return CreditStatement(account=account, amount=amount,
                                line=tok.line, column=tok.column)
+
+    def _parse_using(self, is_async: bool = False) -> UsingDeclaration:
+        """using <name> = <expr>  — resource binding."""
+        tok = self._expect(TokenType.USING)
+        name_tok = self._expect(TokenType.IDENTIFIER)
+        self._expect(TokenType.EQ)
+        value = self._parse_expression()
+        return UsingDeclaration(name=name_tok.value, value=value, is_async=is_async,
+                                line=tok.line, column=tok.column)
 
     def _parse_list_destructure(self, let_tok: Token, mutable: bool) -> ListDestructure:
         """Parse let [a, b = default, ...rest] = expr  — list destructuring with defaults"""
@@ -3522,9 +3546,9 @@ class Parser:
         if tok.type == TokenType.NUMBER:
             self._advance()
             if tok.value.endswith("n"):
-                # BigInt literal: 42n → store as integer in NumberLiteral
+                # BigInt literal: 42n → integer value, marked as bigint
                 val = float(int(tok.value[:-1]))
-                return NumberLiteral(value=val, raw=tok.value, line=tok.line, column=tok.column)
+                return NumberLiteral(value=val, raw=tok.value, is_bigint=True, line=tok.line, column=tok.column)
             val = float(tok.value)
             return NumberLiteral(value=val, raw=tok.value, line=tok.line, column=tok.column)
 
@@ -3556,53 +3580,69 @@ class Parser:
             # (named functions are statements; anonymous ones are expressions)
             if self._peek().type != TokenType.LPAREN:
                 # It's a named function statement — shouldn't be here, fall through
-                raise ParseError("Unexpected token in expression", tok)
-            self._advance()  # consume fn
-            self._expect(TokenType.LPAREN)
-            params: list[tuple[str, str | None]] = []
-            defaults: dict[str, Node] = {}
-            rest_param: str | None = None
-            while not self._check(TokenType.RPAREN) and not self._at_end():
-                if self._check(TokenType.ELLIPSIS):
-                    self._advance()
-                    rest_tok = self._expect_ident()
-                    rest_param = rest_tok.value
-                    break
-                if self._check(TokenType.LBRACE):
-                    param_names, param_defaults = self._parse_dict_destruct_param()
-                    params.append(("__destruct__:" + ",".join(param_names), None))
-                    for _fname, _dflt in param_defaults.items():
-                        defaults[f"__destruct_default__{_fname}"] = _dflt
+                # But "fn" itself may be used as an identifier (e.g. a var named "fn")
+                self._advance()
+                return Identifier(name=tok.value, line=tok.line, column=tok.column)
+            # fn(... — could be anonymous function expression OR a call to a variable named "fn".
+            # Use backtracking: try to parse as anonymous function (fn(params){body}).
+            # After consuming params, if we see { or => it's a function expression.
+            # Otherwise, fall back to treating "fn" as an identifier (a call site).
+            saved_pos = self.pos
+            try:
+                self._advance()  # consume fn
+                self._expect(TokenType.LPAREN)
+                fn_params: list[tuple[str, str | None]] = []
+                fn_defaults: dict[str, Node] = {}
+                fn_rest: str | None = None
+                while not self._check(TokenType.RPAREN) and not self._at_end():
+                    if self._check(TokenType.ELLIPSIS):
+                        self._advance()
+                        fn_rest = self._expect_ident().value
+                        break
+                    if self._check(TokenType.LBRACE):
+                        param_names, param_defaults = self._parse_dict_destruct_param()
+                        fn_params.append(("__destruct__:" + ",".join(param_names), None))
+                        for _fname, _dflt in param_defaults.items():
+                            fn_defaults[f"__destruct_default__{_fname}"] = _dflt
+                        if not self._match(TokenType.COMMA):
+                            break
+                        continue
+                    pname = self._expect_ident()
+                    ptype = None
+                    if self._match(TokenType.COLON):
+                        ptype = self._parse_type_name()
+                    default_expr = None
+                    if self._match(TokenType.EQ):
+                        default_expr = self._parse_null_coalesce()
+                    fn_params.append((pname.value, ptype))
+                    if default_expr is not None:
+                        fn_defaults[pname.value] = default_expr
                     if not self._match(TokenType.COMMA):
                         break
-                    continue
-                pname = self._expect_ident()
-                ptype = None
-                if self._match(TokenType.COLON):
-                    ptype = self._parse_type_name()
-                default_expr = None
-                if self._match(TokenType.EQ):
-                    default_expr = self._parse_null_coalesce()
-                params.append((pname.value, ptype))
-                if default_expr is not None:
-                    defaults[pname.value] = default_expr
-                if not self._match(TokenType.COMMA):
-                    break
-            self._expect(TokenType.RPAREN)
-            return_type = None
-            if self._match(TokenType.ARROW):
-                return_type = self._parse_type_name()
-            if self._check(TokenType.FAT_ARROW):
-                self._advance()
-                expr = self._parse_expression()
-                fn_body = Block(body=[ReturnStatement(value=expr, line=tok.line, column=tok.column)])
-            else:
-                fn_body = self._parse_block()
-            return AnonymousFunctionExpression(
-                params=params, return_type=return_type, body=fn_body,
-                defaults=defaults, rest_param=rest_param,
-                line=tok.line, column=tok.column,
-            )
+                self._expect(TokenType.RPAREN)
+                fn_return_type = None
+                if self._match(TokenType.ARROW):
+                    fn_return_type = self._parse_type_name()
+                # Only treat as function expression if followed by { or =>
+                if self._check(TokenType.LBRACE) or self._check(TokenType.FAT_ARROW):
+                    if self._check(TokenType.FAT_ARROW):
+                        self._advance()
+                        expr = self._parse_expression()
+                        fn_body: Node = Block(body=[ReturnStatement(value=expr, line=tok.line, column=tok.column)])
+                    else:
+                        fn_body = self._parse_block()
+                    return AnonymousFunctionExpression(
+                        params=fn_params, return_type=fn_return_type, body=fn_body,
+                        defaults=fn_defaults, rest_param=fn_rest,
+                        line=tok.line, column=tok.column,
+                    )
+                # No { or => — it's a call to a variable named "fn", fall back
+                self.pos = saved_pos
+            except Exception:
+                self.pos = saved_pos
+            # Treat "fn" as an identifier
+            self._advance()
+            return Identifier(name=tok.value, line=tok.line, column=tok.column)
 
         if tok.type == TokenType.LPAREN:
             self._advance()
@@ -3736,12 +3776,34 @@ class Parser:
                 self._expect(TokenType.RPAREN)
             return SuperExpression(args=args, line=tok.line, column=tok.column)
 
-        # new ClassName(args) → CallExpression on ClassName
+        # new ClassName(args) → NewExpression (handles both SpryClass and plain functions)
+        # new.target → NewTargetExpression (meta-property)
         if tok.type == TokenType.IDENTIFIER and tok.value == "new":
             self._advance()   # consume 'new'
-            # next token is the class name identifier
+            # Check for new.target meta-property
+            if self._check(TokenType.DOT):
+                peek_tok = self._peek()
+                if peek_tok.type == TokenType.IDENTIFIER and peek_tok.value == "target":
+                    self._advance()  # consume '.'
+                    self._advance()  # consume 'target'
+                    return NewTargetExpression(line=tok.line, column=tok.column)
+            # Parse the constructor expression — allow dotted identifiers like Intl.Segmenter
             name_tok = self._expect_ident()
-            return Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)
+            callee: Node = Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)
+            # Allow chaining: new A.B.C(args)
+            while self._check(TokenType.DOT):
+                dot_tok = self._advance()
+                prop = self._advance().value
+                callee = MemberExpression(
+                    object=callee, property=prop, line=dot_tok.line, column=dot_tok.column
+                )
+            # Parse the argument list if present
+            new_args: list = []
+            if self._check(TokenType.LPAREN):
+                self._advance()  # consume '('
+                new_args = self._parse_arg_list()
+                self._expect(TokenType.RPAREN)
+            return NewExpression(callee=callee, args=new_args, line=tok.line, column=tok.column)
 
         # null keyword → NullLiteral
         if tok.type == TokenType.IDENTIFIER and tok.value == "null":

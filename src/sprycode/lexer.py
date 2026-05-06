@@ -309,6 +309,7 @@ KEYWORDS: dict[str, TokenType] = {
     "let": TokenType.LET,
     "var": TokenType.VAR,
     "fn": TokenType.FN,
+    "function": TokenType.FN,  # JS-compat alias for fn
     "task": TokenType.TASK,
     "app": TokenType.APP,
     "use": TokenType.USE,
@@ -494,6 +495,54 @@ class Lexer:
         self.column = 1
         self._tokens: list[Token] = []
         self._last_scan_token: Token | None = None
+
+    def _process_escape(self, esc: str) -> str:
+        """Process a single escape character (after backslash). Handles \\uXXXX and \\xXX."""
+        if esc == "u":
+            # \uXXXX or \u{XXXXXX} unicode escape
+            if self.pos < len(self.source) and self._current() == "{":
+                self._advance()  # consume '{'
+                hex_str = ""
+                while self.pos < len(self.source) and self._current() != "}":
+                    hex_str += self._advance()
+                if self.pos < len(self.source):
+                    self._advance()  # consume '}'
+                try:
+                    return chr(int(hex_str, 16))
+                except (ValueError, OverflowError):
+                    return "\\u{" + hex_str + "}"
+            else:
+                hex_str = ""
+                for _ in range(4):
+                    if self.pos < len(self.source) and self._current() in "0123456789abcdefABCDEF":
+                        hex_str += self._advance()
+                    else:
+                        break
+                if len(hex_str) == 4:
+                    try:
+                        return chr(int(hex_str, 16))
+                    except (ValueError, OverflowError):
+                        return "\\u" + hex_str
+                return "\\u" + hex_str
+        if esc == "x":
+            # \xXX hex escape
+            hex_str = ""
+            for _ in range(2):
+                if self.pos < len(self.source) and self._current() in "0123456789abcdefABCDEF":
+                    hex_str += self._advance()
+                else:
+                    break
+            if len(hex_str) == 2:
+                try:
+                    return chr(int(hex_str, 16))
+                except (ValueError, OverflowError):
+                    return "\\x" + hex_str
+            return "\\x" + hex_str
+        escape_map = {
+            "n": "\n", "t": "\t", "r": "\r", "\\": "\\",
+            '"': '"', "'": "'", "0": "\0", "`": "`",
+        }
+        return escape_map.get(esc, esc)
 
     def _current(self) -> str:
         if self.pos >= len(self.source):
@@ -919,16 +968,7 @@ class Lexer:
             if ch == "\\":
                 self._advance()
                 esc = self._advance()
-                escape_map = {
-                    "n": "\n",
-                    "t": "\t",
-                    "r": "\r",
-                    "\\": "\\",
-                    '"': '"',
-                    "'": "'",
-                    "0": "\0",
-                }
-                value += escape_map.get(esc, esc)
+                value += self._process_escape(esc)
             elif ch == quote:
                 self._advance()
                 break
@@ -954,9 +994,7 @@ class Lexer:
             if ch == "\\":
                 self._advance()
                 esc = self._advance()
-                escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\",
-                              '"': '"', "'": "'", "0": "\0"}
-                value += escape_map.get(esc, esc)
+                value += self._process_escape(esc)
             else:
                 if ch == "\n":
                     self.line += 1
@@ -974,9 +1012,7 @@ class Lexer:
             if ch == "\\":
                 self._advance()
                 esc = self._advance()
-                escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\",
-                              '"': '"', "'": "'", "0": "\0"}
-                value += escape_map.get(esc, esc)
+                value += self._process_escape(esc)
             elif ch == quote:
                 self._advance()
                 break
@@ -1008,10 +1044,10 @@ class Lexer:
             if ch == "\\":
                 self._advance()
                 esc = self._advance()
-                escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\",
-                              "`": "`", "$": "$"}
-                value += escape_map.get(esc, esc)
-                raw_value += "\\" + esc  # preserve the literal backslash sequence
+                pos_before = self.pos
+                processed = self._process_escape(esc)
+                raw_value += "\\" + esc + self.source[pos_before:self.pos]
+                value += processed
             elif ch == "`":
                 self._advance()
                 break

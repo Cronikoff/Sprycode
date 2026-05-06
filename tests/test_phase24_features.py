@@ -7,6 +7,7 @@ import pytest
 
 from sprycode.interpreter import (
     Interpreter,
+    SPRY_UNDEFINED,
     SpryRuntimeError,
 )
 from sprycode.lexer import Lexer
@@ -145,7 +146,7 @@ let v = c[Symbol.iterator]()
 
 def test_optional_call_null_returns_none() -> None:
     i = run("let f = null\nlet v = f?.()")
-    assert i.globals.get("v") is None
+    assert i.globals.get("v") == SPRY_UNDEFINED
 
 
 def test_optional_call_with_function() -> None:
@@ -168,7 +169,7 @@ def test_optional_call_on_undefined_safe() -> None:
 let obj = { f: null }
 let v = obj.f?.()
 """)
-    assert i.globals.get("v") is None
+    assert i.globals.get("v") == SPRY_UNDEFINED
 
 
 # ---------------------------------------------------------------------------

@@ -71,6 +71,14 @@ class LetDeclaration(Node):
 
 
 @dataclass
+class UsingDeclaration(Node):
+    """using <name> = <expr>  — resource binding; calls [Symbol.dispose]() at block end."""
+    name: str = ""
+    value: "Node | None" = None
+    is_async: bool = False  # True for `await using`
+
+
+@dataclass
 class VarDeclaration(Node):
     """var <name>[: <type>] = <value>"""
     name: str = ""
@@ -557,6 +565,7 @@ class StringLiteral(Node):
 class NumberLiteral(Node):
     value: float = 0.0
     raw: str = ""
+    is_bigint: bool = False
 
 
 @dataclass
@@ -985,6 +994,19 @@ class AwaitExpression(Node):
 @dataclass
 class OptionalCallExpression(Node):
     """fn?.() — calls fn only if it is not null/None; returns null otherwise."""
+    callee: "Node | None" = None
+    args: list = field(default_factory=list)
+
+
+@dataclass
+class NewTargetExpression(Node):
+    """new.target — the constructor that was called with `new`, or undefined."""
+    pass
+
+
+@dataclass
+class NewExpression(Node):
+    """new Fn(args) — construct an instance from a plain function."""
     callee: "Node | None" = None
     args: list = field(default_factory=list)
 

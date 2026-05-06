@@ -1274,7 +1274,7 @@ class Interpreter:
         env.define("format", lambda template, *args: self._builtin_format(template, *args))
 
         # Global namespace objects (JS-style)
-        env.define("JSON", _JsonNamespace())
+        env.define("JSON", _JsonNamespace(call_fn=self._call_value))
         _array_ns = _ArrayNamespace()
         _array_ns._interp = self
         env.define("Array", _array_ns)
@@ -6843,32 +6843,56 @@ class _HttpHelper:
 class _JsonNamespace:
     """JSON global namespace — JSON.stringify(), JSON.parse()."""
 
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn  # interpreter._call_value for SpryFunction/SpryLambda
+
     def stringify(self, value: Any, replacer: Any = None, indent: Any = None) -> str:
         """Serialize a value to a JSON string."""
         import json as _json
 
         indent_val = int(indent) if indent is not None else None
 
-        def _spry_to_json(obj: Any) -> Any:
+        _OMIT = object()  # sentinel for values to omit from objects
+
+        def _spry_to_json(obj: Any, in_array: bool = False) -> Any:
             """Recursively convert SpryCode values to JSON-serializable Python values."""
+            if isinstance(obj, _SpryUndefinedType):
+                # In arrays: undefined → null; in objects: omit (return sentinel)
+                return None if in_array else _OMIT
             if isinstance(obj, (SpryFunction, SpryLambda, SpryMultiLambda, SpryTask)):
-                return None  # functions are serialized as null in JS
+                # functions → undefined (omit from objects, null in arrays)
+                return None if in_array else _OMIT
             if isinstance(obj, SpryInstance):
-                return {k: _spry_to_json(v) for k, v in obj.fields.items()
-                        if not isinstance(k, SprySymbol)
-                        and not isinstance(v, (SpryFunction, SpryLambda, SpryMultiLambda,
-                                              SpryTask)) and not callable(v)}
+                result = {}
+                for k, v in obj.fields.items():
+                    if isinstance(k, SprySymbol) or callable(v):
+                        continue
+                    converted = _spry_to_json(v, in_array=False)
+                    if converted is not _OMIT:
+                        result[k] = converted
+                return result
             if isinstance(obj, SpryMap):
-                return {str(k): _spry_to_json(v) for k, v in obj._data.items()
-                        if not isinstance(k, SprySymbol)}
+                result = {}
+                for k, v in obj._data.items():
+                    if isinstance(k, SprySymbol):
+                        continue
+                    converted = _spry_to_json(v, in_array=False)
+                    if converted is not _OMIT:
+                        result[str(k)] = converted
+                return result
             if isinstance(obj, SprySet):
-                return list(obj._data)
+                return [_spry_to_json(v, in_array=True) for v in obj._data]
             if isinstance(obj, list):
-                return [_spry_to_json(v) for v in obj]
+                return [_spry_to_json(v, in_array=True) for v in obj]
             if isinstance(obj, dict):
-                return {k: _spry_to_json(v) for k, v in obj.items()
-                        if not isinstance(k, SprySymbol)
-                        and not isinstance(v, (SpryFunction, SpryLambda, SpryMultiLambda, SpryTask))}
+                result = {}
+                for k, v in obj.items():
+                    if isinstance(k, SprySymbol):
+                        continue
+                    converted = _spry_to_json(v, in_array=False)
+                    if converted is not _OMIT:
+                        result[k] = converted
+                return result
             return obj
 
         # Convert SpryCode objects first so filters operate on plain dicts/lists
@@ -6887,11 +6911,30 @@ class _JsonNamespace:
             value = _filter(value)
 
         # Apply function replacer
-        if callable(replacer) and not isinstance(replacer, list):
+        if isinstance(replacer, (SpryFunction, SpryLambda, SpryMultiLambda)) or (
+                callable(replacer) and not isinstance(replacer, list)):
+            def _call_replacer(key: str, val_arg: Any) -> Any:
+                if self._call_fn is not None and isinstance(
+                        replacer, (SpryFunction, SpryLambda, SpryMultiLambda)):
+                    return self._call_fn(replacer, [key, val_arg])
+                if callable(replacer):
+                    try:
+                        return replacer(key, val_arg)
+                    except Exception:
+                        return val_arg
+                return val_arg
+
             def _replace(key: str, obj: Any) -> Any:
-                result = replacer(key, obj)
+                result = _call_replacer(key, obj)
+                if isinstance(result, _SpryUndefinedType):
+                    return _OMIT
                 if isinstance(result, dict):
-                    return {k: _replace(k, v) for k, v in result.items()}
+                    out = {}
+                    for k, v in result.items():
+                        r = _replace(k, v)
+                        if r is not _OMIT:
+                            out[k] = r
+                    return out
                 if isinstance(result, list):
                     return [_replace(str(i), v) for i, v in enumerate(result)]
                 return result
@@ -6946,13 +6989,27 @@ class _ArrayNamespace:
         elif isinstance(iterable, (SpryInstance, SpryGenerator)):
             # Use _iter_to_list for SpryInstance (supports [Symbol.iterator]()) and generators
             result = self._interp._iter_to_list(iterable, None)
-        elif isinstance(iterable, dict) and "length" in iterable:
-            # Array-like: {length: N, "0": x, "1": y, ...}
-            n = int(iterable["length"])
-            result = []
-            for i in range(max(n, 0)):
-                # Try numeric string key first, then integer key
-                result.append(iterable.get(str(i), iterable.get(i, None)))
+        elif isinstance(iterable, dict):
+            # Check for Symbol.iterator or next() — use _iter_to_list which handles both
+            sym_key = "Symbol('iterator')"
+            has_sym_iter = any(
+                (isinstance(k, SprySymbol) and k.description == "iterator") or k == sym_key
+                for k in iterable.keys()
+            )
+            has_next = "next" in iterable
+            if has_sym_iter or has_next:
+                result = self._interp._iter_to_list(iterable, None)
+            elif "length" in iterable:
+                # Array-like: {length: N, "0": x, "1": y, ...}
+                n = int(iterable["length"])
+                result = []
+                for i in range(max(n, 0)):
+                    result.append(iterable.get(str(i), iterable.get(i, None)))
+            else:
+                try:
+                    result = list(iterable)
+                except TypeError:
+                    result = []
         else:
             try:
                 result = list(iterable)
@@ -9295,6 +9352,14 @@ class SpryDate:
 
     def getMilliseconds(self) -> int:
         return self._dt.microsecond // 1000
+
+    def toString(self) -> str:
+        """Return a human-readable string representation (like JS Date.toString())."""
+        return self._dt.strftime("%a %b %d %Y %H:%M:%S GMT+0000")
+
+    def valueOf(self) -> float:
+        """Return milliseconds since epoch (same as getTime)."""
+        return self.getTime()
 
     def __repr__(self) -> str:
         return self._dt.isoformat()

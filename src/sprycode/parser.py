@@ -514,6 +514,7 @@ class Parser:
                 TokenType.WHILE, TokenType.DO, TokenType.RETURN, TokenType.THROW,
                 TokenType.TRY, TokenType.BREAK, TokenType.CONTINUE,
                 TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC,
+                TokenType.USING,
             }
             peek1 = self._peek(1)
             peek2 = self._peek(2)
@@ -776,14 +777,14 @@ class Parser:
             column=tok.column,
         )
 
-    def _parse_using_decl(self) -> "LetDeclaration":
-        """Parse `using name = expr` as a let declaration."""
-        from .ast_nodes import LetDeclaration
+    def _parse_using_decl(self) -> "UsingDeclaration":
+        """Parse `using name = expr` as a resource-management declaration."""
+        from .ast_nodes import UsingDeclaration
         tok = self._expect(TokenType.USING)
         name_tok = self._expect(TokenType.IDENTIFIER)
         self._expect(TokenType.EQ)
         value = self._parse_expression()
-        return LetDeclaration(name=name_tok.value, value=value, line=tok.line, column=tok.column)
+        return UsingDeclaration(name=name_tok.value, value=value, line=tok.line, column=tok.column)
 
     def _parse_yield(self) -> YieldStatement:
         tok = self._expect(TokenType.YIELD)
@@ -2135,6 +2136,26 @@ class Parser:
                     is_generator=ms_is_gen,
                     line=ms_tok.line,
                     column=ms_tok.column,
+                ))
+                continue
+            # "string-named-method"() { ... } — string-keyed method (e.g. "[Symbol.iterator]")
+            if cur.type == TokenType.STRING and self._peek(1).type == TokenType.LPAREN:
+                sm_tok = self._advance()  # consume string
+                sm_params, sm_defaults, sm_rest = self._parse_method_params()
+                if self._check(TokenType.ARROW):
+                    self._advance()
+                    self._parse_type_name()
+                sm_body = self._parse_block()
+                body.append(FunctionDeclaration(
+                    name=sm_tok.value,
+                    params=sm_params,
+                    body=sm_body,
+                    defaults=sm_defaults,
+                    rest_param=sm_rest,
+                    is_async=ms_is_async,
+                    is_generator=ms_is_gen,
+                    line=sm_tok.line,
+                    column=sm_tok.column,
                 ))
                 continue
             stmt = self._parse_statement()
@@ -3572,10 +3593,19 @@ class Parser:
         if tok.type == TokenType.FN:
             # Only parse as expression if NOT followed by a named identifier
             # (named functions are statements; anonymous ones are expressions)
-            if self._peek().type != TokenType.LPAREN:
+            # Exception: named function *expressions* like `let f = function foo() {...}`
+            peek = self._peek()
+            if peek.type not in (TokenType.LPAREN,) and not (
+                peek.type == TokenType.IDENTIFIER and self._peek(2).type == TokenType.LPAREN
+            ):
                 # It's a named function statement — shouldn't be here, fall through
                 raise ParseError("Unexpected token in expression", tok)
             self._advance()  # consume fn
+            # Optional name for named function expressions
+            fn_expr_name: str | None = None
+            if not self._check(TokenType.LPAREN):
+                fn_name_tok = self._expect_ident()
+                fn_expr_name = fn_name_tok.value
             self._expect(TokenType.LPAREN)
             params: list[tuple[str, str | None]] = []
             defaults: dict[str, Node] = {}
@@ -3619,6 +3649,46 @@ class Parser:
             return AnonymousFunctionExpression(
                 params=params, return_type=return_type, body=fn_body,
                 defaults=defaults, rest_param=rest_param,
+                name=fn_expr_name,
+                line=tok.line, column=tok.column,
+            )
+
+        # async function() / async fn() in expression context
+        if tok.type == TokenType.ASYNC and self._peek().type == TokenType.FN:
+            self._advance()  # consume 'async'
+            self._advance()  # consume 'fn'/'function'
+            # Optional name for named async function expressions
+            afn_name: str | None = None
+            if not self._check(TokenType.LPAREN):
+                afn_name_tok = self._expect_ident()
+                afn_name = afn_name_tok.value
+            self._expect(TokenType.LPAREN)
+            afn_params: list[tuple[str, str | None]] = []
+            afn_defaults: dict[str, Node] = {}
+            afn_rest: str | None = None
+            while not self._check(TokenType.RPAREN) and not self._at_end():
+                if self._check(TokenType.ELLIPSIS):
+                    self._advance()
+                    afn_rest = self._expect_ident().value
+                    break
+                afn_pname = self._expect_ident()
+                afn_ptype = None
+                if self._match(TokenType.COLON):
+                    afn_ptype = self._parse_type_name()
+                afn_default_expr = None
+                if self._match(TokenType.EQ):
+                    afn_default_expr = self._parse_null_coalesce()
+                afn_params.append((afn_pname.value, afn_ptype))
+                if afn_default_expr is not None:
+                    afn_defaults[afn_pname.value] = afn_default_expr
+                if not self._match(TokenType.COMMA):
+                    break
+            self._expect(TokenType.RPAREN)
+            afn_body = self._parse_block()
+            return AnonymousFunctionExpression(
+                params=afn_params, return_type=None, body=afn_body,
+                defaults=afn_defaults, rest_param=afn_rest,
+                name=afn_name, is_async=True,
                 line=tok.line, column=tok.column,
             )
 
@@ -3757,6 +3827,14 @@ class Parser:
         # new ClassName(args) → CallExpression on ClassName
         if tok.type == TokenType.IDENTIFIER and tok.value == "new":
             self._advance()   # consume 'new'
+            # Check for new.target
+            if self._check(TokenType.DOT):
+                next_tok = self._peek()
+                if next_tok.type == TokenType.IDENTIFIER and next_tok.value == "target":
+                    self._advance()  # consume '.'
+                    self._advance()  # consume 'target'
+                    from .ast_nodes import NewTargetExpression
+                    return NewTargetExpression(line=tok.line, column=tok.column)
             # next token is the class name identifier
             name_tok = self._expect_ident()
             return Identifier(name=name_tok.value, line=name_tok.line, column=name_tok.column)

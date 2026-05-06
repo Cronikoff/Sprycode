@@ -135,6 +135,8 @@ from .ast_nodes import (
     OptionalCallExpression,
     ComputedMethodDeclaration,
     SequenceExpression,
+    NewTargetExpression,
+    UsingDeclaration,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -1869,8 +1871,51 @@ class Interpreter:
 
     def _exec_block(self, block: Block, env: Environment) -> Any:
         result = None
+        disposables: list[tuple[str, Any]] = []
         for stmt in block.body:
-            result = self._exec(stmt, env)
+            if isinstance(stmt, UsingDeclaration):
+                value = self._eval(stmt.value, env) if stmt.value is not None else None
+                env.define(stmt.name, value, mutable=False)
+                disposables.append((stmt.name, value))
+                result = None
+            else:
+                result = self._exec(stmt, env)
+        # Dispose resources in LIFO order
+        for _name, resource in reversed(disposables):
+            if resource is None:
+                continue
+            dispose_fn = None
+            if isinstance(resource, SpryInstance):
+                dispose_fn = (
+                    resource.fields.get("[Symbol.dispose]")
+                    or resource.fields.get("Symbol('dispose')")
+                    or resource.fields.get("dispose")
+                )
+                if isinstance(dispose_fn, SpryFunction):
+                    bm = BoundMethod(instance=resource, fn=dispose_fn)
+                    try:
+                        self._call_bound_method(bm, [], block)
+                    except Exception:
+                        pass
+                    continue
+            elif isinstance(resource, dict):
+                dispose_fn = (
+                    resource.get("[Symbol.dispose]")
+                    or resource.get("Symbol('dispose')")
+                    or resource.get("dispose")
+                )
+            if dispose_fn is None:
+                continue
+            if callable(dispose_fn):
+                try:
+                    dispose_fn()
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._call_function(dispose_fn, [], block)
+                except Exception:
+                    pass
         return result
 
     def _exec(self, node: Node, env: Environment) -> Any:  # noqa: C901
@@ -1899,6 +1944,11 @@ class Interpreter:
         if isinstance(node, VarDeclaration):
             value = self._eval(node.value, env) if node.value is not None else SPRY_UNDEFINED
             env.define(node.name, value, mutable=True)
+            return None
+
+        if isinstance(node, UsingDeclaration):
+            value = self._eval(node.value, env) if node.value is not None else None
+            env.define(node.name, value, mutable=False)
             return None
 
         if isinstance(node, Assignment):
@@ -2483,6 +2533,9 @@ class Interpreter:
         if isinstance(node, SecretLiteral):
             return self.secrets.read(node.key, self.permissions)
 
+        if isinstance(node, NewTargetExpression):
+            return getattr(self._tl, "new_target", None)
+
         if isinstance(node, ObjectLiteral):
             result: dict[str, Any] = {}
             # If entries list is populated (spread or computed keys present), use it
@@ -2744,14 +2797,36 @@ class Interpreter:
             return SpryRegex(compiled, global_flag=is_global, flags_str=node.flags)
 
         if isinstance(node, AnonymousFunctionExpression):
-            return SpryFunction(
-                name="<anonymous>",
-                params=node.params,
-                body=node.body,  # type: ignore
-                closure=env,
-                defaults=node.defaults,
-                rest_param=node.rest_param,
-            )
+            fn_name = node.name if node.name else "<anonymous>"
+            is_async = getattr(node, "is_async", False)
+            is_generator = getattr(node, "is_generator", False)
+            if node.name:
+                # Named function expression: create self-referential closure
+                fn_self_env = env.child()
+                fn = SpryFunction(
+                    name=fn_name,
+                    params=node.params,
+                    body=node.body,  # type: ignore
+                    closure=fn_self_env,
+                    defaults=node.defaults,
+                    rest_param=node.rest_param,
+                    is_async=is_async,
+                    is_generator=is_generator,
+                )
+                # Bind the function to its own name in its closure (enables recursion)
+                fn_self_env.define(fn_name, fn, mutable=False)
+            else:
+                fn = SpryFunction(
+                    name=fn_name,
+                    params=node.params,
+                    body=node.body,  # type: ignore
+                    closure=env,
+                    defaults=node.defaults,
+                    rest_param=node.rest_param,
+                    is_async=is_async,
+                    is_generator=is_generator,
+                )
+            return fn
 
         if isinstance(node, SuperExpression):
             return self._eval_super(node, env)
@@ -5110,13 +5185,14 @@ class Interpreter:
             return [[k, v] for k, v in value._data.items()]
         if isinstance(value, SpryInstance):
             # Try [Symbol.iterator]() iterable protocol first
-            sym_key = "Symbol('iterator')"
-            if sym_key in value.fields:
-                sym_iter_fn = value.fields[sym_key]
-                if isinstance(sym_iter_fn, SpryFunction):
-                    bm = BoundMethod(instance=value, fn=sym_iter_fn)
-                    iterator = self._call_bound_method(bm, [], node)
-                    return self._consume_iterator(iterator, node)
+            # Check for both "Symbol('iterator')" and "[Symbol.iterator]" string keys
+            for sym_key in ("Symbol('iterator')", "[Symbol.iterator]"):
+                if sym_key in value.fields:
+                    sym_iter_fn = value.fields[sym_key]
+                    if isinstance(sym_iter_fn, SpryFunction):
+                        bm = BoundMethod(instance=value, fn=sym_iter_fn)
+                        iterator = self._call_bound_method(bm, [], node)
+                        return self._consume_iterator(iterator, node)
             # Try direct next() iterator protocol
             return self._consume_iterator(value, node) or [
                 k for k, v in value.fields.items()
@@ -6290,15 +6366,20 @@ class Interpreter:
 
         # Call init() / constructor() if defined (skip when building inheritance field structure)
         if not _for_inheritance:
-            ctor_fn = fields.get("init") or fields.get("constructor")
-            if isinstance(ctor_fn, SpryFunction):
-                self._call_bound_method(BoundMethod(instance=instance, fn=ctor_fn), args, node)
-            elif args:
-                # Positional-field constructor: Counter(10) → counter.count = 10
-                field_vars = [k for k, v in fields.items() if not callable(v) and not isinstance(v, SpryFunction)]
-                for i, arg in enumerate(args):
-                    if i < len(field_vars):
-                        instance.set(field_vars[i], arg)
+            prev_new_target = getattr(self._tl, "new_target", None)
+            self._tl.new_target = cls.name  # type: ignore[attr-defined]
+            try:
+                ctor_fn = fields.get("init") or fields.get("constructor")
+                if isinstance(ctor_fn, SpryFunction):
+                    self._call_bound_method(BoundMethod(instance=instance, fn=ctor_fn), args, node)
+                elif args:
+                    # Positional-field constructor: Counter(10) → counter.count = 10
+                    field_vars = [k for k, v in fields.items() if not callable(v) and not isinstance(v, SpryFunction)]
+                    for i, arg in enumerate(args):
+                        if i < len(field_vars):
+                            instance.set(field_vars[i], arg)
+            finally:
+                self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
 
         return instance
 

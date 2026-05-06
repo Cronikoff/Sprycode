@@ -809,6 +809,9 @@ class AnonymousFunctionExpression(Node):
     body: "Block | None" = None
     defaults: dict[str, "Node"] = field(default_factory=dict)
     rest_param: str | None = None
+    name: str | None = None  # for named function expressions: let f = function foo() {}
+    is_async: bool = False
+    is_generator: bool = False
 
 
 @dataclass
@@ -1002,6 +1005,19 @@ class ComputedMethodDeclaration(Node):
     is_setter: bool = False          # set [expr](v) { ... }
     defaults: dict = field(default_factory=dict)
     rest_param: "str | None" = None
+
+
+@dataclass
+class NewTargetExpression(Node):
+    """new.target — the constructor that was called with new."""
+    pass
+
+
+@dataclass
+class UsingDeclaration(Node):
+    """using name = expr — resource management declaration."""
+    name: str = ""
+    value: "Node | None" = None
 
 
 

@@ -379,6 +379,121 @@ if click is not None:
             click.echo(f"[ERROR] {e}", err=True)
             sys.exit(1)
 
+    @main.command("repl")
+    @click.option("--secure", is_flag=True, default=False, help="Enable secure mode")
+    def repl_cmd(secure: bool):
+        """Start an interactive SpryCode REPL."""
+        _run_repl(secure=secure)
+
+    def _run_repl(secure: bool = False) -> None:
+        """Interactive Read-Eval-Print Loop for SpryCode."""
+        import readline as _rl  # noqa: F401 -- enables history/editing on Unix
+        banner = (
+            f"SpryCode {__version__} REPL\n"
+            "Type .help for commands, .exit to quit\n"
+        )
+        click.echo(banner)
+
+        permissions = PermissionSet()
+        if secure:
+            permissions.enable_secure_mode()
+
+        logger = SpryLogger()
+        interp = Interpreter(logger=logger, permissions=permissions)
+
+        history: list[str] = []
+        _COMMANDS = {
+            ".exit": "Exit the REPL",
+            ".quit": "Exit the REPL",
+            ".help": "Show available REPL commands",
+            ".clear": "Clear the screen",
+            ".history": "Show command history",
+        }
+
+        def _show_help() -> None:
+            click.echo("Available REPL commands:")
+            for cmd, desc in _COMMANDS.items():
+                click.echo(f"  {cmd:<12} {desc}")
+            click.echo("Multi-line: end a line with \\ to continue on next line")
+            click.echo("Up/Down arrows: navigate history")
+
+        def _is_incomplete(src: str) -> bool:
+            """Heuristic: source ends with { or ( or \\ — needs more input."""
+            stripped = src.rstrip()
+            if not stripped:
+                return False
+            last_char = stripped[-1]
+            if last_char in ("{", "(", "[", ",", "\\"):
+                return True
+            # Count unbalanced braces/parens
+            opens = stripped.count("{") + stripped.count("(") + stripped.count("[")
+            closes = stripped.count("}") + stripped.count(")") + stripped.count("]")
+            return opens > closes
+
+        def _eval_source(src: str) -> None:
+            try:
+                lexer = Lexer(src, "<repl>")
+                tokens = lexer.tokenize()
+                parser = Parser(tokens)
+                program = parser.parse()
+            except LexerError as e:
+                click.echo(f"[SyntaxError] {e}", err=True)
+                return
+            except ParseError as e:
+                click.echo(f"[SyntaxError] {e}", err=True)
+                return
+            try:
+                result = interp.run(program)
+                if result is not None:
+                    from .interpreter import SPRY_UNDEFINED, _SpryUndefinedType
+                    if not isinstance(result, _SpryUndefinedType):
+                        click.echo(repr(result) if not isinstance(result, str) else result)
+            except SpryRuntimeError as e:
+                click.echo(f"[RuntimeError] {e}", err=True)
+            except Exception as e:  # noqa: BLE001
+                click.echo(f"[Error] {e}", err=True)
+
+        buffer: list[str] = []
+        while True:
+            prompt = "spry> " if not buffer else "  ... "
+            try:
+                line = click.prompt(prompt, prompt_suffix="", default="", show_default=False)
+            except (EOFError, KeyboardInterrupt):
+                click.echo("\nGoodbye!")
+                break
+
+            # Special REPL commands
+            stripped_line = line.strip()
+            if stripped_line in (".exit", ".quit"):
+                click.echo("Goodbye!")
+                break
+            if stripped_line == ".help":
+                _show_help()
+                continue
+            if stripped_line == ".clear":
+                click.clear()
+                continue
+            if stripped_line == ".history":
+                for i, h in enumerate(history, 1):
+                    click.echo(f"  {i:4d}  {h}")
+                continue
+
+            # Accumulate multi-line input
+            buffer.append(line)
+            source = "\n".join(buffer)
+
+            if _is_incomplete(source):
+                continue  # get more lines
+
+            # Have complete source
+            full_source = source.strip()
+            buffer = []
+            if not full_source:
+                continue
+
+            history.append(full_source)
+            _eval_source(full_source)
+
 else:
     # Minimal CLI without click
     def main():  # type: ignore

@@ -294,6 +294,11 @@ class Parser:
             return self._parse_let()  # const is an immutable binding, same as let
         if tok.type == TokenType.VAR:
             return self._parse_var()
+        if tok.type == TokenType.USING:
+            # `using name = expr` — treat as let declaration (simplified)
+            if self._peek().type == TokenType.IDENTIFIER:
+                return self._parse_using_decl()
+            # Otherwise skip (part of validate...using syntax handled elsewhere)
         if tok.type == TokenType.FN:
             return self._parse_fn()
         if tok.type == TokenType.FN_STAR:
@@ -409,7 +414,11 @@ class Parser:
         if tok.type == TokenType.SCHEDULE:
             return self._parse_schedule()
         if tok.type == TokenType.TEST:
-            return self._parse_test_block()
+            # Only parse as TestBlock if followed by a string (test name)
+            if self._peek().type == TokenType.STRING:
+                return self._parse_test_block()
+            # Otherwise treat `test` as an identifier expression
+            return self._parse_expr_or_assignment()
         if tok.type == TokenType.EXPECT:
             return self._parse_expect()
         if tok.type == TokenType.MATCH:
@@ -766,6 +775,15 @@ class Parser:
             line=tok.line,
             column=tok.column,
         )
+
+    def _parse_using_decl(self) -> "LetDeclaration":
+        """Parse `using name = expr` as a let declaration."""
+        from .ast_nodes import LetDeclaration
+        tok = self._expect(TokenType.USING)
+        name_tok = self._expect(TokenType.IDENTIFIER)
+        self._expect(TokenType.EQ)
+        value = self._parse_expression()
+        return LetDeclaration(name=name_tok.value, value=value, line=tok.line, column=tok.column)
 
     def _parse_yield(self) -> YieldStatement:
         tok = self._expect(TokenType.YIELD)

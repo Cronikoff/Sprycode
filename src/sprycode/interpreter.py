@@ -209,6 +209,9 @@ class _SpryUndefinedType:
 
 #: The singleton ``undefined`` value used throughout the SpryCode runtime.
 SPRY_UNDEFINED = _SpryUndefinedType()
+# Module-level sets tracking frozen/sealed object ids for non-polluting O.freeze/O.seal
+_SPRY_FROZEN_IDS: set = set()
+_SPRY_SEALED_IDS: set = set()
 
 
 def _make_sequence_iter(items: list) -> Any:
@@ -542,6 +545,7 @@ class SpryClassPrototype:
 
     def __init__(self, cls: SpryClass) -> None:
         self.cls = cls
+        self._extra_fields: dict = {}  # methods/fields added via Object.assign(Cls.prototype, ...)
 
     def toString(self) -> str:
         return f"[object {self.cls.name}]"
@@ -2047,7 +2051,7 @@ class Interpreter:
                 obj.set(node.property, value)
             elif isinstance(obj, dict):
                 # Check for frozen object — silently ignore writes (JS non-strict behavior)
-                if obj.get("__spry_frozen__"):
+                if id(obj) in _SPRY_FROZEN_IDS:
                     return None
                 # Check for setter
                 setter_key = f"__setter__{node.property}"
@@ -3522,6 +3526,17 @@ class Interpreter:
                     # Bind self to method
                     return BoundMethod(instance=obj, fn=v)
                 return v
+            # Fall back to prototype extra fields (added via Object.assign(Cls.prototype, ...))
+            proto = obj.cls._prototype
+            if proto is not None and prop in proto._extra_fields:
+                v = proto._extra_fields[prop]
+                if isinstance(v, SpryFunction):
+                    return BoundMethod(instance=obj, fn=v)
+                if callable(v):
+                    def _proto_bound(v=v, _obj=obj, *args):
+                        return v(*args)
+                    return _proto_bound
+                return v
             raise SpryRuntimeError(f"Instance of {obj.cls.name!r} has no attribute {prop!r}", node)
 
         if isinstance(obj, dict) and obj.get("__enum__"):
@@ -3641,18 +3656,44 @@ class Interpreter:
                 return list(reversed(obj))
             if prop == "sort":
                 def _sort_fn(comparator: Any = None, _o: list = obj) -> list:
-                    if comparator is None:
-                        return sorted(_o)
                     import functools
-                    return sorted(_o, key=functools.cmp_to_key(comparator))
-                return _CallableList(sorted(obj), _sort_fn)
+                    if comparator is None:
+                        try:
+                            _o.sort()
+                        except TypeError:
+                            pass  # can't sort mixed/incomparable elements
+                    else:
+                        def _cmp_wrap(a: Any, b: Any) -> int:
+                            result = self._call_value(comparator, [a, b])
+                            if isinstance(result, (int, float)) and result != 0:
+                                return -1 if result < 0 else 1
+                            return 0
+                        _o.sort(key=functools.cmp_to_key(_cmp_wrap))
+                    return _o
+                try:
+                    _sorted_default = sorted(obj)
+                except TypeError:
+                    _sorted_default = list(obj)
+                return _CallableList(_sorted_default, _sort_fn)
             if prop == "sorted":
                 def _sorted_fn(comparator: Any = None, _o: list = obj) -> list:
-                    if comparator is None:
-                        return sorted(_o)
                     import functools
-                    return sorted(_o, key=functools.cmp_to_key(comparator))
-                return _CallableList(sorted(obj), _sorted_fn)
+                    if comparator is None:
+                        try:
+                            return sorted(_o)
+                        except TypeError:
+                            return list(_o)
+                    def _cmp_wrap2(a: Any, b: Any) -> int:
+                        result = self._call_value(comparator, [a, b])
+                        if isinstance(result, (int, float)) and result != 0:
+                            return -1 if result < 0 else 1
+                        return 0
+                    return sorted(_o, key=functools.cmp_to_key(_cmp_wrap2))
+                try:
+                    _sorted_default2 = sorted(obj)
+                except TypeError:
+                    _sorted_default2 = list(obj)
+                return _CallableList(_sorted_default2, _sorted_fn)
             if prop == "indexOf":
                 def _list_index_of(item: Any, from_index: int = 0, _o: list = obj) -> int:
                     start = int(from_index) if from_index is not None else 0
@@ -3692,9 +3733,23 @@ class Interpreter:
                     return results
                 return _list_map
             if prop in ("every", "all"):
-                return lambda pred: all(self._truthy(pred(x)) for x in obj)
+                def _list_every(pred: Any, _obj: list = obj) -> bool:
+                    arity = getattr(pred, "_spry_arity", None)
+                    for _idx, _x in enumerate(_obj):
+                        _args = [_x, _idx, _obj] if (arity is not None and arity >= 2) else [_x]
+                        if not self._truthy(self._call_value(pred, _args)):
+                            return False
+                    return True
+                return _list_every
             if prop in ("some", "any"):
-                return lambda pred: any(self._truthy(pred(x)) for x in obj)
+                def _list_some(pred: Any, _obj: list = obj) -> bool:
+                    arity = getattr(pred, "_spry_arity", None)
+                    for _idx, _x in enumerate(_obj):
+                        _args = [_x, _idx, _obj] if (arity is not None and arity >= 2) else [_x]
+                        if self._truthy(self._call_value(pred, _args)):
+                            return True
+                    return False
+                return _list_some
             if prop == "reduce":
                 def _list_reduce(first_arg: Any, second_arg: Any = _SENTINEL, _obj: Any = obj) -> Any:
                     # Support both:
@@ -4006,11 +4061,13 @@ class Interpreter:
                 return _drop_while
             if prop == "copyWithin":
                 def _copy_within(target: int, start: int = 0, end: int | None = None, _obj: list = obj) -> list:
-                    result_cw = list(_obj)
-                    n = len(result_cw)
+                    n = len(_obj)
                     t = int(target) % n if n else 0
                     s = int(start) % n if n else 0
-                    e = int(end) % n if end is not None and n else n
+                    e = int(end) if end is not None else n
+                    if e < 0:
+                        e = max(0, n + e)
+                    result_cw = list(_obj)
                     chunk = result_cw[s:e]
                     for i, v in enumerate(chunk):
                         if t + i >= n:
@@ -4074,7 +4131,10 @@ class Interpreter:
             if prop == "contains":
                 return lambda sub: sub in obj
             if prop == "includes":
-                return lambda sub: sub in obj
+                def _str_includes(sub: Any, position: Any = None, _obj: str = obj) -> bool:
+                    pos = int(position) if position is not None else 0
+                    return str(sub) in _obj[pos:]
+                return _str_includes
             if prop == "startsWith":
                 def _str_startswith(prefix: Any, position: Any = None, _obj: str = obj) -> bool:
                     pos = int(position) if position is not None else 0
@@ -4170,8 +4230,15 @@ class Interpreter:
                 return list(obj)
             if prop == "lines":
                 return obj.splitlines()
-            if prop in ("substring", "substr"):
+            if prop == "substring":
                 return lambda start, end=None: obj[int(start):int(end)] if end is not None else obj[int(start):]
+            if prop == "substr":
+                def _str_substr(start: Any, length: Any = None, _obj: str = obj) -> str:
+                    s = int(start)
+                    if length is None:
+                        return _obj[s:]
+                    return _obj[s:s + int(length)]
+                return _str_substr
             if prop == "match":
                 import re as _re
                 def _str_match(pattern: Any, _obj: str = obj) -> Any:
@@ -7161,6 +7228,8 @@ class _ObjectNamespace:
 
     def __init__(self, call_fn: Any = None) -> None:
         self._call_fn = call_fn
+        self._sealed_ids: set = _SPRY_SEALED_IDS
+        self._frozen_ids: set = _SPRY_FROZEN_IDS
 
     def keys(self, obj: Any) -> list:
         """Return the string-keyed enumerable properties (excludes symbol keys)."""
@@ -7201,27 +7270,34 @@ class _ObjectNamespace:
 
         Object.assign({a:1}, {b:2}, {c:3}) → mutates first arg, returns it.
         Supports both dict and SpryInstance targets.
+        Also supports Object.assign(SomeClass.prototype, mix) to add mixin methods.
         """
         if not objs:
             return {}
         target = objs[0]
         for obj in objs[1:]:
             if isinstance(obj, dict):
-                src_items = ((k, v) for k, v in obj.items() if not k.startswith("__spry_") and not k.startswith("__non_extensible"))
+                src_items = list((k, v) for k, v in obj.items() if not k.startswith("__spry_") and not k.startswith("__non_extensible"))
                 if isinstance(target, dict):
                     for k, v in src_items:
                         target[k] = v
                 elif isinstance(target, SpryInstance):
                     for k, v in src_items:
                         target.fields[k] = v
+                elif isinstance(target, SpryClassPrototype):
+                    for k, v in src_items:
+                        target._extra_fields[k] = v
             elif isinstance(obj, SpryInstance):
-                src_items2 = ((k, v) for k, v in obj.fields.items() if not k.startswith("__"))
+                src_items2 = list((k, v) for k, v in obj.fields.items() if not k.startswith("__"))
                 if isinstance(target, dict):
                     for k, v in src_items2:
                         target[k] = v
                 elif isinstance(target, SpryInstance):
                     for k, v in src_items2:
                         target.fields[k] = v
+                elif isinstance(target, SpryClassPrototype):
+                    for k, v in src_items2:
+                        target._extra_fields[k] = v
         return target
 
     def create(self, proto: Any = None, props: Any = None) -> dict:
@@ -7312,35 +7388,31 @@ class _ObjectNamespace:
 
     def isExtensible(self, obj: Any) -> bool:
         """Return True if the object is extensible."""
+        if id(obj) in _SPRY_FROZEN_IDS or id(obj) in _SPRY_SEALED_IDS:
+            return False
         if isinstance(obj, dict):
-            return not (obj.get("__non_extensible__", False) or obj.get("__spry_frozen__", False))
+            return not obj.get("__non_extensible__", False)
         if isinstance(obj, SpryInstance):
-            return not (obj.fields.get("__non_extensible__", False) or obj.fields.get("__spry_frozen__", False))
+            return not obj.fields.get("__non_extensible__", False)
         return False
 
     def seal(self, obj: Any) -> Any:
-        """Seal an object (no new properties). Returns the object unchanged for compatibility."""
+        """Seal an object (no new properties). Tracks via id set."""
+        self._sealed_ids.add(id(obj))
         return obj
 
     def isSealed(self, obj: Any) -> bool:
         """Return True if the object is sealed or frozen."""
-        return not self.isExtensible(obj)
+        return id(obj) in self._sealed_ids or id(obj) in self._frozen_ids
 
     def freeze(self, obj: Any) -> Any:
-        """Freeze an object (non-writable, non-extensible). Uses __spry_frozen__ flag."""
-        if isinstance(obj, dict):
-            obj["__spry_frozen__"] = True
-        elif isinstance(obj, SpryInstance):
-            obj.fields["__spry_frozen__"] = True
+        """Freeze an object (non-writable, non-extensible). Tracks via id set."""
+        self._frozen_ids.add(id(obj))
         return obj
 
     def isFrozen(self, obj: Any) -> bool:
         """Return True if the object has been frozen via Object.freeze()."""
-        if isinstance(obj, dict):
-            return bool(obj.get("__spry_frozen__", False))
-        if isinstance(obj, SpryInstance):
-            return bool(obj.fields.get("__spry_frozen__", False))
-        return False
+        return id(obj) in self._frozen_ids
 
     def pick(self, obj: Any, *keys: Any) -> dict:
         """Return a new object with only the specified keys."""
@@ -7410,6 +7482,11 @@ class _ObjectNamespace:
 
     def is_(self, a: Any, b: Any) -> bool:
         """SameValue comparison — like === but NaN===NaN and -0!==+0."""
+        # null and undefined are distinct in SameValue (strict equality)
+        if a is None and isinstance(b, _SpryUndefinedType):
+            return False
+        if isinstance(a, _SpryUndefinedType) and b is None:
+            return False
         if isinstance(a, float) and isinstance(b, float):
             if math.isnan(a) and math.isnan(b):
                 return True

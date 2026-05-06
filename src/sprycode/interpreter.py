@@ -138,6 +138,7 @@ from .ast_nodes import (
     NewTargetExpression,
     UsingDeclaration,
     ComputedFieldDeclaration,
+    NewExpression,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -458,6 +459,7 @@ class SpryFunction:
         self.rest_param: str | None = rest_param
         self.is_generator: bool = is_generator
         self.is_async: bool = is_async
+        self._prototype: "dict | None" = None  # for use as constructor via new Fn()
 
     def __repr__(self) -> str:
         return f"<fn{'*' if self.is_generator else ''} {self.name}>"
@@ -1321,8 +1323,11 @@ class Interpreter:
             if isinstance(x, (int, float)):
                 return math.isnan(float(x))
             if isinstance(x, str):
+                v = x.strip()
+                if v == "":
+                    return False  # empty string → 0 → not NaN
                 try:
-                    return math.isnan(float(x))
+                    return math.isnan(float(v))
                 except ValueError:
                     return True
             return False
@@ -1330,6 +1335,8 @@ class Interpreter:
         def _is_finite_coercive(x: Any) -> bool:
             if isinstance(x, bool):
                 return True
+            if x is None:
+                return True  # null → 0 → finite
             if isinstance(x, (int, float)):
                 return math.isfinite(float(x))
             if isinstance(x, str):
@@ -1766,6 +1773,10 @@ class Interpreter:
             return "null"
         if isinstance(value, bool):
             return "true" if value else "false"
+        if isinstance(value, dict):
+            prim = self._dict_to_primitive(value, "string")
+            if not isinstance(prim, dict):
+                return self._builtin_str(prim)
         if isinstance(value, SpryInstance):
             # Prefer [Symbol.toPrimitive]("string") first
             sym_key = "Symbol('toPrimitive')"
@@ -1847,6 +1858,18 @@ class Interpreter:
                         except Exception:
                             pass
         return value
+
+    def _dict_to_primitive(self, d: dict, hint: str) -> Any:
+        """Coerce a plain dict to a primitive using Symbol.toPrimitive if available."""
+        sym_key = "Symbol('toPrimitive')"
+        if sym_key in d:
+            fn = d[sym_key]
+            if isinstance(fn, SpryFunction):
+                try:
+                    return self._call_dict_bound_method(fn, d, [hint], None)
+                except Exception:
+                    pass
+        return d
 
     def _to_numeric(self, value: Any) -> Any:
         """Coerce *value* to a numeric primitive (JS ToNumeric-lite).
@@ -1979,50 +2002,52 @@ class Interpreter:
     def _exec_block(self, block: Block, env: Environment) -> Any:
         result = None
         disposables: list[tuple[str, Any]] = []
-        for stmt in block.body:
-            if isinstance(stmt, UsingDeclaration):
-                value = self._eval(stmt.value, env) if stmt.value is not None else None
-                env.define(stmt.name, value, mutable=False)
-                disposables.append((stmt.name, value))
-                result = None
-            else:
-                result = self._exec(stmt, env)
-        # Dispose resources in LIFO order
-        for _name, resource in reversed(disposables):
-            if resource is None:
-                continue
-            dispose_fn = None
-            if isinstance(resource, SpryInstance):
-                dispose_fn = (
-                    resource.fields.get("[Symbol.dispose]")
-                    or resource.fields.get("Symbol('dispose')")
-                    or resource.fields.get("dispose")
-                )
-                if isinstance(dispose_fn, SpryFunction):
-                    bm = BoundMethod(instance=resource, fn=dispose_fn)
+        try:
+            for stmt in block.body:
+                if isinstance(stmt, UsingDeclaration):
+                    value = self._eval(stmt.value, env) if stmt.value is not None else None
+                    env.define(stmt.name, value, mutable=False)
+                    disposables.append((stmt.name, value))
+                    result = None
+                else:
+                    result = self._exec(stmt, env)
+        finally:
+            # Dispose resources in LIFO order (even on exception)
+            for _name, resource in reversed(disposables):
+                if resource is None:
+                    continue
+                dispose_fn = None
+                if isinstance(resource, SpryInstance):
+                    dispose_fn = (
+                        resource.fields.get("[Symbol.dispose]")
+                        or resource.fields.get("Symbol('dispose')")
+                        or resource.fields.get("dispose")
+                    )
+                    if isinstance(dispose_fn, SpryFunction):
+                        bm = BoundMethod(instance=resource, fn=dispose_fn)
+                        try:
+                            self._call_bound_method(bm, [], block)
+                        except Exception:
+                            pass
+                        continue
+                elif isinstance(resource, dict):
+                    dispose_fn = (
+                        resource.get("[Symbol.dispose]")
+                        or resource.get("Symbol('dispose')")
+                        or resource.get("dispose")
+                    )
+                if dispose_fn is None:
+                    continue
+                if callable(dispose_fn):
                     try:
-                        self._call_bound_method(bm, [], block)
+                        dispose_fn()
                     except Exception:
                         pass
-                    continue
-            elif isinstance(resource, dict):
-                dispose_fn = (
-                    resource.get("[Symbol.dispose]")
-                    or resource.get("Symbol('dispose')")
-                    or resource.get("dispose")
-                )
-            if dispose_fn is None:
-                continue
-            if callable(dispose_fn):
-                try:
-                    dispose_fn()
-                except Exception:
-                    pass
-            else:
-                try:
-                    self._call_function(dispose_fn, [], block)
-                except Exception:
-                    pass
+                else:
+                    try:
+                        self._call_function(dispose_fn, [], block)
+                    except Exception:
+                        pass
         return result
 
     def _exec(self, node: Node, env: Environment) -> Any:  # noqa: C901
@@ -2045,11 +2070,15 @@ class Interpreter:
 
         if isinstance(node, LetDeclaration):
             value = self._eval(node.value, env) if node.value is not None else SPRY_UNDEFINED
+            if isinstance(value, SpryFunction) and not value.name:
+                value.name = node.name
             env.define(node.name, value, mutable=not node.is_const)
             return None
 
         if isinstance(node, VarDeclaration):
             value = self._eval(node.value, env) if node.value is not None else SPRY_UNDEFINED
+            if isinstance(value, SpryFunction) and not value.name:
+                value.name = node.name
             env.define(node.name, value, mutable=True)
             return None
 
@@ -2641,7 +2670,7 @@ class Interpreter:
             return self.secrets.read(node.key, self.permissions)
 
         if isinstance(node, NewTargetExpression):
-            return getattr(self._tl, "new_target", None)
+            return getattr(self._tl, "new_target", SPRY_UNDEFINED)
 
         if isinstance(node, ObjectLiteral):
             result: dict[str, Any] = {}
@@ -2663,16 +2692,19 @@ class Interpreter:
                     elif key_or_marker == "__computed__":
                         # Computed key: ([key_expr], value_node) tuple
                         key_expr_node, value_node_inner = val_node  # type: ignore[misc]
-                        computed_key = str(self._eval(key_expr_node, env))
+                        _ck = self._eval(key_expr_node, env)
+                        computed_key = _ck if isinstance(_ck, SprySymbol) else str(_ck)
                         result[computed_key] = self._eval(value_node_inner, env)
                     elif key_or_marker == "__computed_getter__":
                         key_expr_node, fn_node = val_node  # type: ignore[misc]
-                        computed_key = str(self._eval(key_expr_node, env))
+                        _ck2 = self._eval(key_expr_node, env)
+                        computed_key = _ck2 if isinstance(_ck2, SprySymbol) else str(_ck2)
                         getter_fn = self._eval(fn_node, env)
                         result[f"__getter__{computed_key}"] = getter_fn
                     elif key_or_marker == "__computed_setter__":
                         key_expr_node, fn_node = val_node  # type: ignore[misc]
-                        computed_key = str(self._eval(key_expr_node, env))
+                        _ck3 = self._eval(key_expr_node, env)
+                        computed_key = _ck3 if isinstance(_ck3, SprySymbol) else str(_ck3)
                         setter_fn = self._eval(fn_node, env)
                         result[f"__setter__{computed_key}"] = setter_fn
                     else:
@@ -2778,8 +2810,8 @@ class Interpreter:
                 if isinstance(obj, dict):
                     return obj.get(idx, SPRY_UNDEFINED)
                 return obj[idx]
-            except (KeyError, IndexError, TypeError) as e:
-                raise SpryRuntimeError(f"Index error: {e}", node)
+            except (KeyError, IndexError, TypeError):
+                return SPRY_UNDEFINED
 
         if isinstance(node, IndexExpression):
             obj = self._eval(node.object, env)
@@ -2854,6 +2886,26 @@ class Interpreter:
                 return left_val
             return self._eval(node.right, env)
 
+        if isinstance(node, NewExpression):
+            callee = self._eval(node.callee, env)
+            args: list[Any] = []
+            for a in node.args:
+                if isinstance(a, SpreadElement):
+                    spread_val = self._eval(a.expr, env)
+                    try:
+                        args.extend(self._iter_to_list(spread_val, a))
+                    except SpryRuntimeError:
+                        args.append(spread_val)
+                else:
+                    args.append(self._eval(a, env))
+            if isinstance(callee, SpryClass):
+                return self._construct_class(callee, args, node)
+            if isinstance(callee, SpryFunction):
+                return self._construct_plain_function(callee, args, node)
+            if isinstance(callee, SpryProxy):
+                return callee._spry_apply(None, args)
+            raise SpryRuntimeError(f"Cannot construct {type(callee).__name__}", node)
+
         if isinstance(node, InExpression):
             item_val = self._eval(node.item, env)
             coll_val = self._eval(node.collection, env)
@@ -2870,8 +2922,15 @@ class Interpreter:
                     except ValueError:
                         pass
                 return item_val in coll_val
+            if isinstance(coll_val, SpryProxy):
+                return coll_val._spry_has_prop(str(item_val))
             if isinstance(coll_val, dict):
-                return item_val in coll_val
+                cur: Any = coll_val
+                while cur is not None:
+                    if isinstance(cur, dict) and item_val in cur:
+                        return True
+                    cur = cur.get("__spry_proto__") if isinstance(cur, dict) else None
+                return False
             if isinstance(coll_val, str):
                 return str(item_val) in coll_val
             if isinstance(coll_val, SpryInstance):
@@ -3059,6 +3118,11 @@ class Interpreter:
                 left = self._to_primitive(left, "default")
             if isinstance(right, SpryInstance):
                 right = self._to_primitive(right, "default")
+            # Coerce dict with toPrimitive
+            if isinstance(left, dict):
+                left = self._dict_to_primitive(left, "default")
+            if isinstance(right, dict):
+                right = self._dict_to_primitive(right, "default")
             # When one operand is a string, coerce the other to string (JS-style)
             if isinstance(left, str) and not isinstance(right, str):
                 right = self._builtin_str(right)
@@ -3086,6 +3150,10 @@ class Interpreter:
                 right = self._to_numeric(right)
             return left * right
         if op == "/":
+            if isinstance(left, _SpryBigInt) and isinstance(right, _SpryBigInt):
+                if right._value == 0:
+                    raise SpryRuntimeError("Division by zero", node)
+                return left // right  # BigInt integer division
             if isinstance(left, SpryInstance):
                 left = self._to_numeric(left)
             if isinstance(right, SpryInstance):
@@ -3150,6 +3218,8 @@ class Interpreter:
         if node.op == "+":
             return self._to_numeric(operand)
         if node.op == "-":
+            if isinstance(operand, _SpryBigInt):
+                return -operand
             if isinstance(operand, int) and operand == 0:
                 return float(-0.0)  # JS-style negative zero
             return -self._to_numeric(operand)
@@ -3177,6 +3247,9 @@ class Interpreter:
 
         if isinstance(callee, SpryClass):
             return self._construct_class(callee, args, node)
+
+        if isinstance(callee, SpryProxy):
+            return callee._spry_apply(None, args)
 
         if isinstance(callee, SpryStruct):
             return callee.create(args)
@@ -6575,7 +6648,7 @@ class Interpreter:
         # Call init() / constructor() if defined (skip when building inheritance field structure)
         if not _for_inheritance:
             prev_new_target = getattr(self._tl, "new_target", None)
-            self._tl.new_target = cls.name  # type: ignore[attr-defined]
+            self._tl.new_target = cls  # type: ignore[attr-defined]
             try:
                 ctor_fn = fields.get("init") or fields.get("constructor")
                 if isinstance(ctor_fn, SpryFunction):
@@ -6590,6 +6663,58 @@ class Interpreter:
                 self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
 
         return instance
+
+    def _construct_plain_function(self, fn: SpryFunction, args: list[Any], node: Node) -> Any:
+        """Construct a new object using a plain function as constructor (new Fn())."""
+        this: dict[str, Any] = {}
+        proto = fn._prototype
+        if proto is not None:
+            this["__spry_proto__"] = proto
+        child = fn.closure.child()
+        child.define("arguments", list(args), mutable=False)
+        child.define("this", this, mutable=True)
+        child.define("self", this, mutable=True)
+        for i, (pname, _ptype) in enumerate(fn.params):
+            if pname.startswith("__destruct__:"):
+                field_specs = pname[len("__destruct__:"):].split(",")
+                arg_val = args[i] if i < len(args) else {}
+                if not isinstance(arg_val, dict):
+                    arg_val = {}
+                for fspec in field_specs:
+                    fspec = fspec.strip()
+                    if "|" in fspec:
+                        fkey, flocal = fspec.split("|", 1)
+                    else:
+                        fkey = flocal = fspec
+                    fval = arg_val.get(fkey)
+                    child.define(flocal, fval, mutable=False)
+            elif i < len(args):
+                child.define(pname, args[i], mutable=False)
+            elif pname in fn.defaults:
+                child.define(pname, self._eval(fn.defaults[pname], fn.closure), mutable=False)
+            else:
+                child.define(pname, None, mutable=False)
+        if fn.rest_param is not None:
+            child.define(fn.rest_param, list(args[len(fn.params):]), mutable=False)
+        prev_new_target = getattr(self._tl, "new_target", SPRY_UNDEFINED)
+        self._tl.new_target = fn  # type: ignore[attr-defined]
+        return_val = None
+        try:
+            try:
+                self._exec_block(fn.body, child)
+            except ReturnSignal as r:
+                return_val = r.value
+        finally:
+            self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
+        # If function explicitly returned an object, use that; otherwise return this
+        if return_val is not None and isinstance(return_val, (dict, SpryInstance)):
+            return return_val
+        # Sync back any mutations to `this`
+        try:
+            this = child.get("this")
+        except Exception:
+            pass
+        return this
 
     def _call_value(self, fn: Any, args: list) -> Any:
         """Call any SpryCode value as a function (used by event handlers, etc.)."""

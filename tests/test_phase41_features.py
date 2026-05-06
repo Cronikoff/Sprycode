@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from sprycode.interpreter import Interpreter
+from sprycode.interpreter import Interpreter, SPRY_UNDEFINED
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
 
@@ -341,7 +341,7 @@ class TestOptionalMethodCallArgs:
     def test_optional_call_expression_null(self) -> None:
         """fn?.(args) — existing OptionalCallExpression still works."""
         i = run("let f = null; let v = f?.(1, 2, 3)")
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED
 
     def test_optional_call_expression_non_null(self) -> None:
         i = run("fn double(x) { return x * 2 }; let v = double?.(7)")

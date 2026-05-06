@@ -8,7 +8,7 @@ Covers:
 """
 
 import pytest
-from sprycode.interpreter import Interpreter
+from sprycode.interpreter import Interpreter, SPRY_UNDEFINED
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
 
@@ -127,11 +127,11 @@ for (let i of [1, 2])
 class TestOptionalChainingIndex:
     def test_optional_index_null_returns_undefined(self):
         i = run("let v = null?.[0]")
-        assert val(i) is None  # null short-circuits
+        assert val(i) == SPRY_UNDEFINED  # null short-circuits
 
     def test_optional_index_undefined_returns_undefined(self):
         i = run("let obj = {}; let v = obj.missing?.[0]")
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED
 
     def test_optional_index_out_of_bounds_returns_undefined(self):
         """arr?.[n] where arr is not null but index is out of bounds → undefined."""
@@ -165,7 +165,7 @@ let v = data?.items?.[1]
 let data = null
 let v = data?.items?.[0]
 """)
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED
 
 
 # ---------------------------------------------------------------------------

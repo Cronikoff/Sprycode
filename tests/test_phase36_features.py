@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from sprycode.interpreter import Interpreter, SpryFinalizationRegistry, SpryURL, SpryWeakRef
+from sprycode.interpreter import Interpreter, SPRY_UNDEFINED, SpryFinalizationRegistry, SpryURL, SpryWeakRef
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
 
@@ -401,7 +401,7 @@ class TestDictMissingProperty:
 
     def test_optional_chain_on_missing(self) -> None:
         src = "let obj = {a: 1}; let v = obj.missing?.nested"
-        assert val(src) is None
+        assert val(src) == SPRY_UNDEFINED
 
     def test_known_methods_still_work(self) -> None:
         """Dict methods like .keys(), .values() still work despite fallback."""

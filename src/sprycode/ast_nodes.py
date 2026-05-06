@@ -565,6 +565,7 @@ class StringLiteral(Node):
 class NumberLiteral(Node):
     value: float = 0.0
     raw: str = ""
+    is_bigint: bool = False
 
 
 @dataclass

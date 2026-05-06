@@ -413,7 +413,12 @@ class Parser:
         if tok.type == TokenType.SCHEDULE:
             return self._parse_schedule()
         if tok.type == TokenType.TEST:
-            return self._parse_test_block()
+            # Only parse as a test block if next token is a STRING (test "name" { ... })
+            # Otherwise treat `test` as a plain identifier expression
+            peek = self.tokens[self.pos + 1] if self.pos + 1 < len(self.tokens) else None
+            if peek is not None and peek.type == TokenType.STRING:
+                return self._parse_test_block()
+            # Fall through to expression parsing
         if tok.type == TokenType.EXPECT:
             return self._parse_expect()
         if tok.type == TokenType.MATCH:
@@ -3541,9 +3546,9 @@ class Parser:
         if tok.type == TokenType.NUMBER:
             self._advance()
             if tok.value.endswith("n"):
-                # BigInt literal: 42n → store as integer in NumberLiteral
+                # BigInt literal: 42n → integer value, marked as bigint
                 val = float(int(tok.value[:-1]))
-                return NumberLiteral(value=val, raw=tok.value, line=tok.line, column=tok.column)
+                return NumberLiteral(value=val, raw=tok.value, is_bigint=True, line=tok.line, column=tok.column)
             val = float(tok.value)
             return NumberLiteral(value=val, raw=tok.value, line=tok.line, column=tok.column)
 

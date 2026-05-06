@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from sprycode.interpreter import (
+    SPRY_UNDEFINED,
     Interpreter,
     SpryClass,
     SpryInstance,
@@ -348,7 +349,7 @@ let v = arr?.[1]
 let arr = null
 let v = arr?.[0]
 """)
-        assert val(i, "v") is None
+        assert val(i, "v") == SPRY_UNDEFINED
 
     def test_optional_index_dict(self):
         i = run("""
@@ -362,7 +363,7 @@ let v = obj?.["a"]
 let obj = null
 let v = obj?.["key"]
 """)
-        assert val(i, "v") is None
+        assert val(i, "v") == SPRY_UNDEFINED
 
 
 # ---------------------------------------------------------------------------

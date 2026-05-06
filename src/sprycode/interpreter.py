@@ -212,6 +212,93 @@ class _SpryUndefinedType:
 SPRY_UNDEFINED = _SpryUndefinedType()
 
 
+class _SpryBigInt(int):
+    """Representation of a JavaScript BigInt value (e.g. ``42n``).
+
+    Subclasses ``int`` so that normal Python arithmetic works, but we can
+    distinguish it from regular numbers via ``isinstance`` checks.
+    BigInt operations always return ``_SpryBigInt`` (except mixed-type, which raises).
+    """
+
+    def __repr__(self) -> str:
+        return f"{int(self)}n"
+
+    def __str__(self) -> str:
+        return f"{int(self)}"
+
+    def __add__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) + int(other))
+        return NotImplemented
+
+    def __sub__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) - int(other))
+        return NotImplemented
+
+    def __mul__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) * int(other))
+        return NotImplemented
+
+    def __floordiv__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) // int(other))
+        return NotImplemented
+
+    def __truediv__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        # BigInt / BigInt → integer division (JS behaviour)
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) // int(other))
+        return NotImplemented
+
+    def __mod__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) % int(other))
+        return NotImplemented
+
+    def __pow__(self, other: Any, mod: Any = None) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) ** int(other))
+        return NotImplemented
+
+    def __neg__(self) -> "_SpryBigInt":  # type: ignore[override]
+        return _SpryBigInt(-int(self))
+
+    def __abs__(self) -> "_SpryBigInt":  # type: ignore[override]
+        return _SpryBigInt(abs(int(self)))
+
+    def __lshift__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) << int(other))
+        return NotImplemented
+
+    def __rshift__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) >> int(other))
+        return NotImplemented
+
+    def __and__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) & int(other))
+        return NotImplemented
+
+    def __or__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) | int(other))
+        return NotImplemented
+
+    def __xor__(self, other: Any) -> "_SpryBigInt":  # type: ignore[override]
+        if isinstance(other, _SpryBigInt):
+            return _SpryBigInt(int(self) ^ int(other))
+        return NotImplemented
+
+    # Right-hand versions
+    __radd__ = __add__
+    __rsub__ = lambda self, other: NotImplemented  # type: ignore[assignment]
+    __rmul__ = __mul__
+
+
 def _make_sequence_iter(items: list) -> Any:
     """Return a callable that creates a fresh iterator dict over *items*.
 
@@ -436,6 +523,7 @@ class SpryLambda:
         self.body = body
         self.closure = closure
         self.operation: str | None = None  # used by pipeline stages
+        self._spry_name: str = ""  # inferred name from assignment LHS
 
     def __repr__(self) -> str:
         return f"<lambda {self.param}>"
@@ -450,6 +538,7 @@ class SpryMultiLambda:
         self.closure = closure
         self.operation: str | None = None  # used by pipeline stages
         self.init: Any = None  # used by reduce_with_init
+        self._spry_name: str = ""  # inferred name from assignment LHS
 
     def __repr__(self) -> str:
         return f"<lambda ({', '.join(self.params)})>"
@@ -2014,7 +2103,9 @@ class Interpreter:
             return None
 
         if isinstance(node, LetDeclaration):
-            value = self._eval(node.value, env) if node.value is not None else None
+            value = self._eval(node.value, env) if node.value is not None else SPRY_UNDEFINED
+            if isinstance(value, (SpryLambda, SpryMultiLambda)) and not value._spry_name:
+                value._spry_name = node.name
             env.define(node.name, value, mutable=not node.is_const)
             return None
 
@@ -2027,6 +2118,8 @@ class Interpreter:
 
         if isinstance(node, VarDeclaration):
             value = self._eval(node.value, env) if node.value is not None else None
+            if isinstance(value, (SpryLambda, SpryMultiLambda)) and not value._spry_name:
+                value._spry_name = node.name
             env.define(node.name, value, mutable=True)
             return None
 
@@ -2593,6 +2686,8 @@ class Interpreter:
             return node.value
 
         if isinstance(node, NumberLiteral):
+            if node.is_bigint:
+                return _SpryBigInt(int(node.value))
             # Return int if no fractional part
             val = node.value
             if val == int(val):
@@ -2681,7 +2776,7 @@ class Interpreter:
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
             if callee is None or callee is SPRY_UNDEFINED:
-                return None
+                return SPRY_UNDEFINED
             args: list[Any] = []
             for a in node.args:
                 if isinstance(a, SpreadElement):
@@ -2741,14 +2836,14 @@ class Interpreter:
 
         if isinstance(node, OptionalMemberExpression):
             obj = self._eval(node.object, env)
-            if obj is None:
-                return None
+            if obj is None or isinstance(obj, _SpryUndefinedType):
+                return SPRY_UNDEFINED
             return self._eval_member_on(obj, node.property, node)
 
         if isinstance(node, OptionalIndexExpression):
             obj = self._eval(node.object, env)
-            if obj is None:
-                return None
+            if obj is None or isinstance(obj, _SpryUndefinedType):
+                return SPRY_UNDEFINED
             idx = self._eval(node.index, env)
             try:
                 if isinstance(obj, dict):
@@ -3887,7 +3982,12 @@ class Interpreter:
                     return acc
                 return _list_reduce_right
             if prop == "findIndex":
-                return lambda pred: next((i for i, x in enumerate(obj) if self._truthy(pred(x))), -1)
+                def _list_findIndex(pred: Any, _o: list = obj) -> int:
+                    _arity = getattr(pred, "_spry_arity", 1)
+                    if _arity > 1:
+                        return next((i for i, x in enumerate(_o) if self._truthy(pred(x, i, _o))), -1)
+                    return next((i for i, x in enumerate(_o) if self._truthy(pred(x))), -1)
+                return _list_findIndex
             if prop == "concat":
                 def _list_concat(*others: Any) -> list:
                     result = list(obj)
@@ -3981,10 +4081,22 @@ class Interpreter:
             if prop == "shift":
                 return obj.pop(0) if obj else None
             if prop == "findLast":
-                return lambda pred: next((x for x in reversed(obj) if self._truthy(pred(x))), None)
+                def _list_findLast(pred: Any, _o: list = obj) -> Any:
+                    _arity = getattr(pred, "_spry_arity", 1)
+                    if _arity > 1:
+                        return next((x for i, x in enumerate(reversed(_o))
+                                     if self._truthy(pred(x, len(_o) - 1 - i, _o))), None)
+                    return next((x for x in reversed(_o) if self._truthy(pred(x))), None)
+                return _list_findLast
             if prop == "findLastIndex":
-                return lambda pred: next((i for i in range(len(obj) - 1, -1, -1)
-                                          if self._truthy(pred(obj[i]))), -1)
+                def _list_findLastIndex(pred: Any, _o: list = obj) -> int:
+                    _arity = getattr(pred, "_spry_arity", 1)
+                    if _arity > 1:
+                        return next((i for i in range(len(_o) - 1, -1, -1)
+                                     if self._truthy(pred(_o[i], i, _o))), -1)
+                    return next((i for i in range(len(_o) - 1, -1, -1)
+                                 if self._truthy(pred(_o[i]))), -1)
+                return _list_findLastIndex
             if prop in ("toReversed", "reversed"):
                 return list(reversed(obj))
             if prop in ("toSorted", "sortedBy"):
@@ -4913,6 +5025,8 @@ class Interpreter:
             if prop == "name":
                 if isinstance(obj, SpryFunction):
                     return obj.name
+                if isinstance(obj, (SpryLambda, SpryMultiLambda)):
+                    return obj._spry_name
                 return ""
             if prop == "length":
                 if isinstance(obj, SpryFunction):
@@ -5972,6 +6086,8 @@ class Interpreter:
             return "object"  # JS quirk: typeof null === 'object'
         if isinstance(val, bool):
             return "boolean"
+        if isinstance(val, _SpryBigInt):
+            return "bigint"
         if isinstance(val, (int, float)):
             return "number"
         if isinstance(val, str):
@@ -10013,6 +10129,8 @@ class SpryWeakMap:
         self._data: dict = {}
 
     def set(self, key: Any, value: Any) -> "SpryWeakMap":
+        if isinstance(key, (bool, int, float, str, _SpryUndefinedType)) or key is None:
+            raise TypeError(f"Invalid value used as weak map key: {type(key).__name__}")
         self._data[id(key)] = (key, value)
         return self
 

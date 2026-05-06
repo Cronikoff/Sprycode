@@ -1343,7 +1343,9 @@ class Interpreter:
         _array_ns = _ArrayNamespace()
         _array_ns._interp = self
         env.define("Array", _array_ns)
-        env.define("Object", _ObjectNamespace(call_fn=self._call_value))
+        _object_ns = _ObjectNamespace(call_fn=self._call_value)
+        self._object_ns = _object_ns
+        env.define("Object", _object_ns)
         env.define("Number", _NumberNamespace())
 
         # Event bus
@@ -2051,7 +2053,7 @@ class Interpreter:
                 obj.set(node.property, value)
             elif isinstance(obj, dict):
                 # Check for frozen object — silently ignore writes (JS non-strict behavior)
-                if id(obj) in _SPRY_FROZEN_IDS:
+                if id(obj) in self._object_ns._frozen_ids:
                     return None
                 # Check for setter
                 setter_key = f"__setter__{node.property}"
@@ -7228,8 +7230,8 @@ class _ObjectNamespace:
 
     def __init__(self, call_fn: Any = None) -> None:
         self._call_fn = call_fn
-        self._sealed_ids: set = _SPRY_SEALED_IDS
-        self._frozen_ids: set = _SPRY_FROZEN_IDS
+        self._sealed_ids: set = set()
+        self._frozen_ids: set = set()
 
     def keys(self, obj: Any) -> list:
         """Return the string-keyed enumerable properties (excludes symbol keys)."""
@@ -7388,7 +7390,7 @@ class _ObjectNamespace:
 
     def isExtensible(self, obj: Any) -> bool:
         """Return True if the object is extensible."""
-        if id(obj) in _SPRY_FROZEN_IDS or id(obj) in _SPRY_SEALED_IDS:
+        if id(obj) in self._frozen_ids or id(obj) in self._sealed_ids:
             return False
         if isinstance(obj, dict):
             return not obj.get("__non_extensible__", False)

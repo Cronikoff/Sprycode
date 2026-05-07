@@ -2778,7 +2778,7 @@ class Interpreter:
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
             if callee is None or isinstance(callee, _SpryUndefinedType):
-                return None
+                return SPRY_UNDEFINED
             args: list[Any] = []
             for a in node.args:
                 if isinstance(a, SpreadElement):
@@ -2839,13 +2839,13 @@ class Interpreter:
         if isinstance(node, OptionalMemberExpression):
             obj = self._eval(node.object, env)
             if obj is None or isinstance(obj, _SpryUndefinedType):
-                return None
+                return SPRY_UNDEFINED
             return self._eval_member_on(obj, node.property, node)
 
         if isinstance(node, OptionalIndexExpression):
             obj = self._eval(node.object, env)
             if obj is None or isinstance(obj, _SpryUndefinedType):
-                return None
+                return SPRY_UNDEFINED
             idx = self._eval(node.index, env)
             try:
                 if isinstance(obj, dict):
@@ -4785,9 +4785,6 @@ class Interpreter:
             raise SpryRuntimeError(f"Struct {obj.name!r} has no property {prop!r}", node)
 
         if isinstance(obj, SpryPromise):
-            resolved = obj._value if obj._settled else None
-            if isinstance(resolved, dict) and "value" in resolved and "done" in resolved and prop in resolved:
-                return resolved[prop]
             if prop == "status":
                 return obj.status
             if prop == "state":

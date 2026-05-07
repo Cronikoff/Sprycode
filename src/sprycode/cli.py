@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .interpreter import Interpreter as _InterpreterType
 
 try:
     import click
@@ -26,7 +29,7 @@ from .permissions import PermissionSet
 from .runtime.stdlib import SpryLogger
 
 
-def _parse_and_run(source: str, filename: str, task_name: str | None, secure: bool) -> int:
+def _parse_and_run(source: str, filename: str, task_name: str | None, secure: bool, debug: bool = False) -> int:
     """Parse and execute a SpryCode program. Returns exit code."""
     try:
         lexer = Lexer(source, filename)
@@ -49,6 +52,9 @@ def _parse_and_run(source: str, filename: str, task_name: str | None, secure: bo
     logger = SpryLogger()
     interp = Interpreter(logger=logger, permissions=permissions)
 
+    if debug:
+        _attach_debug_hook(interp, filename)
+
     try:
         if task_name:
             interp.run_task(program, task_name)
@@ -63,6 +69,53 @@ def _parse_and_run(source: str, filename: str, task_name: str | None, secure: bo
         return 1
 
 
+def _attach_debug_hook(interp: Any, filename: str = "<unknown>") -> None:
+    """Attach a debug hook to the interpreter that prints variable state on `debugger;`."""
+    def _hook(env: Any) -> None:
+        _debug_print(f"\n[DEBUG] Breakpoint hit in {filename}")
+        _print_env_vars(env, builtin_keys=getattr(interp, "_builtin_keys", frozenset()))
+    interp._debugger_hook = _hook
+
+
+def _debug_print(msg: str) -> None:
+    """Print debug messages — uses click if available, else print."""
+    if click is not None:
+        click.echo(msg, err=True)
+    else:
+        print(msg, file=sys.stderr)
+
+
+def _print_env_vars(env: Any, max_vars: int = 30, builtin_keys: "frozenset[str] | None" = None) -> None:
+    """Pretty-print user-defined variables in the given environment frame.
+
+    If *builtin_keys* is provided (from ``Interpreter._builtin_keys``), only
+    variables that are NOT in that set are displayed — hiding all built-in
+    globals from debug output.
+    """
+    from .interpreter import SPRY_UNDEFINED, _SpryUndefinedType, SpryFunction, SpryClass
+    if builtin_keys is None:
+        # Fallback static skip-list for callers that don't have the interpreter reference
+        builtin_keys = frozenset()
+    items = [
+        (k, v) for k, v in env._vars.items()
+        if k not in builtin_keys and not k.startswith("__")
+    ]
+    items = items[:max_vars]
+    if not items:
+        _debug_print("  (no user variables)")
+        return
+    for k, v in items:
+        if isinstance(v, (SpryFunction, SpryClass)):
+            display = f"[function {k}]"
+        elif isinstance(v, _SpryUndefinedType):
+            display = "undefined"
+        elif v is None:
+            display = "null"
+        else:
+            display = repr(v)
+        _debug_print(f"  {k} = {display}")
+
+
 if click is not None:
     @click.group()
     @click.version_option(version=__version__, prog_name="spry")
@@ -75,13 +128,15 @@ if click is not None:
     @click.option("--task", "-t", default=None, help="Run a specific named task")
     @click.option("--secure", is_flag=True, default=False, help="Enable strict permission mode")
     @click.option("--file", "-f", "source_file", default=None, help="Path to a .spry file")
-    def run_cmd(source: str | None, task_arg: str | None, task: str | None, secure: bool, source_file: str | None):
+    @click.option("--debug", "-d", is_flag=True, default=False, help="Enable debug output (print each statement before executing)")
+    def run_cmd(source: str | None, task_arg: str | None, task: str | None, secure: bool, source_file: str | None, debug: bool):
         """Run a SpryCode program or task.
 
         Usage:
           spry run main.spry             # Run the program
           spry run main.spry myTask      # Run a specific task
           spry run main.spry --task myTask
+          spry run main.spry --debug     # Run with debug output
         """
         # Determine the file and task name
         task_name = task or task_arg
@@ -113,7 +168,7 @@ if click is not None:
             sys.exit(1)
 
         source_code = file_path.read_text(encoding="utf-8")
-        exit_code = _parse_and_run(source_code, str(file_path), task_name, secure)
+        exit_code = _parse_and_run(source_code, str(file_path), task_name, secure, debug=debug)
         sys.exit(exit_code)
 
     @main.command("build")
@@ -378,6 +433,222 @@ if click is not None:
         except (LexerError, ParseError) as e:
             click.echo(f"[ERROR] {e}", err=True)
             sys.exit(1)
+
+    @main.command("repl")
+    @click.option("--secure", is_flag=True, default=False, help="Enable secure mode")
+    @click.option("--debug", "-d", is_flag=True, default=False, help="Enable debug mode (hook into debugger; statements)")
+    def repl_cmd(secure: bool, debug: bool):
+        """Start an interactive SpryCode REPL.
+
+        Debug commands available in the REPL:
+          .vars    — show all user-defined variables
+          .reset   — reset interpreter state
+          .load    — load and run a .spry file
+          .type    — show the type of an expression
+          .ast     — show the AST of an expression
+        """
+        _run_repl(secure=secure, debug=debug)
+
+    def _run_repl(secure: bool = False, debug: bool = False) -> None:
+        """Interactive Read-Eval-Print Loop for SpryCode."""
+        try:
+            import readline as _rl  # noqa: F401 -- enables history/editing; optional
+        except ImportError:
+            pass  # readline not available in this environment
+
+        banner = (
+            f"SpryCode {__version__} REPL\n"
+            "Type .help for commands, .exit to quit\n"
+        )
+        click.echo(banner)
+
+        permissions = PermissionSet()
+        if secure:
+            permissions.enable_secure_mode()
+
+        logger = SpryLogger()
+        interp = Interpreter(logger=logger, permissions=permissions)
+
+        if debug:
+            # In debug mode, hitting `debugger;` prints current variable state
+            def _dbg_hook(env: Any) -> None:
+                click.echo("\n[debugger] Variables in current scope:", err=True)
+                _print_env_vars(env, builtin_keys=interp._builtin_keys)
+            interp._debugger_hook = _dbg_hook
+
+        history: list[str] = []
+        _COMMANDS = {
+            ".exit": "Exit the REPL",
+            ".quit": "Exit the REPL",
+            ".help": "Show available REPL commands",
+            ".clear": "Clear the screen",
+            ".history": "Show command history",
+            ".vars": "Show all user-defined variables",
+            ".reset": "Reset the interpreter state (clear all variables)",
+            ".load <f>": "Load and execute a .spry file into the current session",
+            ".type <e>": "Evaluate an expression and print its type",
+            ".ast <e>": "Show the AST of an expression or statement",
+        }
+
+        def _show_help() -> None:
+            click.echo("Available REPL commands:")
+            for cmd, desc in _COMMANDS.items():
+                click.echo(f"  {cmd:<14} {desc}")
+            click.echo("Multi-line: end a line with \\ to continue on next line")
+            click.echo("Up/Down arrows: navigate history (on supported terminals)")
+
+        def _is_incomplete(src: str) -> bool:
+            """Heuristic: source ends with { or ( or \\ — needs more input."""
+            stripped = src.rstrip()
+            if not stripped:
+                return False
+            last_char = stripped[-1]
+            if last_char in ("{", "(", "[", ",", "\\"):
+                return True
+            # Count unbalanced braces/parens
+            opens = stripped.count("{") + stripped.count("(") + stripped.count("[")
+            closes = stripped.count("}") + stripped.count(")") + stripped.count("]")
+            return opens > closes
+
+        def _spry_repr(value: Any) -> str:
+            """Format a SpryCode value for REPL output."""
+            from .interpreter import SPRY_UNDEFINED, _SpryUndefinedType
+            if isinstance(value, _SpryUndefinedType):
+                return "undefined"
+            if value is None:
+                return "null"
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            if isinstance(value, str):
+                return repr(value)
+            return repr(value)
+
+        def _eval_source(src: str) -> None:
+            try:
+                lex = Lexer(src, "<repl>")
+                tokens = lex.tokenize()
+                prs = Parser(tokens)
+                program = prs.parse()
+            except LexerError as e:
+                click.echo(f"[SyntaxError] {e}", err=True)
+                return
+            except ParseError as e:
+                click.echo(f"[SyntaxError] {e}", err=True)
+                return
+            try:
+                result = interp.run(program)
+                if result is not None:
+                    from .interpreter import SPRY_UNDEFINED, _SpryUndefinedType
+                    if not isinstance(result, _SpryUndefinedType):
+                        click.echo(_spry_repr(result))
+            except SpryRuntimeError as e:
+                click.echo(f"[RuntimeError] {e}", err=True)
+            except Exception as e:  # noqa: BLE001
+                click.echo(f"[Error] {e}", err=True)
+
+        def _cmd_vars() -> None:
+            """Show all user-defined variables in the global scope."""
+            _print_env_vars(interp.globals, builtin_keys=interp._builtin_keys)
+
+        def _cmd_reset() -> None:
+            """Reset interpreter state — clear all user variables."""
+            nonlocal interp
+            interp = Interpreter(logger=logger, permissions=permissions)
+            if debug:
+                def _dbg_hook(env: Any) -> None:
+                    click.echo("\n[debugger] Variables in current scope:", err=True)
+                    _print_env_vars(env, builtin_keys=interp._builtin_keys)
+                interp._debugger_hook = _dbg_hook
+            click.echo("[repl] Interpreter state reset.")
+
+        def _cmd_load(args: str) -> None:
+            """Load and execute a .spry file into current session."""
+            path = Path(args.strip())
+            if not path.exists():
+                click.echo(f"[ERROR] File not found: {path}", err=True)
+                return
+            try:
+                src = path.read_text(encoding="utf-8")
+                _eval_source(src)
+                click.echo(f"[repl] Loaded {path}")
+            except OSError as e:
+                click.echo(f"[ERROR] {e}", err=True)
+
+        def _cmd_type(expr: str) -> None:
+            """Evaluate expression and print its JS-style type."""
+            src = f"typeof ({expr.strip()})"
+            _eval_source(src)
+
+        def _cmd_ast(expr: str) -> None:
+            """Show the AST of expression/statement."""
+            try:
+                lex = Lexer(expr.strip(), "<repl>")
+                tokens = lex.tokenize()
+                prs = Parser(tokens)
+                program = prs.parse()
+                import pprint
+                for node in program.body:
+                    click.echo(pprint.pformat(node))
+            except (LexerError, ParseError) as e:
+                click.echo(f"[SyntaxError] {e}", err=True)
+
+        buffer: list[str] = []
+        while True:
+            prompt = "spry> " if not buffer else "  ... "
+            try:
+                line = click.prompt(prompt, prompt_suffix="", default="", show_default=False)
+            except (EOFError, KeyboardInterrupt):
+                click.echo("\nGoodbye!")
+                break
+
+            # Special REPL commands
+            stripped_line = line.strip()
+            if stripped_line in (".exit", ".quit"):
+                click.echo("Goodbye!")
+                break
+            if stripped_line == ".help":
+                _show_help()
+                continue
+            if stripped_line == ".clear":
+                click.clear()
+                continue
+            if stripped_line == ".history":
+                for i, h in enumerate(history, 1):
+                    click.echo(f"  {i:4d}  {h}")
+                continue
+            if stripped_line == ".vars":
+                _cmd_vars()
+                continue
+            if stripped_line == ".reset":
+                _cmd_reset()
+                continue
+            if stripped_line.startswith(".load "):
+                _cmd_load(stripped_line[6:])
+                continue
+            if stripped_line.startswith(".type "):
+                history.append(stripped_line)
+                _cmd_type(stripped_line[6:])
+                continue
+            if stripped_line.startswith(".ast "):
+                history.append(stripped_line)
+                _cmd_ast(stripped_line[5:])
+                continue
+
+            # Accumulate multi-line input
+            buffer.append(line)
+            source = "\n".join(buffer)
+
+            if _is_incomplete(source):
+                continue  # get more lines
+
+            # Have complete source
+            full_source = source.strip()
+            buffer = []
+            if not full_source:
+                continue
+
+            history.append(full_source)
+            _eval_source(full_source)
 
 else:
     # Minimal CLI without click

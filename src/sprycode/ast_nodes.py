@@ -818,6 +818,9 @@ class AnonymousFunctionExpression(Node):
     body: "Block | None" = None
     defaults: dict[str, "Node"] = field(default_factory=dict)
     rest_param: str | None = None
+    name: str | None = None  # for named function expressions: let f = function foo() {}
+    is_async: bool = False
+    is_generator: bool = False
 
 
 @dataclass
@@ -1026,4 +1029,31 @@ class ComputedMethodDeclaration(Node):
     rest_param: "str | None" = None
 
 
+@dataclass
+class NewTargetExpression(Node):
+    """new.target — the constructor that was called with new."""
+    pass
 
+
+@dataclass
+class UsingDeclaration(Node):
+    """using name = expr — resource management declaration."""
+    name: str = ""
+    value: "Node | None" = None
+
+
+
+
+
+
+@dataclass
+class ComputedFieldDeclaration(Node):
+    """static [expr] = value — static class field with computed name."""
+    key: "Node | None" = None
+    value: "Node | None" = None
+    is_static: bool = True
+
+
+@dataclass
+class DebuggerStatement(Node):
+    """debugger; — breakpoint hint, no-op at runtime unless debug mode is active."""

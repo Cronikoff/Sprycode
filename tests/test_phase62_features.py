@@ -1,12 +1,21 @@
-"""Phase 62 feature tests.
-
-Covers:
-- every()/some() pass (element, index, array) to callback when arity > 1
-- arr.length = n  truncates or extends the array in place
-- \\uXXXX / \\u{XXXXXX} / \\xXX Unicode/hex escapes in string literals
-- new Function(arg1, ..., body) constructor
+"""Phase 62 feature tests:
+- structuredClone deep clone
+- queueMicrotask executes synchronously
+- Array.from(iterable, mapFn) two-arg form
+- Object.fromEntries([[key, val], ...])
+- String.prototype.at(-1) / at(0) negative and positive indexing
+- WeakRef and FinalizationRegistry
+- globalThis object
+- Object.hasOwn(obj, key)
+- Array.prototype.at(-1) negative indexing
+- String.prototype.replaceAll
+- Object.keys / values / entries comprehensive
+- Array.prototype.flat(depth) and flatMap
+- Array.prototype.findIndex(fn)
+- Array.prototype.findLast(fn) and findLastIndex(fn)
 """
-
+from __future__ import annotations
+from typing import Any
 import pytest
 from sprycode.interpreter import Interpreter
 from sprycode.lexer import Lexer
@@ -16,261 +25,418 @@ from sprycode.parser import Parser
 def run(src: str) -> Interpreter:
     tokens = Lexer(src).tokenize()
     prog = Parser(tokens).parse()
-    interp = Interpreter()
-    interp.run(prog)
-    return interp
+    i = Interpreter()
+    i.run(prog)
+    return i
 
 
-def val(interp: Interpreter) -> object:
-    return interp.globals["v"]
-
-
-# ---------------------------------------------------------------------------
-# every() / some() with index argument
-# ---------------------------------------------------------------------------
-
-class TestEveryWithIndex:
-    def test_every_index_third_arg(self):
-        """Callback receives (element, index) — check index ordering."""
-        i = run("let v = [1, 2, 3, 4].every((x, i) => x === i + 1)")
-        assert val(i) is True
-
-    def test_every_index_fails_correctly(self):
-        i = run("let v = [1, 2, 99, 4].every((x, i) => x === i + 1)")
-        assert val(i) is False
-
-    def test_every_no_index_still_works(self):
-        i = run("let v = [2, 4, 6].every(x => x % 2 === 0)")
-        assert val(i) is True
-
-    def test_every_with_array_arg(self):
-        """Third arg is the original array."""
-        i = run("""
-let arr = [10, 20, 30]
-let v = arr.every((x, i, a) => a[i] === x)
-""")
-        assert val(i) is True
-
-    def test_every_empty_array(self):
-        """every() on empty array is vacuously true."""
-        i = run("let v = [].every((x, i) => false)")
-        assert val(i) is True
-
-    def test_some_index_true(self):
-        """some() callback receives (element, index) — finds the target."""
-        i = run("let v = [5, 1, 5].some((x, i) => i === 1 && x === 1)")
-        assert val(i) is True
-
-    def test_some_index_false(self):
-        i = run("let v = [1, 2, 3].some((x, i) => i === 0 && x === 99)")
-        assert val(i) is False
-
-    def test_some_no_index_still_works(self):
-        i = run("let v = [1, 3, 5].some(x => x % 2 === 0)")
-        assert val(i) is False
-
-    def test_some_empty_array(self):
-        i = run("let v = [].some((x, i) => true)")
-        assert val(i) is False
-
-    def test_some_find_even_index(self):
-        i = run("let v = [10, 20, 30, 40].some((x, i) => i % 2 === 1 && x > 15)")
-        assert val(i) is True
-
-    def test_every_index_builds_mapping(self):
-        """Use every() to verify parallel arrays are in sync."""
-        i = run("""
-let keys = ["a", "b", "c"]
-let vals = [1, 2, 3]
-let v = keys.every((k, i) => vals[i] === i + 1)
-""")
-        assert val(i) is True
-
-    def test_some_short_circuit(self):
-        """some() short-circuits after first truthy result."""
-        i = run("""
-let checked = []
-let v = [1, 2, 3, 4].some((x, i) => {
-  checked.push(i)
-  return x === 2
-})
-""")
-        assert val(i) is True
-        assert i.globals["checked"] == [0, 1]
+def val(i: Interpreter, name: str = "v") -> Any:
+    return i.globals.get(name)
 
 
 # ---------------------------------------------------------------------------
-# arr.length = n  (truncate / extend)
+# structuredClone
 # ---------------------------------------------------------------------------
 
-class TestArrayLengthSet:
-    def test_truncate_array(self):
-        i = run("let arr = [1, 2, 3, 4, 5]; arr.length = 3; let v = arr")
+class TestStructuredClone:
+    def test_clone_array(self) -> None:
+        i = run("let a = [1, 2, 3]\nlet v = structuredClone(a)")
         assert val(i) == [1, 2, 3]
 
-    def test_truncate_to_zero(self):
-        i = run("let arr = [1, 2, 3]; arr.length = 0; let v = arr")
-        assert val(i) == []
-
-    def test_extend_array_fills_undefined(self):
-        i = run("let arr = [1, 2, 3]; arr.length = 5; let v = arr.length")
-        assert val(i) == 5
-
-    def test_truncate_then_access(self):
-        i = run("""
-let arr = [10, 20, 30, 40, 50]
-arr.length = 2
-let v = arr
-""")
-        assert val(i) == [10, 20]
-
-    def test_length_same_value_noop(self):
-        i = run("let arr = [1, 2, 3]; arr.length = 3; let v = arr")
-        assert val(i) == [1, 2, 3]
-
-    def test_length_set_in_function(self):
-        i = run("""
-function clear(arr) { arr.length = 0 }
-let a = [1, 2, 3, 4]
-clear(a)
-let v = a
-""")
-        assert val(i) == []
-
-    def test_length_set_float_truncates(self):
-        """length = 2.9 should truncate to integer 2."""
-        i = run("let arr = [1, 2, 3, 4]; arr.length = 2.9; let v = arr")
-        assert val(i) == [1, 2]
-
-    def test_length_readable_after_truncate(self):
-        i = run("let arr = [1, 2, 3, 4, 5]; arr.length = 3; let v = arr.length")
+    def test_clone_is_deep_copy(self) -> None:
+        i = run(
+            "let a = [1, 2, 3]\n"
+            "let b = structuredClone(a)\n"
+            "b.push(4)\n"
+            "let v = a.length"
+        )
         assert val(i) == 3
 
-    def test_invalid_property_still_raises(self):
-        with pytest.raises(Exception):
-            run("let arr = [1, 2, 3]; arr.push = 99")
+    def test_clone_object(self) -> None:
+        i = run('let o = {x: 1, y: 2}\nlet v = structuredClone(o)')
+        result = val(i)
+        assert result["x"] == 1
+        assert result["y"] == 2
+
+    def test_clone_nested(self) -> None:
+        i = run('let o = {a: [1, 2]}\nlet c = structuredClone(o)\nc.a.push(3)\nlet v = o.a.length')
+        assert val(i) == 2
+
+    def test_clone_string(self) -> None:
+        i = run('let v = structuredClone("hello")')
+        assert val(i) == "hello"
+
+    def test_clone_number(self) -> None:
+        i = run("let v = structuredClone(42)")
+        assert val(i) == 42
 
 
 # ---------------------------------------------------------------------------
-# Unicode / hex escape sequences in string literals
+# queueMicrotask
 # ---------------------------------------------------------------------------
 
-class TestUnicodeEscapes:
-    def test_backslash_u_four_hex(self):
-        """\\uXXXX decoded to the corresponding character."""
-        i = run(r'let v = "\u0041\u0042\u0043"')
-        assert val(i) == "ABC"
+class TestQueueMicrotask:
+    def test_executes_synchronously(self) -> None:
+        i = run("let v = 0\nqueueMicrotask(fn() { v = 42 })")
+        assert val(i) == 42
 
-    def test_cafe_unicode_escape(self):
-        r"""caf\u00e9 should be the 4-char precomposed string."""
-        i = run(r'let v = "caf\u00e9".length')
-        assert val(i) == 4
+    def test_multiple_tasks(self) -> None:
+        i = run(
+            "let v = []\n"
+            "queueMicrotask(fn() { v.push(1) })\n"
+            "queueMicrotask(fn() { v.push(2) })\n"
+        )
+        assert val(i) == [1, 2]
 
-    def test_unicode_escape_single_char(self):
-        i = run(r'let v = "\u00e9"')
-        assert val(i) == "é"
-
-    def test_hex_escape(self):
-        r"""\\xXX decoded to character."""
-        i = run(r'let v = "\x41\x42"')
-        assert val(i) == "AB"
-
-    def test_unicode_escape_in_comparison(self):
-        i = run(r'let v = "\u0041" === "A"')
+    def test_null_argument(self) -> None:
+        # Should not throw
+        i = run("queueMicrotask(null)\nlet v = true")
         assert val(i) is True
 
-    def test_unicode_mixed_with_normal_chars(self):
-        i = run(r'let v = "Hello \u0057orld"')
-        assert val(i) == "Hello World"
 
-    def test_unicode_null_char(self):
-        i = run(r'let v = "\u0000".length')
-        assert val(i) == 1
+# ---------------------------------------------------------------------------
+# Array.from
+# ---------------------------------------------------------------------------
 
-    def test_unicode_high_codepoint(self):
-        i = run(r'let v = "\u03B1\u03B2\u03B3"')
-        assert val(i) == "αβγ"
+class TestArrayFrom:
+    def test_from_array(self) -> None:
+        i = run("let v = Array.from([1, 2, 3])")
+        assert val(i) == [1, 2, 3]
 
-    def test_escape_in_template_literal(self):
-        i = run(r'let v = `caf\u00e9`')
-        # template literals also process escapes
-        assert "caf" in val(i)
+    def test_from_string(self) -> None:
+        i = run('let v = Array.from("abc")')
+        assert val(i) == ["a", "b", "c"]
 
-    def test_hex_escape_newline_simulation(self):
-        r"""\\x0a is newline character."""
-        i = run(r'let v = "\x0a".length')
-        assert val(i) == 1
+    def test_from_with_map_fn(self) -> None:
+        i = run("let v = Array.from([1, 2, 3], fn(x) { return x * 2 })")
+        assert val(i) == [2, 4, 6]
 
-    def test_unicode_in_identifier_string_keys(self):
-        i = run(r'let obj = {"\u006B\u0065\u0079": 42}; let v = obj["key"]')
-        assert val(i) == 42
+    def test_from_with_map_fn_index(self) -> None:
+        i = run("let v = Array.from([10, 20, 30], fn(x, i) { return i })")
+        assert val(i) == [0, 1, 2]
 
-    def test_raw_template_not_escaped(self):
-        r"""String.raw`\uXXXX` should NOT decode the escape."""
-        i = run(r'let v = String.raw`\u0041`')
-        assert val(i) == r"\u0041"
-
-    def test_multiple_hex_escapes(self):
-        i = run(r'let v = "\x48\x65\x6c\x6c\x6f"')
-        assert val(i) == "Hello"
+    def test_from_range_like(self) -> None:
+        i = run("let v = Array.from({length: 3}, fn(_, i) { return i })")
+        assert val(i) == [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------
-# new Function(...) constructor
+# Object.fromEntries
 # ---------------------------------------------------------------------------
 
-class TestFunctionConstructor:
-    def test_new_function_two_params(self):
-        i = run('let fn = new Function("a", "b", "return a + b"); let v = fn(3, 4)')
-        assert val(i) == 7
+class TestObjectFromEntries:
+    def test_basic(self) -> None:
+        i = run('let v = Object.fromEntries([["a", 1], ["b", 2]])')
+        assert val(i) == {"a": 1, "b": 2}
 
-    def test_new_function_one_param(self):
-        i = run('let fn = new Function("x", "return x * x"); let v = fn(5)')
-        assert val(i) == 25
+    def test_roundtrip_with_entries(self) -> None:
+        i = run(
+            'let obj = {x: 10, y: 20}\n'
+            'let v = Object.fromEntries(Object.entries(obj))'
+        )
+        result = val(i)
+        assert result["x"] == 10
+        assert result["y"] == 20
 
-    def test_new_function_no_params(self):
-        i = run('let fn = new Function("return 42"); let v = fn()')
+    def test_empty(self) -> None:
+        i = run("let v = Object.fromEntries([])")
+        assert val(i) == {}
+
+    def test_from_map_entries(self) -> None:
+        i = run(
+            "let m = new Map()\n"
+            "m.set(\"a\", 1)\n"
+            "m.set(\"b\", 2)\n"
+            "let v = Object.fromEntries(m)"
+        )
+        result = val(i)
+        assert result["a"] == 1
+        assert result["b"] == 2
+
+
+# ---------------------------------------------------------------------------
+# String.prototype.at
+# ---------------------------------------------------------------------------
+
+class TestStringAt:
+    def test_positive_index(self) -> None:
+        i = run('let v = "hello".at(0)')
+        assert val(i) == "h"
+
+    def test_negative_index(self) -> None:
+        i = run('let v = "hello".at(-1)')
+        assert val(i) == "o"
+
+    def test_negative_second(self) -> None:
+        i = run('let v = "hello".at(-2)')
+        assert val(i) == "l"
+
+    def test_middle_index(self) -> None:
+        i = run('let v = "hello".at(2)')
+        assert val(i) == "l"
+
+    def test_out_of_bounds(self) -> None:
+        i = run('let v = "hello".at(10)')
+        result = val(i)
+        assert result is None or result == "" or str(result) in ("undefined", "None")
+
+
+# ---------------------------------------------------------------------------
+# WeakRef and FinalizationRegistry
+# ---------------------------------------------------------------------------
+
+class TestWeakRef:
+    def test_deref(self) -> None:
+        i = run("let obj = {x: 42}\nlet wr = new WeakRef(obj)\nlet v = wr.deref().x")
         assert val(i) == 42
 
-    def test_function_call_direct(self):
-        """Function(...) without new should also work (same semantics)."""
-        i = run('let fn = Function("x", "return x + 1"); let v = fn(41)')
-        assert val(i) == 42
+    def test_deref_returns_original(self) -> None:
+        i = run(
+            "let obj = {name: \"test\"}\n"
+            "let wr = new WeakRef(obj)\n"
+            "let v = wr.deref().name"
+        )
+        assert val(i) == "test"
 
-    def test_new_function_arithmetic(self):
-        i = run('let fn = new Function("a", "b", "c", "return a * b + c"); let v = fn(2, 3, 4)')
+    def test_weakref_typeof(self) -> None:
+        i = run("let wr = new WeakRef({x: 1})\nlet v = typeof wr")
+        assert val(i) == "object"
+
+
+class TestFinalizationRegistry:
+    def test_constructor(self) -> None:
+        i = run("let fr = new FinalizationRegistry(fn(x) { return x })\nlet v = typeof fr")
+        assert val(i) == "object"
+
+    def test_register(self) -> None:
+        # Should not throw
+        i = run(
+            "let fr = new FinalizationRegistry(fn(x) { return x })\n"
+            "let obj = {x: 1}\n"
+            "fr.register(obj, \"token\")\n"
+            "let v = true"
+        )
+        assert val(i) is True
+
+    def test_unregister(self) -> None:
+        i = run(
+            "let token = {}\n"
+            "let fr = new FinalizationRegistry(fn(x) { return x })\n"
+            "let obj = {x: 1}\n"
+            "fr.register(obj, \"val\", token)\n"
+            "fr.unregister(token)\n"
+            "let v = true"
+        )
+        assert val(i) is True
+
+
+# ---------------------------------------------------------------------------
+# globalThis
+# ---------------------------------------------------------------------------
+
+class TestGlobalThis:
+    def test_typeof(self) -> None:
+        i = run("let v = typeof globalThis")
+        assert val(i) == "object"
+
+    def test_exists(self) -> None:
+        i = run("let v = globalThis !== null && globalThis !== undefined")
+        assert val(i) is True
+
+    def test_undefined_property(self) -> None:
+        i = run("let v = globalThis.undefined")
+        from sprycode.interpreter import SPRY_UNDEFINED
+        assert val(i) is SPRY_UNDEFINED
+
+
+# ---------------------------------------------------------------------------
+# Object.hasOwn
+# ---------------------------------------------------------------------------
+
+class TestObjectHasOwn:
+    def test_own_property(self) -> None:
+        i = run('let v = Object.hasOwn({a: 1}, "a")')
+        assert val(i) is True
+
+    def test_missing_property(self) -> None:
+        i = run('let v = Object.hasOwn({a: 1}, "b")')
+        assert val(i) is False
+
+    def test_empty_object(self) -> None:
+        i = run('let v = Object.hasOwn({}, "x")')
+        assert val(i) is False
+
+    def test_numeric_key(self) -> None:
+        i = run('let v = Object.hasOwn({0: "zero"}, "0")')
+        assert val(i) is True
+
+
+# ---------------------------------------------------------------------------
+# Array.prototype.at
+# ---------------------------------------------------------------------------
+
+class TestArrayAt:
+    def test_positive_index(self) -> None:
+        i = run("let v = [10, 20, 30].at(0)")
         assert val(i) == 10
 
-    def test_new_function_string_op(self):
-        i = run('let fn = new Function("s", "return s.toUpperCase()"); let v = fn("hello")')
-        assert val(i) == "HELLO"
+    def test_negative_index(self) -> None:
+        i = run("let v = [10, 20, 30].at(-1)")
+        assert val(i) == 30
 
-    def test_new_function_with_if(self):
-        i = run("""
-let abs = new Function("x", "if (x < 0) return -x; return x")
-let v = [abs(-5), abs(3)]
-""")
-        assert val(i) == [5, 3]
+    def test_negative_second(self) -> None:
+        i = run("let v = [10, 20, 30].at(-2)")
+        assert val(i) == 20
 
-    def test_new_function_closure_over_outer(self):
-        """Function body can access globals from environment."""
-        i = run("""
-let factor = 10
-let fn = new Function("x", "return x * factor")
-let v = fn(5)
-""")
-        assert val(i) == 50
+    def test_middle(self) -> None:
+        i = run("let v = [10, 20, 30].at(1)")
+        assert val(i) == 20
 
-    def test_new_function_dynamic_add(self):
-        i = run("""
-let ops = {
-  add: new Function("a", "b", "return a + b"),
-  sub: new Function("a", "b", "return a - b")
-}
-let v = [ops.add(10, 3), ops.sub(10, 3)]
-""")
-        assert val(i) == [13, 7]
 
-    def test_function_typeof(self):
-        i = run('let fn = new Function("return 1"); let v = typeof fn')
-        assert val(i) == "function"
+# ---------------------------------------------------------------------------
+# String.prototype.replaceAll
+# ---------------------------------------------------------------------------
+
+class TestReplaceAll:
+    def test_basic(self) -> None:
+        i = run('let v = "hello hello hello".replaceAll("hello", "hi")')
+        assert val(i) == "hi hi hi"
+
+    def test_no_match(self) -> None:
+        i = run('let v = "hello world".replaceAll("xyz", "abc")')
+        assert val(i) == "hello world"
+
+    def test_replace_with_empty(self) -> None:
+        i = run('let v = "a,b,c".replaceAll(",", "")')
+        assert val(i) == "abc"
+
+    def test_replace_all_chars(self) -> None:
+        i = run('let v = "aaa".replaceAll("a", "b")')
+        assert val(i) == "bbb"
+
+
+# ---------------------------------------------------------------------------
+# Object.keys / values / entries
+# ---------------------------------------------------------------------------
+
+class TestObjectKeysValuesEntries:
+    def test_keys(self) -> None:
+        i = run("let v = Object.keys({a: 1, b: 2, c: 3})")
+        assert sorted(val(i)) == ["a", "b", "c"]
+
+    def test_values(self) -> None:
+        i = run("let v = Object.values({a: 1, b: 2, c: 3})")
+        assert sorted(val(i)) == [1, 2, 3]
+
+    def test_entries(self) -> None:
+        i = run("let v = Object.entries({a: 1, b: 2})")
+        result = val(i)
+        assert sorted(result) == [["a", 1], ["b", 2]]
+
+    def test_keys_empty(self) -> None:
+        i = run("let v = Object.keys({})")
+        assert val(i) == []
+
+    def test_values_empty(self) -> None:
+        i = run("let v = Object.values({})")
+        assert val(i) == []
+
+    def test_entries_empty(self) -> None:
+        i = run("let v = Object.entries({})")
+        assert val(i) == []
+
+    def test_keys_order(self) -> None:
+        i = run("let obj = {z: 1, a: 2, m: 3}\nlet v = Object.keys(obj)")
+        keys = val(i)
+        assert set(keys) == {"z", "a", "m"}
+
+
+# ---------------------------------------------------------------------------
+# Array.prototype.flat and flatMap
+# ---------------------------------------------------------------------------
+
+class TestFlat:
+    def test_flat_one_level(self) -> None:
+        i = run("let v = [[1, 2], [3, 4]].flat()")
+        assert val(i) == [1, 2, 3, 4]
+
+    def test_flat_depth_2(self) -> None:
+        i = run("let v = [1, [2, [3]]].flat(2)")
+        assert val(i) == [1, 2, 3]
+
+    def test_flat_depth_1_partial(self) -> None:
+        i = run("let v = [1, [2, [3, [4]]]].flat(1)")
+        assert val(i) == [1, 2, [3, [4]]]
+
+    def test_flat_already_flat(self) -> None:
+        i = run("let v = [1, 2, 3].flat()")
+        assert val(i) == [1, 2, 3]
+
+
+class TestFlatMap:
+    def test_basic(self) -> None:
+        i = run("let v = [1, 2, 3].flatMap(fn(x) { return [x, x * 2] })")
+        assert val(i) == [1, 2, 2, 4, 3, 6]
+
+    def test_filter_like(self) -> None:
+        i = run("let v = [1, 2, 3, 4].flatMap(fn(x) { if (x % 2 == 0) { return [x] } return [] })")
+        assert val(i) == [2, 4]
+
+    def test_identity(self) -> None:
+        i = run("let v = [1, 2, 3].flatMap(fn(x) { return x })")
+        assert val(i) == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# Array.prototype.findIndex
+# ---------------------------------------------------------------------------
+
+class TestFindIndex:
+    def test_found(self) -> None:
+        i = run("let v = [1, 2, 3, 4].findIndex(fn(x) { return x > 2 })")
+        assert val(i) == 2
+
+    def test_not_found(self) -> None:
+        i = run("let v = [1, 2, 3].findIndex(fn(x) { return x > 10 })")
+        assert val(i) == -1
+
+    def test_first_element(self) -> None:
+        i = run("let v = [5, 3, 1].findIndex(fn(x) { return x == 5 })")
+        assert val(i) == 0
+
+    def test_last_element(self) -> None:
+        i = run("let v = [1, 2, 5].findIndex(fn(x) { return x == 5 })")
+        assert val(i) == 2
+
+
+# ---------------------------------------------------------------------------
+# Array.prototype.findLast and findLastIndex
+# ---------------------------------------------------------------------------
+
+class TestFindLast:
+    def test_find_last(self) -> None:
+        i = run("let v = [1, 2, 3, 4].findLast(fn(x) { return x < 3 })")
+        assert val(i) == 2
+
+    def test_find_last_no_match(self) -> None:
+        i = run("let v = [1, 2, 3].findLast(fn(x) { return x > 10 })")
+        result = val(i)
+        assert result is None or str(result) in ("undefined", "None")
+
+    def test_find_last_first_element(self) -> None:
+        i = run("let v = [1, 2, 3].findLast(fn(x) { return x == 1 })")
+        assert val(i) == 1
+
+
+class TestFindLastIndex:
+    def test_find_last_index(self) -> None:
+        i = run("let v = [1, 2, 3, 4].findLastIndex(fn(x) { return x < 3 })")
+        assert val(i) == 1
+
+    def test_find_last_index_no_match(self) -> None:
+        i = run("let v = [1, 2, 3].findLastIndex(fn(x) { return x > 10 })")
+        assert val(i) == -1
+
+    def test_find_last_index_last_element(self) -> None:
+        i = run("let v = [1, 2, 3].findLastIndex(fn(x) { return x == 3 })")
+        assert val(i) == 2

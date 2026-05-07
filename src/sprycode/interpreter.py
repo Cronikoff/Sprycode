@@ -9853,7 +9853,8 @@ class SpryDate:
         return self._dt.day
 
     def getDay(self) -> int:
-        return self._dt.weekday()  # 0=Monday in Python
+        # JS: 0=Sunday … 6=Saturday; Python weekday(): 0=Monday … 6=Sunday
+        return (self._dt.weekday() + 1) % 7
 
     def getHours(self) -> int:
         return self._dt.hour
@@ -9867,6 +9868,140 @@ class SpryDate:
     def getMilliseconds(self) -> int:
         return self._dt.microsecond // 1000
 
+    # ------------------------------------------------------------------
+    # Setter methods — return new timestamp (ms since epoch), mutate self
+    # ------------------------------------------------------------------
+
+    def _replace_dt(self, **kwargs: Any) -> float:
+        import datetime as _dt
+        self._dt = self._dt.replace(**{k: int(v) for k, v in kwargs.items()})
+        return self.getTime()
+
+    def setFullYear(self, year: Any, month: Any = None, day: Any = None) -> float:
+        kw: dict = {"year": int(year)}
+        if month is not None:
+            kw["month"] = int(month) + 1  # JS month is 0-indexed
+        if day is not None:
+            kw["day"] = int(day)
+        return self._replace_dt(**kw)
+
+    def setMonth(self, month: Any, day: Any = None) -> float:
+        kw: dict = {"month": int(month) + 1}  # JS month is 0-indexed
+        if day is not None:
+            kw["day"] = int(day)
+        return self._replace_dt(**kw)
+
+    def setDate(self, day: Any) -> float:
+        return self._replace_dt(day=int(day))
+
+    def setHours(self, hours: Any, minutes: Any = None,
+                 seconds: Any = None, ms: Any = None) -> float:
+        kw: dict = {"hour": int(hours)}
+        if minutes is not None:
+            kw["minute"] = int(minutes)
+        if seconds is not None:
+            kw["second"] = int(seconds)
+        if ms is not None:
+            kw["microsecond"] = int(ms) * 1000
+        return self._replace_dt(**kw)
+
+    def setMinutes(self, minutes: Any, seconds: Any = None, ms: Any = None) -> float:
+        kw: dict = {"minute": int(minutes)}
+        if seconds is not None:
+            kw["second"] = int(seconds)
+        if ms is not None:
+            kw["microsecond"] = int(ms) * 1000
+        return self._replace_dt(**kw)
+
+    def setSeconds(self, seconds: Any, ms: Any = None) -> float:
+        kw: dict = {"second": int(seconds)}
+        if ms is not None:
+            kw["microsecond"] = int(ms) * 1000
+        return self._replace_dt(**kw)
+
+    def setMilliseconds(self, ms: Any) -> float:
+        return self._replace_dt(microsecond=int(ms) * 1000)
+
+    def setTime(self, ms: Any) -> float:
+        import datetime as _dt
+        epoch = _dt.datetime(1970, 1, 1)
+        self._dt = epoch + _dt.timedelta(milliseconds=float(ms))
+        return self.getTime()
+
+    # ------------------------------------------------------------------
+    # UTC getters — treat internal datetime as UTC (no tz conversion)
+    # ------------------------------------------------------------------
+
+    def getUTCFullYear(self) -> int:
+        return self._dt.year
+
+    def getUTCMonth(self) -> int:
+        return self._dt.month - 1  # 0-indexed
+
+    def getUTCDate(self) -> int:
+        return self._dt.day
+
+    def getUTCDay(self) -> int:
+        return (self._dt.weekday() + 1) % 7
+
+    def getUTCHours(self) -> int:
+        return self._dt.hour
+
+    def getUTCMinutes(self) -> int:
+        return self._dt.minute
+
+    def getUTCSeconds(self) -> int:
+        return self._dt.second
+
+    def getUTCMilliseconds(self) -> int:
+        return self._dt.microsecond // 1000
+
+    # ------------------------------------------------------------------
+    # UTC setters — same as local setters (no tz conversion)
+    # ------------------------------------------------------------------
+
+    def setUTCFullYear(self, year: Any, month: Any = None, day: Any = None) -> float:
+        return self.setFullYear(year, month, day)
+
+    def setUTCMonth(self, month: Any, day: Any = None) -> float:
+        return self.setMonth(month, day)
+
+    def setUTCDate(self, day: Any) -> float:
+        return self.setDate(day)
+
+    def setUTCHours(self, hours: Any, minutes: Any = None,
+                    seconds: Any = None, ms: Any = None) -> float:
+        return self.setHours(hours, minutes, seconds, ms)
+
+    def setUTCMinutes(self, minutes: Any, seconds: Any = None, ms: Any = None) -> float:
+        return self.setMinutes(minutes, seconds, ms)
+
+    def setUTCSeconds(self, seconds: Any, ms: Any = None) -> float:
+        return self.setSeconds(seconds, ms)
+
+    def setUTCMilliseconds(self, ms: Any) -> float:
+        return self.setMilliseconds(ms)
+
+    # ------------------------------------------------------------------
+    # Additional string conversion methods
+    # ------------------------------------------------------------------
+
+    def toDateString(self) -> str:
+        """Return human-readable date portion (JS: e.g. 'Mon Jan 15 2024')."""
+        return self._dt.strftime("%a %b %d %Y")
+
+    def toTimeString(self) -> str:
+        """Return human-readable time portion (JS: e.g. '10:30:00 GMT+0000')."""
+        return self._dt.strftime("%H:%M:%S GMT+0000")
+
+    def toUTCString(self) -> str:
+        """Return UTC string (JS: e.g. 'Mon, 15 Jan 2024 10:30:00 GMT')."""
+        return self._dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    def toJSON(self) -> str:
+        """Return ISO 8601 string (same as toISOString)."""
+        return self.toISOString()
+
     def toString(self) -> str:
         """Return a human-readable string representation (like JS Date.toString())."""
         return self._dt.strftime("%a %b %d %Y %H:%M:%S GMT+0000")
@@ -9874,6 +10009,35 @@ class SpryDate:
     def valueOf(self) -> float:
         """Return milliseconds since epoch (same as getTime)."""
         return self.getTime()
+
+    # ------------------------------------------------------------------
+    # Comparison operators
+    # ------------------------------------------------------------------
+
+    def __lt__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt < other._dt
+        return NotImplemented
+
+    def __le__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt <= other._dt
+        return NotImplemented
+
+    def __gt__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt > other._dt
+        return NotImplemented
+
+    def __ge__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt >= other._dt
+        return NotImplemented
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt == other._dt
+        return NotImplemented
 
     def __repr__(self) -> str:
         return self._dt.isoformat()

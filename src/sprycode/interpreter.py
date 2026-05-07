@@ -2815,7 +2815,7 @@ class Interpreter:
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
             if callee is None or callee is SPRY_UNDEFINED:
-                return None
+                return SPRY_UNDEFINED
             args: list[Any] = []
             for a in node.args:
                 if isinstance(a, SpreadElement):
@@ -2874,20 +2874,20 @@ class Interpreter:
         if isinstance(node, OptionalMemberExpression):
             obj = self._eval(node.object, env)
             if obj is None or obj is SPRY_UNDEFINED:
-                return None
+                return SPRY_UNDEFINED
             return self._eval_member_on(obj, node.property, node)
 
         if isinstance(node, OptionalIndexExpression):
             obj = self._eval(node.object, env)
             if obj is None or obj is SPRY_UNDEFINED:
-                return None
+                return SPRY_UNDEFINED
             idx = self._eval(node.index, env)
             try:
                 if isinstance(obj, dict):
-                    return obj.get(idx, None)
+                    return obj.get(idx, SPRY_UNDEFINED)
                 return obj[idx]
             except (KeyError, IndexError, TypeError):
-                return None
+                return SPRY_UNDEFINED
 
         if isinstance(node, IndexExpression):
             obj = self._eval(node.object, env)
@@ -9764,6 +9764,8 @@ class _PromiseNamespace:
             if isinstance(result, SpryPromise):
                 return result
             return SpryPromise(value=result)
+        except SpryUserError as e:
+            return SpryPromise(value=None, error=e.value)
         except Exception as e:
             return SpryPromise(value=None, error=str(e))
 

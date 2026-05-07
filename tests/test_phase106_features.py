@@ -238,6 +238,20 @@ class TestUTCGetters:
         i = run("let v = new Date(2024, 0, 7).getUTCDay();")
         assert val(i) == 0
 
+    def test_utc_getters_equal_local_getters(self):
+        """SpryCode has no tz support so UTC and local getters return the same value."""
+        i = run("""
+let d = new Date(2024, 5, 15, 14, 30, 45, 123);
+let v = d.getUTCFullYear() === d.getFullYear()
+     && d.getUTCMonth() === d.getMonth()
+     && d.getUTCDate() === d.getDate()
+     && d.getUTCHours() === d.getHours()
+     && d.getUTCMinutes() === d.getMinutes()
+     && d.getUTCSeconds() === d.getSeconds()
+     && d.getUTCMilliseconds() === d.getMilliseconds();
+""")
+        assert val(i) is True
+
     def test_get_utc_day_is_number(self):
         i = run("let v = typeof new Date(2024, 0, 15).getUTCDay();")
         assert val(i) == "number"

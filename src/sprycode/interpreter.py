@@ -9873,6 +9873,11 @@ class SpryDate:
     # ------------------------------------------------------------------
 
     def _replace_dt(self, **kwargs: Any) -> float:
+        """Replace datetime fields and return new timestamp.
+
+        Callers are responsible for converting values to ``int`` before passing
+        them; only ``int`` values are valid for ``datetime.replace()``.
+        """
         import datetime as _dt
         self._dt = self._dt.replace(**{k: int(v) for k, v in kwargs.items()})
         return self.getTime()
@@ -9957,7 +9962,8 @@ class SpryDate:
         return self._dt.microsecond // 1000
 
     # ------------------------------------------------------------------
-    # UTC setters — same as local setters (no tz conversion)
+    # UTC setters — SpryCode has no timezone support; all dates are treated as
+    # UTC internally, so UTC setters are identical to their local counterparts.
     # ------------------------------------------------------------------
 
     def setUTCFullYear(self, year: Any, month: Any = None, day: Any = None) -> float:
@@ -11112,7 +11118,12 @@ class _PerformanceNamespace:
 
     def setResourceTimingBufferSize(self, max_size: Any) -> None:
         try:
-            self._resource_timing_buffer_size = max(0, int(float(max_size)))
+            v = float(max_size)
+            if v != v or v == float("inf") or v == float("-inf"):
+                # NaN or Infinity → clamp to 0
+                self._resource_timing_buffer_size = 0
+            else:
+                self._resource_timing_buffer_size = max(0, int(v))
         except (TypeError, ValueError):
             self._resource_timing_buffer_size = 0
 

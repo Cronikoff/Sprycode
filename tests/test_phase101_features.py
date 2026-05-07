@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any
 import pytest
-from sprycode.interpreter import Interpreter
+from sprycode.interpreter import Interpreter, SPRY_UNDEFINED
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
 
@@ -264,11 +264,11 @@ class TestOptionalComputedAccess:
 
     def test_optional_computed_null(self):
         i = run("let n = null; let v = n?.[\"x\"];")
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED
 
     def test_optional_computed_undefined(self):
         i = run("let u = undefined; let v = u?.[\"x\"];")
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED
 
     def test_optional_computed_with_variable(self):
         i = run("""

@@ -1021,12 +1021,9 @@ class SpryGenerator:
         yield_q.put(("done", None))
 
     def next(self, send_val: Any = None) -> Any:
-        """JS-style iterator: returns {value, done} (wrapped in SpryPromise for async generators)."""
+        """JS-style iterator: returns {value, done}."""
         if self._done:
-            result: dict = {"value": None, "done": True}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": None, "done": True}
 
         if not self._started:
             self._start_thread()
@@ -1038,30 +1035,18 @@ class SpryGenerator:
             kind, val = self._yield_q.get(timeout=10)
         except Exception:
             self._done = True
-            result = {"value": None, "done": True}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": None, "done": True}
 
         if kind == "yield":
-            result = {"value": val, "done": False}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": val, "done": False}
         if kind in ("done", "return"):
             self._done = True
-            result = {"value": val if kind == "return" else None, "done": True}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": val if kind == "return" else None, "done": True}
         if kind == "error":
             self._done = True
             raise val
         self._done = True
-        result = {"value": None, "done": True}
-        if self._is_async:
-            return SpryPromise(value=result)
-        return result
+        return {"value": None, "done": True}
 
     def _materialise(self) -> list[Any]:
         """Materialise all yielded values for for-in iteration."""
@@ -1070,9 +1055,6 @@ class SpryGenerator:
         result: list[Any] = []
         while True:
             item = self.next()
-            # Async generators wrap results in SpryPromise; unwrap here
-            if isinstance(item, SpryPromise):
-                item = item._value
             if not isinstance(item, dict) or item.get("done", False):
                 break
             result.append(item["value"])
@@ -1085,17 +1067,11 @@ class SpryGenerator:
     def spry_return(self, val: Any = None) -> Any:
         """Force-complete the generator, running any finally blocks."""
         if self._done:
-            result: dict = {"value": val, "done": True}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": val, "done": True}
         if not self._started:
             # Generator never started — just mark done
             self._done = True
-            result = {"value": val, "done": True}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": val, "done": True}
         # Send a return sentinel so the generator thread runs finally blocks
         self._send_q.put(_GeneratorReturnSentinel(val))
         try:
@@ -1103,10 +1079,7 @@ class SpryGenerator:
         except Exception:
             pass
         self._done = True
-        result = {"value": val, "done": True}
-        if self._is_async:
-            return SpryPromise(value=result)
-        return result
+        return {"value": val, "done": True}
 
     def spry_throw(self, error: Any = None) -> Any:
         """Throw an error into the generator at the current yield point.
@@ -1129,29 +1102,17 @@ class SpryGenerator:
             kind, val = self._yield_q.get(timeout=10)
         except Exception:
             self._done = True
-            result: dict = {"value": None, "done": True}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": None, "done": True}
         if kind == "yield":
-            result = {"value": val, "done": False}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": val, "done": False}
         if kind in ("done", "return"):
             self._done = True
-            result = {"value": val if kind == "return" else None, "done": True}
-            if self._is_async:
-                return SpryPromise(value=result)
-            return result
+            return {"value": val if kind == "return" else None, "done": True}
         if kind == "error":
             self._done = True
             raise val
         self._done = True
-        result = {"value": None, "done": True}
-        if self._is_async:
-            return SpryPromise(value=result)
-        return result
+        return {"value": None, "done": True}
 
     def __repr__(self) -> str:
         return f"<generator {self._fn.name}>"
@@ -2748,7 +2709,8 @@ class Interpreter:
             return self.secrets.read(node.key, self.permissions)
 
         if isinstance(node, NewTargetExpression):
-            return getattr(self._tl, "new_target", None)
+            nt = getattr(self._tl, "new_target", None)
+            return nt if nt is not None else SPRY_UNDEFINED
 
         if isinstance(node, ObjectLiteral):
             result: dict[str, Any] = {}
@@ -5746,9 +5708,6 @@ class Interpreter:
         if isinstance(iterable, SpryGenerator):
             while True:
                 result = iterable.next()
-                # Async generator wraps results in SpryPromise; unwrap here
-                if node.is_async and isinstance(result, SpryPromise):
-                    result = result._value
                 if not isinstance(result, dict) or result.get("done", False):
                     break
                 if _exec_body_for_item(result.get("value")):

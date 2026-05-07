@@ -10,7 +10,7 @@
 from __future__ import annotations
 from typing import Any
 import pytest
-from sprycode.interpreter import Interpreter, SpryRuntimeError
+from sprycode.interpreter import Interpreter, SpryRuntimeError, SPRY_UNDEFINED
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
 
@@ -208,11 +208,11 @@ class TestNewTarget:
 
     def test_new_target_outside_constructor(self) -> None:
         i = run("let v = new.target")
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED
 
     def test_new_target_in_function(self) -> None:
         i = run("function f() { return new.target }\nlet v = f()")
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED
 
     def test_new_target_subclass_in_base(self) -> None:
         i = run(
@@ -255,4 +255,4 @@ class TestNewTarget:
             "}\n"
             "new Foo()\nlet v = new.target"
         )
-        assert val(i) is None
+        assert val(i) == SPRY_UNDEFINED

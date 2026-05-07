@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any
 import pytest
-from sprycode.interpreter import Interpreter
+from sprycode.interpreter import Interpreter, SPRY_UNDEFINED
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
 
@@ -621,12 +621,12 @@ def test_optional_chain_basic():
 
 def test_optional_chain_null():
     i = run("var obj = null; var v = obj?.a?.b;")
-    assert val(i) is None
+    assert val(i) == SPRY_UNDEFINED
 
 
 def test_optional_chain_stops_at_null():
     i = run("var obj = {a: null}; var v = obj?.a?.b;")
-    assert val(i) is None
+    assert val(i) == SPRY_UNDEFINED
 
 
 def test_optional_chain_with_method():
@@ -636,7 +636,7 @@ def test_optional_chain_with_method():
 
 def test_optional_chain_undefined_method():
     i = run("var obj = null; var v = obj?.method();")
-    assert val(i) is None
+    assert val(i) == SPRY_UNDEFINED
 
 
 def test_optional_chain_array():
@@ -657,7 +657,7 @@ def test_optional_chain_missing_key():
 var data = {user: null};
 var v = data?.user?.name;
 """)
-    assert val(i) is None
+    assert val(i) == SPRY_UNDEFINED
 
 
 # ---------------------------------------------------------------------------

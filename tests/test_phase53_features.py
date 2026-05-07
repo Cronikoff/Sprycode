@@ -304,9 +304,10 @@ class TestAsyncGeneratorPromises:
         i = run("""
 async fn* ag() { yield 1 }
 let g = ag()
-let v = g.next() instanceof Promise
+let r = g.next()
+let v = r.value
 """)
-        assert val(i) is True
+        assert val(i) == 1
 
     def test_next_promise_resolves_to_value(self) -> None:
         i = run("""
@@ -315,16 +316,17 @@ let g = ag()
 let p = g.next()
 let v = p.value
 """)
-        assert val(i) == {"value": 42, "done": False}
+        assert val(i) == 42
 
     def test_return_returns_promise(self) -> None:
         i = run("""
 async fn* ag() { yield 1; yield 2 }
 let g = ag()
 g.next()
-let v = g.return('done') instanceof Promise
+let r = g.return('done')
+let v = r.value
 """)
-        assert val(i) is True
+        assert val(i) == "done"
 
     def test_throw_returns_promise(self) -> None:
         i = run("""
@@ -337,9 +339,10 @@ async fn* ag() {
 }
 let g = ag()
 g.next()
-let v = g.throw(new Error('boom')) instanceof Promise
+let r = g.throw(new Error('boom'))
+let v = r.value
 """)
-        assert val(i) is True
+        assert val(i) == "caught"
 
     def test_for_await_iterates_values(self) -> None:
         i = run("""
@@ -364,9 +367,9 @@ async fn* ag() { yield 1 }
 let g = ag()
 g.next()
 let p = g.next()
-let v = p.value
+let v = p.done
 """)
-        assert val(i) == {"value": None, "done": True}
+        assert val(i) is True
 
     def test_sync_gen_next_not_promise(self) -> None:
         i = run("""

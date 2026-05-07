@@ -436,47 +436,47 @@ class TestSpryCodeNativeBuiltins:
     previously python.* operations, confirming it is a standalone language."""
 
     def test_arithmetic_power(self):
-        # Was: python.eval("2 ** 10")
+        # Native arithmetic in SpryCode
         i = run('let v = 2 ** 10')
         assert val(i, "v") == 1024
 
     def test_string_concat(self):
-        # Was: python.eval("'hello' + ' ' + 'world'")
+        # Native string concatenation in SpryCode
         i = run('let v = "hello" + " " + "world"')
         assert val(i, "v") == "hello world"
 
     def test_array_length(self):
-        # Was: python.eval("len([1, 2, 3, 4])")
+        # Native array length access in SpryCode
         i = run('let v = [1, 2, 3, 4].length')
         assert val(i, "v") == 4
 
     def test_math_round(self):
-        # Was: python.eval("round(3.14159, 2)")
+        # Native Math usage in SpryCode
         i = run('let v = Math.round(3.14159 * 100) / 100')
         assert val(i, "v") == 3.14
 
     def test_array_length_via_native(self):
-        # Was: python.call("len", [1, 2, 3])
+        # Native array length access in SpryCode
         i = run('let v = [1, 2, 3].length')
         assert val(i, "v") == 3
 
     def test_math_abs(self):
-        # Was: python.call("abs", -7)
+        # Native Math usage in SpryCode
         i = run('let v = Math.abs(-7)')
         assert val(i, "v") == 7
 
     def test_string_conversion(self):
-        # Was: python.call("str", 42)
+        # Native String conversion in SpryCode
         i = run('let v = String(42)')
         assert val(i, "v") == "42"
 
     def test_math_floor(self):
-        # Was: python.import_module("math"); m.floor(3.99)
+        # Native Math usage in SpryCode
         i = run('let v = Math.floor(3.99)')
         assert val(i, "v") == 3
 
     def test_array_sort(self):
-        # Was: python.call("sorted", [3, 1, 2])
+        # Native array sorting in SpryCode
         i = run('let v = [3, 1, 2].sort()')
         assert val(i, "v") == [1, 2, 3]
 

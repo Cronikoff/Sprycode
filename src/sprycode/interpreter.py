@@ -10867,7 +10867,11 @@ class _PerformanceNamespace:
         import time as _t
         self._entries: list[dict[str, Any]] = []
         self._marks: dict[str, float] = {}
-        self._time_origin = (_t.time() - _t.perf_counter()) * 1000.0
+        perf_before = _t.perf_counter()
+        unix_ms = _t.time() * 1000.0
+        perf_after = _t.perf_counter()
+        perf_mid_ms = ((perf_before + perf_after) * 1000.0) / 2.0
+        self._time_origin = unix_ms - perf_mid_ms
         self._resource_timing_buffer_size = 250
 
     def now(self) -> float:

@@ -1052,3 +1052,8 @@ class ComputedFieldDeclaration(Node):
     key: "Node | None" = None
     value: "Node | None" = None
     is_static: bool = True
+
+
+@dataclass
+class DebuggerStatement(Node):
+    """debugger; — breakpoint hint, no-op at runtime unless debug mode is active."""

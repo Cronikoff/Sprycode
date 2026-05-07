@@ -169,6 +169,9 @@ class TokenType(Enum):
     IMPORT = auto()
     EXPORT = auto()
 
+    # Keywords — debug
+    DEBUGGER = auto()
+
     # Keywords — OOP / throw
     THROW = auto()
     ENUM = auto()
@@ -434,6 +437,7 @@ KEYWORDS: dict[str, TokenType] = {
     "when": TokenType.WHEN,
     "super": TokenType.SUPER,
     "const": TokenType.CONST,
+    "debugger": TokenType.DEBUGGER,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,
     "Number": TokenType.NUMBER_TYPE,

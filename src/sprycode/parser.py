@@ -128,6 +128,7 @@ from .ast_nodes import (
     SequenceExpression,
     DeclarationList,
     ComputedFieldDeclaration,
+    DebuggerStatement,
 )
 from .lexer import Token, TokenType
 
@@ -433,6 +434,10 @@ class Parser:
             return self._parse_import()
         if tok.type == TokenType.THROW:
             return self._parse_throw()
+        if tok.type == TokenType.DEBUGGER:
+            self._advance()
+            self._match(TokenType.SEMICOLON)
+            return DebuggerStatement(line=tok.line, column=tok.column)
         if tok.type == TokenType.ENUM:
             return self._parse_enum()
         if tok.type == TokenType.CLASS:

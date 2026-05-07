@@ -139,6 +139,7 @@ from .ast_nodes import (
     UsingDeclaration,
     ComputedFieldDeclaration,
     NewExpression,
+    DebuggerStatement,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -1186,8 +1187,13 @@ class Interpreter:
         self.fs = FilesystemOps(self.permissions)
         self._sql = SqlAdapter()
         self.globals = self._build_globals()
+        # Record built-in global names so debug output can distinguish them from user variables.
+        self._builtin_keys: frozenset[str] = frozenset(self.globals._vars.keys())
         self._app_name: str = ""
         self._app_version: str = ""
+        # Debugger hook: callable(env) invoked when `debugger;` statement is reached.
+        # Set by the REPL or external tooling to enable interactive debugging.
+        self._debugger_hook: "Any" = None
         # Thread-local yield handler for generator coroutines
         import threading
         self._tl = threading.local()
@@ -2560,6 +2566,12 @@ class Interpreter:
         if isinstance(node, ThrowStatement):
             value = self._eval(node.value, env)
             raise SpryUserError(value)
+
+        if isinstance(node, DebuggerStatement):
+            # Call debugger hook if set (used by the REPL for interactive debugging)
+            if self._debugger_hook is not None:
+                self._debugger_hook(env)
+            return None
 
         if isinstance(node, EnumDeclaration):
             return self._exec_enum(node, env)
@@ -11149,7 +11161,16 @@ class SpryTextDecoder:
     """TextDecoder — decodes byte arrays to strings."""
 
     def __init__(self, encoding: str = "utf-8") -> None:
-        self._encoding = str(encoding).lower().replace("-", "").replace("_", "")
+        raw = str(encoding).lower().strip()
+        # Normalize to WHATWG canonical names: utf8 → utf-8, etc.
+        _aliases: dict[str, str] = {
+            "utf8": "utf-8", "utf-8": "utf-8",
+            "latin1": "iso-8859-1", "iso-8859-1": "iso-8859-1",
+            "ascii": "us-ascii", "us-ascii": "us-ascii",
+        }
+        self._encoding = _aliases.get(raw.replace("_", "").replace("-", ""), raw)
+        # Encoding name used for Python's decode() call
+        self._py_encoding = raw.replace("-", "")
 
     @property
     def encoding(self) -> str:
@@ -11166,7 +11187,7 @@ class SpryTextDecoder:
         else:
             return str(data)
         try:
-            return raw.decode(self._encoding or "utf-8")
+            return raw.decode(self._py_encoding or "utf-8")
         except (UnicodeDecodeError, LookupError):
             return raw.decode("utf-8", errors="replace")
 

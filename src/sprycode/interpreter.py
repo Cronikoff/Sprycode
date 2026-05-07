@@ -2965,6 +2965,14 @@ class Interpreter:
             raise SpryRuntimeError(f"Cannot construct {type(callee).__name__}", node)
 
         if isinstance(node, InExpression):
+            # Private brand check: `#field in obj` — the LHS is parsed as Identifier("__private__field")
+            # Don't try to evaluate it as a variable; just use the name as the private key.
+            if isinstance(node.item, Identifier) and node.item.name.startswith("__private__"):
+                private_key = node.item.name
+                coll_val = self._eval(node.collection, env)
+                if isinstance(coll_val, SpryInstance):
+                    return private_key in coll_val.fields
+                return False
             item_val = self._eval(node.item, env)
             coll_val = self._eval(node.collection, env)
             if isinstance(coll_val, (list, tuple)):
@@ -3876,7 +3884,19 @@ class Interpreter:
             if prop == "pop":
                 return lambda: obj.pop() if obj else None
             if prop == "includes":
-                return lambda item: item in obj
+                def _list_includes(item: Any, from_idx: Any = 0, _o: list = obj) -> bool:
+                    import math as _m
+                    start = int(from_idx) if from_idx else 0
+                    if start < 0:
+                        start = max(0, len(_o) + start)
+                    for x in _o[start:]:
+                        if isinstance(item, float) and _m.isnan(item):
+                            if isinstance(x, float) and _m.isnan(x):
+                                return True
+                        elif x == item:
+                            return True
+                    return False
+                return _list_includes
             if prop == "join":
                 return lambda sep="": sep.join(str(i) for i in obj)
             if prop == "slice":
@@ -6693,6 +6713,11 @@ class Interpreter:
                 self_val.fields["message"] = msg
                 self_val.fields["name"] = self_val.cls.name
                 self_val.fields["stack"] = f"{self_val.cls.name}: {msg}"
+                # Extract `cause` from the options object (second argument)
+                if len(args_vals) >= 2 and isinstance(args_vals[1], dict) and "cause" in args_vals[1]:
+                    self_val.fields["cause"] = args_vals[1]["cause"]
+                elif "cause" not in self_val.fields:
+                    self_val.fields.setdefault("cause", None)
             return None  # no superclass — silently ignore
         # Find parent's init / constructor and call it with evaluated args
         args_vals = [self._eval(a, env) for a in node.args]
@@ -7689,7 +7714,8 @@ class _ObjectNamespace:
     def keys(self, obj: Any) -> list:
         """Return the string-keyed enumerable properties (excludes symbol keys)."""
         if isinstance(obj, dict):
-            return [k for k in obj.keys() if not isinstance(k, SprySymbol)]
+            return [k for k in obj.keys()
+                    if not isinstance(k, SprySymbol) and not str(k).startswith("__")]
         if isinstance(obj, SpryInstance):
             return [k for k in obj.fields if not k.startswith("__") and not callable(obj.fields[k]) and not isinstance(obj.fields[k], SpryFunction)]
         return []
@@ -7697,7 +7723,8 @@ class _ObjectNamespace:
     def values(self, obj: Any) -> list:
         """Return the values of an object/dict (excludes symbol-keyed entries)."""
         if isinstance(obj, dict):
-            return [v for k, v in obj.items() if not isinstance(k, SprySymbol)]
+            return [v for k, v in obj.items()
+                    if not isinstance(k, SprySymbol) and not str(k).startswith("__")]
         if isinstance(obj, SpryInstance):
             return [v for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
@@ -7705,7 +7732,8 @@ class _ObjectNamespace:
     def entries(self, obj: Any) -> list:
         """Return [[key, value], ...] pairs (excludes symbol-keyed entries)."""
         if isinstance(obj, dict):
-            return [[k, v] for k, v in obj.items() if not isinstance(k, SprySymbol)]
+            return [[k, v] for k, v in obj.items()
+                    if not isinstance(k, SprySymbol) and not str(k).startswith("__")]
         if isinstance(obj, SpryInstance):
             return [[k, v] for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
@@ -7758,11 +7786,13 @@ class _ObjectNamespace:
     def create(self, proto: Any = None, props: Any = None) -> dict:
         """Create a new object with the given prototype (values are copied in)."""
         result: dict = {}
-        if isinstance(proto, dict):
-            # Copy prototype properties into the new object
-            result.update(proto)
+        if proto is not None and proto is not False and isinstance(proto, dict):
             # Track the prototype so getPrototypeOf can return it
             result["__spry_proto__"] = proto
+        # Apply property descriptors if provided
+        if isinstance(props, dict):
+            for key, descriptor in props.items():
+                self.defineProperty(result, key, descriptor)
         return result
 
     def hasOwn(self, obj: Any, key: str) -> bool:
@@ -12212,6 +12242,27 @@ class SpryTypedArray:
                 result._data = sorted(_arr._data)
                 return result
             return _ta_toSorted
+        # Uint8Array / Uint8ClampedArray binary encoding methods (TC39 Stage 4)
+        if self._type_name in ("Uint8Array", "Uint8ClampedArray") and prop == "toBase64":
+            def _ta_toBase64(options: Any = None, _arr: "SpryTypedArray" = self) -> str:
+                import base64 as _b64
+                alphabet = "base64"
+                if isinstance(options, dict) and options.get("alphabet") == "base64url":
+                    alphabet = "base64url"
+                omit_pad = isinstance(options, dict) and bool(options.get("omitPadding", False))
+                raw = bytes(int(v) & 0xFF for v in _arr._data)
+                if alphabet == "base64url":
+                    encoded = _b64.urlsafe_b64encode(raw).decode("ascii")
+                else:
+                    encoded = _b64.b64encode(raw).decode("ascii")
+                if omit_pad:
+                    encoded = encoded.rstrip("=")
+                return encoded
+            return _ta_toBase64
+        if self._type_name in ("Uint8Array", "Uint8ClampedArray") and prop == "toHex":
+            def _ta_toHex(_arr: "SpryTypedArray" = self) -> str:
+                return "".join(f"{int(v) & 0xFF:02x}" for v in _arr._data)
+            return _ta_toHex
         raise SpryRuntimeError(f"{self._type_name} has no property {prop!r}", None)
 
     def __repr__(self) -> str:
@@ -12262,9 +12313,41 @@ class _TypedArrayNamespace:
     def of(self, *args: Any) -> SpryTypedArray:
         return SpryTypedArray(self._type_name, self._element_size, list(args))
 
+    def fromBase64(self, encoded: Any, options: Any = None) -> SpryTypedArray:
+        """Uint8Array.fromBase64(str) — decode a base64 string into a Uint8Array."""
+        import base64 as _b64
+        s = str(encoded).strip()
+        alphabet = "base64"
+        if isinstance(options, dict) and options.get("alphabet") == "base64url":
+            alphabet = "base64url"
+        if alphabet == "base64url":
+            # Restore padding if missing
+            pad = 4 - len(s) % 4
+            if pad < 4:
+                s += "=" * pad
+            raw = _b64.urlsafe_b64decode(s)
+        else:
+            pad = 4 - len(s) % 4
+            if pad < 4:
+                s += "=" * pad
+            raw = _b64.b64decode(s)
+        return SpryTypedArray(self._type_name, self._element_size, list(raw))
+
+    def fromHex(self, hex_str: Any) -> SpryTypedArray:
+        """Uint8Array.fromHex(str) — decode a hex string into a Uint8Array."""
+        s = str(hex_str)
+        raw = bytes.fromhex(s)
+        return SpryTypedArray(self._type_name, self._element_size, list(raw))
+
     def _spry_get_prop(self, prop: str) -> Any:
         if prop == "BYTES_PER_ELEMENT":
             return self._element_size
+        # Expose fromBase64 and fromHex only for Uint8Array
+        if self._type_name in ("Uint8Array", "Uint8ClampedArray"):
+            if prop == "fromBase64":
+                return self.fromBase64
+            if prop == "fromHex":
+                return self.fromHex
         try:
             return getattr(self, prop)
         except AttributeError:

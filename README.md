@@ -8,7 +8,7 @@ SpryCode is a fast, reliable, adaptive programming language and runtime platform
 - 🔒 **Security by default** — explicit permissions, secret redaction, sandboxing
 - 🔐 **Privacy-first** — private/sensitive data annotations, audit logging
 - 🔄 **Transactions** — safe operations with rollback and compensation logic
-- 🔌 **Interoperability** — adapters for Python, JavaScript, SQL, REST APIs
+- 🔌 **Interoperability** — adapters for SQL and REST APIs
 - 📦 **Easy to learn** — clear, readable syntax
 - 🏢 **Commercial-ready** — Free and Pro licensing tiers
 
@@ -225,7 +225,7 @@ SpryCode is implemented in phases:
 - **Phase 1** ✅ Language core (lexer, parser, interpreter, basic types, variables, functions, tasks)
 - **Phase 2** ✅ Safety core (permission system, secret redaction, privacy annotations, logging)
 - **Phase 3** ✅ Runtime core (transactions, atomic operations, file streaming, retry)
-- **Phase 4** 🔄 Interop (adapters for Python, JavaScript, SQL, REST)
+- **Phase 4** 🔄 Interop (adapters for SQL and REST)
 - **Phase 5** 🔄 SpryControl (connector dashboard, audit logs, fraud verification)
 - **Phase 6** 🔄 Licensing (Free/Pro license enforcement, offline grace)
 - **Phase 7** 🔄 Optimization (compiler optimizations, parallel I/O, streaming)

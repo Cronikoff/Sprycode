@@ -95,7 +95,7 @@ In secure mode:
 External adapters run in a sandbox:
 
 ```spry
-adapter python sandboxed {
+adapter external sandboxed {
     allow filesystem.read "./scripts"
     deny network.all
 }

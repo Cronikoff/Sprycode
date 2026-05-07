@@ -282,9 +282,9 @@ connector paymentGateway {
 ## Adapters
 
 ```spry
-use adapter python
+use adapter external
 
-adapter pyScript sandboxed {
+adapter scriptEngine sandboxed {
     allow filesystem.read "./scripts"
     deny network.all
 }

@@ -461,6 +461,17 @@ class Parser:
         if tok.type == TokenType.CREDIT:
             return self._parse_credit()
 
+        # `type Alias = ...` — type alias declaration (no-op at runtime)
+        if (tok.type == TokenType.IDENTIFIER and tok.value == "type"
+                and self._peek().type in self._IDENTIFIER_LIKE
+                and self._peek(2).type == TokenType.EQ):
+            self._advance()  # consume 'type'
+            self._advance()  # consume alias name
+            self._advance()  # consume '='
+            self._parse_type_name()  # consume the RHS type name
+            self._match(TokenType.SEMICOLON)
+            return None  # no-op
+
         # Labeled statement: label: for/while/do {...}
         # Detect: IDENTIFIER followed immediately by COLON
         if tok.type == TokenType.IDENTIFIER and self._peek().type == TokenType.COLON:
@@ -966,6 +977,9 @@ class Parser:
                     self._expect(TokenType.RPAREN)
                 else:
                     err_name = self._expect_ident().value
+                    # Optional type annotation: catch(e: TypeError) — ignored at runtime
+                    if self._match(TokenType.COLON):
+                        self._parse_type_name()  # consume and discard type annotation
                     self._expect(TokenType.RPAREN)
             elif not self._check(TokenType.LBRACE):
                 # bare identifier: catch e { ... }
@@ -1041,6 +1055,10 @@ class Parser:
         tok = self._expect(TokenType.LOG)
         level_tok = self._current()
         if level_tok.type in (TokenType.INFO, TokenType.WARN, TokenType.ERROR):
+            self._advance()
+            level = level_tok.value
+        elif (level_tok.type == TokenType.IDENTIFIER
+              and level_tok.value in ("debug", "trace", "success", "verbose", "notice")):
             self._advance()
             level = level_tok.value
         else:
@@ -1641,6 +1659,8 @@ class Parser:
                 arms.append(MatchArm(pattern=pattern, is_wildcard=False,
                                      range_end=range_end, guard=guard, body=body,
                                      line=arm_tok.line, column=arm_tok.column))
+            # Allow optional comma between arms (JS-style)
+            self._match(TokenType.COMMA)
         self._expect(TokenType.RBRACE)
         return MatchStatement(subject=subject, arms=arms, line=tok.line, column=tok.column)
 
@@ -2249,6 +2269,12 @@ class Parser:
                 # fn name(params) [-> ReturnType]  — body is optional in interface
                 fn = self._parse_fn_signature_or_full()
                 body_stmts.append(fn)
+            elif self._peek(1).type == TokenType.LPAREN and not self._check(TokenType.RBRACE):
+                # Bare method signature: name(params) [-> ReturnType] — no fn keyword.
+                # Accept any token followed by '(' as a method name (handles keywords as names).
+                fn = self._parse_interface_method_signature()
+                if fn is not None:
+                    body_stmts.append(fn)
             else:
                 stmt = self._parse_statement()
                 if stmt is not None:
@@ -2276,9 +2302,9 @@ class Parser:
             ptype = None
             if self._match(TokenType.COLON):
                 ptype = self._parse_type_name()
+            params.append((pname.value, ptype))
             if not self._match(TokenType.COMMA):
                 break
-            params.append((pname.value, ptype))
         self._expect(TokenType.RPAREN)
         return_type = None
         if self._match(TokenType.ARROW):
@@ -2302,6 +2328,45 @@ class Parser:
             line=tok.line,
             column=tok.column,
         )
+
+    def _parse_interface_method_signature(self) -> FunctionDeclaration | None:
+        """Parse a bare method signature in an interface body: name(params) [-> ReturnType]
+        Accepts any token as the method name (keywords included)."""
+        name_tok = self._advance()  # consume method name (any token type allowed here)
+        tok = name_tok  # base diagnostics on the method name token
+        self._expect(TokenType.LPAREN)
+        params: list[tuple[str, str | None]] = []
+        defaults: dict[str, Node] = {}
+        rest_param: str | None = None
+        while not self._check(TokenType.RPAREN) and not self._at_end():
+            if self._check(TokenType.ELLIPSIS):
+                self._advance()
+                rest_tok = self._expect_ident()
+                rest_param = rest_tok.value
+                break
+            pname = self._expect_ident()
+            ptype = None
+            if self._match(TokenType.COLON):
+                ptype = self._parse_type_name()
+            params.append((pname.value, ptype))
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.RPAREN)
+        return_type = None
+        if self._match(TokenType.ARROW):
+            return_type = self._parse_type_name()
+        body = Block(body=[], line=tok.line, column=tok.column)
+        return FunctionDeclaration(
+            name=name_tok.value,
+            params=params,
+            return_type=return_type,
+            body=body,
+            defaults=defaults,
+            rest_param=rest_param,
+            line=tok.line,
+            column=tok.column,
+        )
+
 
     def _parse_switch(self) -> SwitchStatement:
         """switch <expr> { case <val>: <body> ... default: <body> }
@@ -2954,22 +3019,36 @@ class Parser:
 
         if tok.type == TokenType.FILTER:
             self._advance()
-            # Support both: `filter x => expr`  and  `filter(x => expr)`
+            # Support: `filter x => expr`, `filter(x => expr)`, or `filter namedFn`
             if self._check(TokenType.LPAREN):
                 self._advance()  # consume '('
                 lam = self._parse_lambda()
                 self._expect(TokenType.RPAREN)
+            elif (self._current().type in self._IDENTIFIER_LIKE
+                  and self._peek(1).type not in (TokenType.FAT_ARROW, TokenType.LPAREN)):
+                # Named function reference: filter myFn
+                fn_tok = self._advance()
+                fn_ref = Identifier(name=fn_tok.value, line=fn_tok.line, column=fn_tok.column)
+                fn_ref.operation = "filter"  # type: ignore[attr-defined]
+                return fn_ref
             else:
                 lam = self._parse_lambda()
             lam.operation = "filter"
             return lam
         if tok.type == TokenType.MAP:
             self._advance()
-            # Support both: `map x => expr`  and  `map(x => expr)`
+            # Support: `map x => expr`, `map(x => expr)`, or `map namedFn`
             if self._check(TokenType.LPAREN):
                 self._advance()
                 lam = self._parse_lambda()
                 self._expect(TokenType.RPAREN)
+            elif (self._current().type in self._IDENTIFIER_LIKE
+                  and self._peek(1).type not in (TokenType.FAT_ARROW, TokenType.LPAREN)):
+                # Named function reference: map myFn
+                fn_tok = self._advance()
+                fn_ref = Identifier(name=fn_tok.value, line=fn_tok.line, column=fn_tok.column)
+                fn_ref.operation = "map"  # type: ignore[attr-defined]
+                return fn_ref
             else:
                 lam = self._parse_lambda()
             lam.operation = "map"
@@ -2980,6 +3059,13 @@ class Parser:
                 self._advance()
                 lam = self._parse_lambda()
                 self._expect(TokenType.RPAREN)
+            elif (self._current().type in self._IDENTIFIER_LIKE
+                  and self._peek(1).type not in (TokenType.FAT_ARROW, TokenType.LPAREN)):
+                # Named function reference: each myFn
+                fn_tok = self._advance()
+                fn_ref = Identifier(name=fn_tok.value, line=fn_tok.line, column=fn_tok.column)
+                fn_ref.operation = "each"  # type: ignore[attr-defined]
+                return fn_ref
             else:
                 lam = self._parse_lambda()
             lam.operation = "each"
@@ -3187,6 +3273,20 @@ class Parser:
             op_tok = self._advance()
             right = self._parse_ternary()
             left = NullCoalesceExpression(left=left, right=right, line=op_tok.line, column=op_tok.column)
+        # `as Type` / `as const` — type cast annotation, ignore at runtime.
+        # Only consume when followed by a type keyword, 'const', or an uppercase identifier
+        # (avoids conflict with `with expr as alias` and `import "mod" as alias`).
+        if self._check(TokenType.AS):
+            _type_cast_tokens = {
+                TokenType.NUMBER_TYPE, TokenType.INT_TYPE, TokenType.FLOAT_TYPE,
+                TokenType.BOOL_TYPE, TokenType.TEXT, TokenType.RESULT_TYPE,
+                TokenType.LIST_TYPE, TokenType.CONST,
+            }
+            next_tok = self._peek()
+            if (next_tok.type in _type_cast_tokens
+                    or (next_tok.type == TokenType.IDENTIFIER and next_tok.value[0].isupper())):
+                self._advance()  # consume 'as'
+                self._parse_type_name()  # consume and discard the type name
         return left
 
     def _parse_ternary(self) -> Node:

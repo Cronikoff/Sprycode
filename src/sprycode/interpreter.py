@@ -1393,9 +1393,6 @@ class Interpreter:
         # Event bus
         env.define("events", _EventsHelper(self._call_value))
 
-        # Python interop namespace
-        env.define("python", _PythonNamespace())
-
         # String global namespace
         _string_ns = _StringNamespace()
         _string_ns._interp = self
@@ -1459,6 +1456,7 @@ class Interpreter:
                        "ReferenceError", "EvalError", "URIError"):
             env.define(_ename, _ErrorNamespace(_ename))
         env.define("AggregateError", _AggregateErrorNamespace())
+        env.define("SuppressedError", _SuppressedErrorNamespace())
 
         # Date namespace
         env.define("Date", _DateNamespace())
@@ -2486,6 +2484,8 @@ class Interpreter:
                 self.logger.warn(msg_str)
             elif level == "error":
                 self.logger.error(msg_str)
+            elif level in ("debug", "trace", "verbose", "notice", "success"):
+                self.logger.debug(msg_str)
             else:
                 self.logger.info(msg_str)
             return None
@@ -2964,6 +2964,14 @@ class Interpreter:
             raise SpryRuntimeError(f"Cannot construct {type(callee).__name__}", node)
 
         if isinstance(node, InExpression):
+            # Private brand check: `#field in obj` — the LHS is parsed as Identifier("__private__field")
+            # Don't try to evaluate it as a variable; just use the name as the private key.
+            if isinstance(node.item, Identifier) and node.item.name.startswith("__private__"):
+                private_key = node.item.name
+                coll_val = self._eval(node.collection, env)
+                if isinstance(coll_val, SpryInstance):
+                    return private_key in coll_val.fields
+                return False
             item_val = self._eval(node.item, env)
             coll_val = self._eval(node.collection, env)
             if isinstance(coll_val, (list, tuple)):
@@ -3700,6 +3708,8 @@ class Interpreter:
                 return "u" in obj.flags_str
             if prop == "dotAll":
                 return "s" in obj.flags_str
+            if prop == "hasIndices":
+                return "d" in obj.flags_str
             raise SpryRuntimeError(f"Regex has no property {prop!r}", node)
 
         if isinstance(obj, SpryResult):
@@ -3873,7 +3883,19 @@ class Interpreter:
             if prop == "pop":
                 return lambda: obj.pop() if obj else None
             if prop == "includes":
-                return lambda item: item in obj
+                def _list_includes(item: Any, from_idx: Any = 0, _o: list = obj) -> bool:
+                    import math as _m
+                    start = int(from_idx) if from_idx else 0
+                    if start < 0:
+                        start = max(0, len(_o) + start)
+                    for x in _o[start:]:
+                        if isinstance(item, float) and _m.isnan(item):
+                            if isinstance(x, float) and _m.isnan(x):
+                                return True
+                        elif x == item:
+                            return True
+                    return False
+                return _list_includes
             if prop == "join":
                 return lambda sep="": sep.join(str(i) for i in obj)
             if prop == "slice":
@@ -5024,8 +5046,125 @@ class Interpreter:
         if isinstance(obj, (_ObjectPrototype, _ObjectPrototypeHasOwnProperty, _ObjectPrototypeToString)):
             return obj._spry_get_prop(prop)
 
+        # SpryTypedArray — callback methods need access to self._call_value
+        if isinstance(obj, SpryTypedArray):
+            _call_fn = self._call_value
+            if prop == "map":
+                def _ta_map(fn: Any, _arr: SpryTypedArray = obj,
+                            _cf: Any = _call_fn) -> SpryTypedArray:
+                    result = SpryTypedArray(_arr._type_name, _arr._element_size, len(_arr._data))
+                    result._data = [_arr._coerce(_cf(fn, [v, i, _arr]))
+                                    for i, v in enumerate(_arr._data)]
+                    return result
+                return _ta_map
+            if prop == "filter":
+                def _ta_filter(fn: Any, _arr: SpryTypedArray = obj,
+                               _cf: Any = _call_fn) -> SpryTypedArray:
+                    items = [v for i, v in enumerate(_arr._data) if _cf(fn, [v, i, _arr])]
+                    return SpryTypedArray(_arr._type_name, _arr._element_size, items)
+                return _ta_filter
+            if prop == "find":
+                def _ta_find(fn: Any, _arr: SpryTypedArray = obj,
+                             _cf: Any = _call_fn) -> Any:
+                    for i, v in enumerate(_arr._data):
+                        if _cf(fn, [v, i, _arr]):
+                            return v
+                    return SPRY_UNDEFINED
+                return _ta_find
+            if prop == "findIndex":
+                def _ta_findIndex(fn: Any, _arr: SpryTypedArray = obj,
+                                  _cf: Any = _call_fn) -> int:
+                    for i, v in enumerate(_arr._data):
+                        if _cf(fn, [v, i, _arr]):
+                            return i
+                    return -1
+                return _ta_findIndex
+            if prop == "findLast":
+                def _ta_findLast(fn: Any, _arr: SpryTypedArray = obj,
+                                 _cf: Any = _call_fn) -> Any:
+                    for i in range(len(_arr._data) - 1, -1, -1):
+                        if _cf(fn, [_arr._data[i], i, _arr]):
+                            return _arr._data[i]
+                    return SPRY_UNDEFINED
+                return _ta_findLast
+            if prop == "findLastIndex":
+                def _ta_findLastIndex(fn: Any, _arr: SpryTypedArray = obj,
+                                      _cf: Any = _call_fn) -> int:
+                    for i in range(len(_arr._data) - 1, -1, -1):
+                        if _cf(fn, [_arr._data[i], i, _arr]):
+                            return i
+                    return -1
+                return _ta_findLastIndex
+            if prop == "every":
+                def _ta_every(fn: Any, _arr: SpryTypedArray = obj,
+                              _cf: Any = _call_fn) -> bool:
+                    return all(bool(_cf(fn, [v, i, _arr])) for i, v in enumerate(_arr._data))
+                return _ta_every
+            if prop == "some":
+                def _ta_some(fn: Any, _arr: SpryTypedArray = obj,
+                             _cf: Any = _call_fn) -> bool:
+                    return any(bool(_cf(fn, [v, i, _arr])) for i, v in enumerate(_arr._data))
+                return _ta_some
+            if prop == "forEach":
+                def _ta_forEach(fn: Any, _arr: SpryTypedArray = obj,
+                                _cf: Any = _call_fn) -> None:
+                    for i, v in enumerate(_arr._data):
+                        _cf(fn, [v, i, _arr])
+                return _ta_forEach
+            if prop == "reduce":
+                _TA_MISSING = object()
+
+                def _ta_reduce(fn: Any, initial: Any = _TA_MISSING, _arr: SpryTypedArray = obj,
+                               _cf: Any = _call_fn, _m: Any = _TA_MISSING) -> Any:
+                    data = _arr._data
+                    if not data:
+                        if initial is _m:
+                            raise SpryRuntimeError(
+                                f"reduce of empty typed array with no initial value", node)
+                        return initial
+                    acc = initial if initial is not _m else data[0]
+                    start = 0 if initial is not _m else 1
+                    for i in range(start, len(data)):
+                        acc = _cf(fn, [acc, data[i], i, _arr])
+                    return acc
+                return _ta_reduce
+            if prop == "reduceRight":
+                _TA_MISSING2 = object()
+
+                def _ta_reduceRight(fn: Any, initial: Any = _TA_MISSING2,
+                                    _arr: SpryTypedArray = obj,
+                                    _cf: Any = _call_fn, _m: Any = _TA_MISSING2) -> Any:
+                    data = _arr._data
+                    if not data:
+                        if initial is _m:
+                            raise SpryRuntimeError(
+                                f"reduceRight of empty typed array with no initial value", node)
+                        return initial
+                    acc = initial if initial is not _m else data[-1]
+                    start = len(data) - 2 if initial is _m else len(data) - 1
+                    for i in range(start, -1, -1):
+                        acc = _cf(fn, [acc, data[i], i, _arr])
+                    return acc
+                return _ta_reduceRight
+            if prop == "sort":
+                import functools as _ft
+
+                def _ta_sort(fn: Any = None, _arr: SpryTypedArray = obj,
+                             _cf: Any = _call_fn) -> SpryTypedArray:
+                    if fn is None:
+                        _arr._data.sort()
+                    else:
+                        def _cmp(a: Any, b: Any) -> int:
+                            r = _cf(fn, [a, b])
+                            return -1 if r < 0 else (1 if r > 0 else 0)
+                        _arr._data.sort(key=_ft.cmp_to_key(_cmp))
+                    return _arr
+                return _ta_sort
+            # Fall through to _spry_get_prop for pure methods
+            return obj._spry_get_prop(prop)
+
         if isinstance(obj, (SpryURL, SpryURLSearchParams, SpryArrayBuffer, SprySharedArrayBuffer,
-                             SpryTypedArray, SpryDataView,
+                             SpryDataView,
                              SpryTextEncoder, SpryTextDecoder,
                              SpryAbortController, SpryAbortSignal,
                              _AtomicsNamespace)):
@@ -5213,15 +5352,28 @@ class Interpreter:
                     n = int(self._eval(stage._skip_count, env))  # type: ignore[attr-defined]
                     value = value[n:] if isinstance(value, list) else value
                     continue
-                fn = env.get(stage.name)
-                if isinstance(fn, SpryFunction):
-                    value = self._call_function(fn, [value], stage)
-                elif isinstance(fn, (SpryLambda, LambdaExpression)):
-                    value = self._apply_lambda(fn, value, env)
-                elif callable(fn):
-                    value = fn(value)
+                fn = self._eval(stage, env)
+                operation = getattr(stage, "operation", None)
+                # Named function reference with explicit pipeline operation (map/filter/each)
+                if operation == "filter":
+                    if isinstance(value, list):
+                        value = [item for item in value if self._truthy(self._call_value(fn, [item]))]
+                    else:
+                        value = value if self._truthy(self._call_value(fn, [value])) else None
+                elif operation == "each":
+                    if isinstance(value, list):
+                        for item in value:
+                            self._call_value(fn, [item])
+                    else:
+                        self._call_value(fn, [value])
+                elif operation == "map":
+                    if isinstance(value, list):
+                        value = [self._call_value(fn, [item]) for item in value]
+                    else:
+                        value = self._call_value(fn, [value])
                 else:
-                    raise SpryRuntimeError(f"Cannot use {stage.name!r} as pipeline stage", stage)
+                    # No explicit operation — call function with whole value (e.g. nums |> len)
+                    value = self._call_value(fn, [value])
                 continue
 
             if isinstance(stage, ParseStatement):
@@ -6573,6 +6725,11 @@ class Interpreter:
                 self_val.fields["message"] = msg
                 self_val.fields["name"] = self_val.cls.name
                 self_val.fields["stack"] = f"{self_val.cls.name}: {msg}"
+                # Extract `cause` from the options object (second argument)
+                if len(args_vals) >= 2 and isinstance(args_vals[1], dict) and "cause" in args_vals[1]:
+                    self_val.fields["cause"] = args_vals[1]["cause"]
+                elif "cause" not in self_val.fields:
+                    self_val.fields.setdefault("cause", None)
             return None  # no superclass — silently ignore
         # Find parent's init / constructor and call it with evaluated args
         args_vals = [self._eval(a, env) for a in node.args]
@@ -7569,7 +7726,8 @@ class _ObjectNamespace:
     def keys(self, obj: Any) -> list:
         """Return the string-keyed enumerable properties (excludes symbol keys)."""
         if isinstance(obj, dict):
-            return [k for k in obj.keys() if not isinstance(k, SprySymbol)]
+            return [k for k in obj.keys()
+                    if not isinstance(k, SprySymbol) and not str(k).startswith("__")]
         if isinstance(obj, SpryInstance):
             return [k for k in obj.fields if not k.startswith("__") and not callable(obj.fields[k]) and not isinstance(obj.fields[k], SpryFunction)]
         return []
@@ -7577,7 +7735,8 @@ class _ObjectNamespace:
     def values(self, obj: Any) -> list:
         """Return the values of an object/dict (excludes symbol-keyed entries)."""
         if isinstance(obj, dict):
-            return [v for k, v in obj.items() if not isinstance(k, SprySymbol)]
+            return [v for k, v in obj.items()
+                    if not isinstance(k, SprySymbol) and not str(k).startswith("__")]
         if isinstance(obj, SpryInstance):
             return [v for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
@@ -7585,7 +7744,8 @@ class _ObjectNamespace:
     def entries(self, obj: Any) -> list:
         """Return [[key, value], ...] pairs (excludes symbol-keyed entries)."""
         if isinstance(obj, dict):
-            return [[k, v] for k, v in obj.items() if not isinstance(k, SprySymbol)]
+            return [[k, v] for k, v in obj.items()
+                    if not isinstance(k, SprySymbol) and not str(k).startswith("__")]
         if isinstance(obj, SpryInstance):
             return [[k, v] for k, v in obj.fields.items() if not k.startswith("__") and not callable(v) and not isinstance(v, SpryFunction)]
         return []
@@ -7638,11 +7798,13 @@ class _ObjectNamespace:
     def create(self, proto: Any = None, props: Any = None) -> dict:
         """Create a new object with the given prototype (values are copied in)."""
         result: dict = {}
-        if isinstance(proto, dict):
-            # Copy prototype properties into the new object
-            result.update(proto)
+        if proto is not None and proto is not False and isinstance(proto, dict):
             # Track the prototype so getPrototypeOf can return it
             result["__spry_proto__"] = proto
+        # Apply property descriptors if provided
+        if isinstance(props, dict):
+            for key, descriptor in props.items():
+                self.defineProperty(result, key, descriptor)
         return result
 
     def hasOwn(self, obj: Any, key: str) -> bool:
@@ -8988,73 +9150,6 @@ class _EventsHelper:
         return list(self._handlers.get(str(name), []))
 
 
-class _PythonNamespace:
-    """Python interop namespace: python.eval(expr), python.call(fn_name, args)."""
-
-    def __getattr__(self, prop: str) -> Any:
-        if prop == "eval":
-            return self._py_eval
-        if prop == "call":
-            return self._py_call
-        if prop == "import_module":
-            return self._py_import
-        raise AttributeError(prop)
-
-    @staticmethod
-    def _py_eval(expr: str) -> Any:
-        """Evaluate a Python expression string safely."""
-        import ast as _ast
-        # Only allow simple expressions (no statements)
-        try:
-            tree = _ast.parse(str(expr), mode="eval")
-        except SyntaxError as e:
-            raise ValueError(f"python.eval: invalid expression: {e}") from e
-        # Restrict builtins to safe set
-        safe_builtins = {
-            "abs": abs, "round": round, "len": len, "min": min, "max": max,
-            "sum": sum, "int": int, "float": float, "str": str, "bool": bool,
-            "list": list, "dict": dict, "tuple": tuple, "set": set,
-            "range": range, "enumerate": enumerate, "zip": zip, "sorted": sorted,
-            "reversed": reversed, "any": any, "all": all, "pow": pow,
-            "__builtins__": {},
-        }
-        return eval(compile(tree, "<python.eval>", "eval"), {"__builtins__": safe_builtins}, {})  # noqa: S307
-
-    @staticmethod
-    def _py_call(fn_name: str, args: Any = None) -> Any:
-        """Call a Python builtin or stdlib function by name.
-
-        If `args` is a list, it is passed as the single argument (e.g. ``len([1,2,3])``).
-        For functions that take multiple positional args, pass them as separate args
-        from the SpryCode side via spread: ``python.call("pow", [2, 10])``.
-        """
-        import builtins as _builtins
-        fn = getattr(_builtins, str(fn_name), None)
-        if fn is None:
-            raise ValueError(f"python.call: unknown function {fn_name!r}")
-        if args is None:
-            return fn()
-        # A single list/tuple is passed as the one argument (matches most builtins)
-        if isinstance(args, (list, tuple)):
-            try:
-                return fn(args)
-            except TypeError:
-                # Fallback: try unpacking (for multi-arg builtins like pow, round, etc.)
-                return fn(*args)
-        return fn(args)
-
-    @staticmethod
-    def _py_import(module_name: str) -> Any:
-        """Import a Python module and return it."""
-        import importlib
-        allowed = {"math", "json", "re", "random", "statistics", "string",
-                   "datetime", "collections", "itertools", "functools"}
-        name = str(module_name)
-        if name not in allowed:
-            raise ValueError(f"python.import: module {name!r} not in allowed list")
-        return importlib.import_module(name)
-
-
 # ---------------------------------------------------------------------------
 # Map built-in data structure
 # ---------------------------------------------------------------------------
@@ -9853,7 +9948,8 @@ class SpryDate:
         return self._dt.day
 
     def getDay(self) -> int:
-        return self._dt.weekday()  # 0=Monday in Python
+        # JS: 0=Sunday … 6=Saturday; Python weekday(): 0=Monday … 6=Sunday
+        return (self._dt.weekday() + 1) % 7
 
     def getHours(self) -> int:
         return self._dt.hour
@@ -9867,6 +9963,152 @@ class SpryDate:
     def getMilliseconds(self) -> int:
         return self._dt.microsecond // 1000
 
+    def getTimezoneOffset(self) -> int:
+        """Return timezone offset in minutes. SpryCode has no timezone support — always 0."""
+        return 0
+
+    # ------------------------------------------------------------------
+    # Setter methods — return new timestamp (ms since epoch), mutate self
+    # ------------------------------------------------------------------
+
+    def _replace_dt(self, **kwargs: Any) -> float:
+        """Replace datetime fields and return new timestamp.
+
+        Accepts ``int`` values for all standard ``datetime`` fields plus
+        ``microsecond`` (passed pre-multiplied by callers).  All values are
+        coerced to ``int`` here as a safety net for any callers that pass
+        numeric strings or floats.
+        """
+        import datetime as _dt
+        self._dt = self._dt.replace(**{k: int(v) for k, v in kwargs.items()})
+        return self.getTime()
+
+    def setFullYear(self, year: Any, month: Any = None, day: Any = None) -> float:
+        kw: dict = {"year": int(year)}
+        if month is not None:
+            kw["month"] = int(month) + 1  # JS month is 0-indexed
+        if day is not None:
+            kw["day"] = int(day)
+        return self._replace_dt(**kw)
+
+    def setMonth(self, month: Any, day: Any = None) -> float:
+        kw: dict = {"month": int(month) + 1}  # JS month is 0-indexed
+        if day is not None:
+            kw["day"] = int(day)
+        return self._replace_dt(**kw)
+
+    def setDate(self, day: Any) -> float:
+        return self._replace_dt(day=int(day))
+
+    def setHours(self, hours: Any, minutes: Any = None,
+                 seconds: Any = None, ms: Any = None) -> float:
+        kw: dict = {"hour": int(hours)}
+        if minutes is not None:
+            kw["minute"] = int(minutes)
+        if seconds is not None:
+            kw["second"] = int(seconds)
+        if ms is not None:
+            kw["microsecond"] = int(ms) * 1000
+        return self._replace_dt(**kw)
+
+    def setMinutes(self, minutes: Any, seconds: Any = None, ms: Any = None) -> float:
+        kw: dict = {"minute": int(minutes)}
+        if seconds is not None:
+            kw["second"] = int(seconds)
+        if ms is not None:
+            kw["microsecond"] = int(ms) * 1000
+        return self._replace_dt(**kw)
+
+    def setSeconds(self, seconds: Any, ms: Any = None) -> float:
+        kw: dict = {"second": int(seconds)}
+        if ms is not None:
+            kw["microsecond"] = int(ms) * 1000
+        return self._replace_dt(**kw)
+
+    def setMilliseconds(self, ms: Any) -> float:
+        return self._replace_dt(microsecond=int(ms) * 1000)
+
+    def setTime(self, ms: Any) -> float:
+        import datetime as _dt
+        epoch = _dt.datetime(1970, 1, 1)
+        self._dt = epoch + _dt.timedelta(milliseconds=float(ms))
+        return self.getTime()
+
+    # ------------------------------------------------------------------
+    # UTC getters — treat internal datetime as UTC (no tz conversion)
+    # ------------------------------------------------------------------
+
+    def getUTCFullYear(self) -> int:
+        return self._dt.year
+
+    def getUTCMonth(self) -> int:
+        return self._dt.month - 1  # 0-indexed
+
+    def getUTCDate(self) -> int:
+        return self._dt.day
+
+    def getUTCDay(self) -> int:
+        return (self._dt.weekday() + 1) % 7
+
+    def getUTCHours(self) -> int:
+        return self._dt.hour
+
+    def getUTCMinutes(self) -> int:
+        return self._dt.minute
+
+    def getUTCSeconds(self) -> int:
+        return self._dt.second
+
+    def getUTCMilliseconds(self) -> int:
+        return self._dt.microsecond // 1000
+
+    # ------------------------------------------------------------------
+    # UTC setters — SpryCode has no timezone support; all dates are treated as
+    # UTC internally, so UTC setters are identical to their local counterparts.
+    # ------------------------------------------------------------------
+
+    def setUTCFullYear(self, year: Any, month: Any = None, day: Any = None) -> float:
+        return self.setFullYear(year, month, day)
+
+    def setUTCMonth(self, month: Any, day: Any = None) -> float:
+        return self.setMonth(month, day)
+
+    def setUTCDate(self, day: Any) -> float:
+        return self.setDate(day)
+
+    def setUTCHours(self, hours: Any, minutes: Any = None,
+                    seconds: Any = None, ms: Any = None) -> float:
+        return self.setHours(hours, minutes, seconds, ms)
+
+    def setUTCMinutes(self, minutes: Any, seconds: Any = None, ms: Any = None) -> float:
+        return self.setMinutes(minutes, seconds, ms)
+
+    def setUTCSeconds(self, seconds: Any, ms: Any = None) -> float:
+        return self.setSeconds(seconds, ms)
+
+    def setUTCMilliseconds(self, ms: Any) -> float:
+        return self.setMilliseconds(ms)
+
+    # ------------------------------------------------------------------
+    # Additional string conversion methods
+    # ------------------------------------------------------------------
+
+    def toDateString(self) -> str:
+        """Return human-readable date portion (JS: e.g. 'Mon Jan 15 2024')."""
+        return self._dt.strftime("%a %b %d %Y")
+
+    def toTimeString(self) -> str:
+        """Return human-readable time portion (JS: e.g. '10:30:00 GMT+0000')."""
+        return self._dt.strftime("%H:%M:%S GMT+0000")
+
+    def toUTCString(self) -> str:
+        """Return UTC string (JS: e.g. 'Mon, 15 Jan 2024 10:30:00 GMT')."""
+        return self._dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    def toJSON(self) -> str:
+        """Return ISO 8601 string (same as toISOString)."""
+        return self.toISOString()
+
     def toString(self) -> str:
         """Return a human-readable string representation (like JS Date.toString())."""
         return self._dt.strftime("%a %b %d %Y %H:%M:%S GMT+0000")
@@ -9874,6 +10116,35 @@ class SpryDate:
     def valueOf(self) -> float:
         """Return milliseconds since epoch (same as getTime)."""
         return self.getTime()
+
+    # ------------------------------------------------------------------
+    # Comparison operators
+    # ------------------------------------------------------------------
+
+    def __lt__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt < other._dt
+        return NotImplemented
+
+    def __le__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt <= other._dt
+        return NotImplemented
+
+    def __gt__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt > other._dt
+        return NotImplemented
+
+    def __ge__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt >= other._dt
+        return NotImplemented
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, SpryDate):
+            return self._dt == other._dt
+        return NotImplemented
 
     def __repr__(self) -> str:
         return self._dt.isoformat()
@@ -10864,12 +11135,21 @@ class _PerformanceNamespace:
     """performance namespace with basic mark/measure entry timeline support."""
 
     def __init__(self) -> None:
+        import time as _t
         self._entries: list[dict[str, Any]] = []
         self._marks: dict[str, float] = {}
+        perf_now = _t.perf_counter()
+        unix_ms = _t.time() * 1000.0
+        self._time_origin = unix_ms - (perf_now * 1000.0)
+        self._resource_timing_buffer_size = 250
 
     def now(self) -> float:
         import time as _t
         return _t.perf_counter() * 1000.0
+
+    @property
+    def timeOrigin(self) -> float:
+        return self._time_origin
 
     def mark(self, name: Any = None) -> dict[str, Any]:
         mark_name = str(name) if name is not None else "default"
@@ -10887,10 +11167,8 @@ class _PerformanceNamespace:
     def measure(self, name: Any = None, start: Any = None, end: Any = None) -> dict[str, Any]:
         measure_name = str(name) if name is not None else "measure"
         now = self.now()
-        start_key = str(start) if start is not None else None
-        end_key = str(end) if end is not None else None
-        start_time = self._marks.get(start_key, 0.0) if start_key else 0.0
-        end_time = self._marks.get(end_key, now) if end_key else now
+        start_time = self._resolve_time(start, 0.0)
+        end_time = self._resolve_time(end, now)
         duration = max(0.0, end_time - start_time)
         entry = {
             "name": measure_name,
@@ -10900,6 +11178,9 @@ class _PerformanceNamespace:
         }
         self._entries.append(entry)
         return entry
+
+    def getEntries(self) -> list:
+        return list(self._entries)
 
     def getEntriesByType(self, entry_type: Any = None) -> list:
         if entry_type is None:
@@ -10933,6 +11214,31 @@ class _PerformanceNamespace:
         n = str(name)
         self._remove_entries("measure", n)
 
+    def clearResourceTimings(self) -> None:
+        self._remove_entries("resource")
+
+    def setResourceTimingBufferSize(self, max_size: Any) -> None:
+        import math as _math
+        try:
+            v = float(max_size)
+            if _math.isnan(v) or _math.isinf(v):
+                self._resource_timing_buffer_size = 0
+            else:
+                self._resource_timing_buffer_size = max(0, int(v))
+        except (TypeError, ValueError):
+            self._resource_timing_buffer_size = 0
+
+    def _resolve_time(self, value: Any, default: float) -> float:
+        """Resolve a measure boundary from number, mark name, or fallback default."""
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        key = str(value)
+        if key in self._marks:
+            return self._marks[key]
+        return default
+
     def _remove_entries(self, entry_type: str, name: str | None = None) -> None:
         """Remove timeline entries by type, optionally filtering to a specific name."""
         if name is None:
@@ -10955,9 +11261,10 @@ class SpryURL:
     """Basic URL object supporting common properties."""
 
     def __init__(self, href: str) -> None:
-        from urllib.parse import urlparse, parse_qs, urlencode
+        from urllib.parse import urlparse
         self._raw = href
         self._parsed = urlparse(href)
+        self._search_params = SpryURLSearchParams(self._parsed.query)
 
     @property
     def href(self) -> str:
@@ -11014,6 +11321,7 @@ class SpryURL:
             "pathname": self.pathname, "search": self.search,
             "hash": self.hash, "origin": self.origin,
             "username": self.username, "password": self.password,
+            "searchParams": self._search_params,
         }
         if prop in mapping:
             return mapping[prop]
@@ -11815,6 +12123,91 @@ class SpryTypedArray:
             return self.subarray
         if prop == "slice":
             return self.slice
+        if prop == "reverse":
+            def _ta_reverse(_arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                _arr._data.reverse()
+                return _arr
+            return _ta_reverse
+        if prop == "copyWithin":
+            def _ta_copyWithin(target: Any, start: Any = 0, end: Any = None,
+                               _arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                t = int(target)
+                s = int(start)
+                e = len(_arr._data) if end is None else int(end)
+                src = list(_arr._data[s:e])
+                for i, v in enumerate(src):
+                    pos = t + i
+                    if 0 <= pos < len(_arr._data):
+                        _arr._data[pos] = v
+                return _arr
+            return _ta_copyWithin
+        if prop == "join":
+            def _ta_join(sep: Any = ",", _arr: "SpryTypedArray" = self) -> str:
+                return str(sep).join(str(v) for v in _arr._data)
+            return _ta_join
+        if prop == "includes":
+            return lambda v, _arr=self: v in _arr._data
+        if prop == "indexOf":
+            def _ta_indexOf(v: Any, from_idx: Any = 0,
+                            _arr: "SpryTypedArray" = self) -> int:
+                try:
+                    return _arr._data.index(v, int(from_idx))
+                except ValueError:
+                    return -1
+            return _ta_indexOf
+        if prop == "lastIndexOf":
+            def _ta_lastIndexOf(v: Any, _arr: "SpryTypedArray" = self) -> int:
+                for i in range(len(_arr._data) - 1, -1, -1):
+                    if _arr._data[i] == v:
+                        return i
+                return -1
+            return _ta_lastIndexOf
+        if prop == "at":
+            def _ta_at(n: Any, _arr: "SpryTypedArray" = self) -> Any:
+                i = int(n)
+                if -len(_arr._data) <= i < len(_arr._data):
+                    return _arr._data[i]
+                return None
+            return _ta_at
+        if prop == "entries":
+            return SpryIterator([[i, v] for i, v in enumerate(self._data)])
+        if prop == "keys":
+            return SpryIterator(list(range(len(self._data))))
+        if prop == "values":
+            return SpryIterator(list(self._data))
+        if prop == "toReversed":
+            def _ta_toReversed(_arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                result = SpryTypedArray(_arr._type_name, _arr._element_size, len(_arr._data))
+                result._data = list(reversed(_arr._data))
+                return result
+            return _ta_toReversed
+        if prop == "toSorted":
+            def _ta_toSorted(_arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                result = SpryTypedArray(_arr._type_name, _arr._element_size, len(_arr._data))
+                result._data = sorted(_arr._data)
+                return result
+            return _ta_toSorted
+        # Uint8Array / Uint8ClampedArray binary encoding methods (TC39 Stage 4)
+        if self._type_name in ("Uint8Array", "Uint8ClampedArray") and prop == "toBase64":
+            def _ta_toBase64(options: Any = None, _arr: "SpryTypedArray" = self) -> str:
+                import base64 as _b64
+                alphabet = "base64"
+                if isinstance(options, dict) and options.get("alphabet") == "base64url":
+                    alphabet = "base64url"
+                omit_pad = isinstance(options, dict) and bool(options.get("omitPadding", False))
+                raw = bytes(int(v) & 0xFF for v in _arr._data)
+                if alphabet == "base64url":
+                    encoded = _b64.urlsafe_b64encode(raw).decode("ascii")
+                else:
+                    encoded = _b64.b64encode(raw).decode("ascii")
+                if omit_pad:
+                    encoded = encoded.rstrip("=")
+                return encoded
+            return _ta_toBase64
+        if self._type_name in ("Uint8Array", "Uint8ClampedArray") and prop == "toHex":
+            def _ta_toHex(_arr: "SpryTypedArray" = self) -> str:
+                return "".join(f"{int(v) & 0xFF:02x}" for v in _arr._data)
+            return _ta_toHex
         raise SpryRuntimeError(f"{self._type_name} has no property {prop!r}", None)
 
     def __repr__(self) -> str:
@@ -11865,9 +12258,41 @@ class _TypedArrayNamespace:
     def of(self, *args: Any) -> SpryTypedArray:
         return SpryTypedArray(self._type_name, self._element_size, list(args))
 
+    def fromBase64(self, encoded: Any, options: Any = None) -> SpryTypedArray:
+        """Uint8Array.fromBase64(str) — decode a base64 string into a Uint8Array."""
+        import base64 as _b64
+        s = str(encoded).strip()
+        alphabet = "base64"
+        if isinstance(options, dict) and options.get("alphabet") == "base64url":
+            alphabet = "base64url"
+        if alphabet == "base64url":
+            # Restore padding if missing
+            pad = 4 - len(s) % 4
+            if pad < 4:
+                s += "=" * pad
+            raw = _b64.urlsafe_b64decode(s)
+        else:
+            pad = 4 - len(s) % 4
+            if pad < 4:
+                s += "=" * pad
+            raw = _b64.b64decode(s)
+        return SpryTypedArray(self._type_name, self._element_size, list(raw))
+
+    def fromHex(self, hex_str: Any) -> SpryTypedArray:
+        """Uint8Array.fromHex(str) — decode a hex string into a Uint8Array."""
+        s = str(hex_str)
+        raw = bytes.fromhex(s)
+        return SpryTypedArray(self._type_name, self._element_size, list(raw))
+
     def _spry_get_prop(self, prop: str) -> Any:
         if prop == "BYTES_PER_ELEMENT":
             return self._element_size
+        # Expose fromBase64 and fromHex only for Uint8Array
+        if self._type_name in ("Uint8Array", "Uint8ClampedArray"):
+            if prop == "fromBase64":
+                return self.fromBase64
+            if prop == "fromHex":
+                return self.fromHex
         try:
             return getattr(self, prop)
         except AttributeError:
@@ -12042,9 +12467,49 @@ class _AggregateErrorNamespace:
         return "AggregateError"
 
 
-# ===========================================================================
-# Phase 20 — Web APIs
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# SuppressedError (TC39 Explicit Resource Management)
+# ---------------------------------------------------------------------------
+
+class SprySuppressedError(SpryErrorObject):
+    """SuppressedError — wraps an outer error alongside the suppressed inner error."""
+
+    def __init__(self, error: Any, suppressed: Any, message: str = "",
+                 cause: Any = None) -> None:
+        super().__init__("SuppressedError", str(message), cause=cause)
+        self.error = error
+        self.suppressed = suppressed
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "error":
+            return self.error
+        if prop == "suppressed":
+            return self.suppressed
+        return super()._spry_get_prop(prop)
+
+    def __repr__(self) -> str:
+        return f"SuppressedError: {self.message}"
+
+
+class _SuppressedErrorNamespace:
+    """SuppressedError global — SuppressedError(error, suppressed[, message]) or new SuppressedError(...)."""
+
+    def __call__(self, error: Any = None, suppressed: Any = None,
+                 message: Any = "", options: Any = None) -> SprySuppressedError:
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SprySuppressedError(error, suppressed, str(message), cause=cause)
+
+    def new(self, error: Any = None, suppressed: Any = None,
+            message: Any = "", options: Any = None) -> SprySuppressedError:
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SprySuppressedError(error, suppressed, str(message), cause=cause)
+
+    def __repr__(self) -> str:
+        return "SuppressedError"
 
 # ---------------------------------------------------------------------------
 # crypto.subtle — SubtleCrypto

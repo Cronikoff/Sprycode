@@ -4,7 +4,7 @@ Phase 8 feature tests:
   - `result ok/fail` literal expressions
   - `Set()` builtin — deduplication
   - `events` namespace — on/off/emit/once
-  - `python` namespace — eval/call/import_module
+  - standalone-language migration coverage — python.* removed
   - Computed property keys — `{[key]: value}`
   - `for [a, b] in list` — destructuring in for-of loop
   - `import "path" as alias` — AS token fix
@@ -427,58 +427,112 @@ let v = len(events.listeners("a"))"""
 
 
 # ---------------------------------------------------------------------------
-# `python` namespace
+# SpryCode native equivalents — standalone language (no python.* interop)
 # ---------------------------------------------------------------------------
 
 
-class TestPythonNamespace:
-    def test_eval_arithmetic(self):
-        i = run('let v = python.eval("2 ** 10")')
+class TestSpryCodeNativeBuiltins:
+    """These tests verify that SpryCode provides native equivalents for all
+    previously python.* operations, confirming it is a standalone language."""
+
+    def test_arithmetic_power(self):
+        # Native arithmetic in SpryCode
+        i = run('let v = 2 ** 10')
         assert val(i, "v") == 1024
 
-    def test_eval_string_concat(self):
-        i = run('let v = python.eval("\'hello\' + \' \' + \'world\'")')
+    def test_string_concat(self):
+        # Native string concatenation in SpryCode
+        i = run('let v = "hello" + " " + "world"')
         assert val(i, "v") == "hello world"
 
-    def test_eval_list_len(self):
-        i = run('let v = python.eval("len([1, 2, 3, 4])")')
+    def test_array_length(self):
+        # Native array length access in SpryCode
+        i = run('let v = [1, 2, 3, 4].length')
         assert val(i, "v") == 4
 
-    def test_eval_round(self):
-        i = run('let v = python.eval("round(3.14159, 2)")')
+    def test_math_round(self):
+        # Native Math usage in SpryCode
+        i = run('let v = Math.round(3.14159 * 100) / 100')
         assert val(i, "v") == 3.14
 
-    def test_call_len(self):
-        i = run('let v = python.call("len", [1, 2, 3])')
+    def test_array_length_via_native(self):
+        # Native array length access in SpryCode
+        i = run('let v = [1, 2, 3].length')
         assert val(i, "v") == 3
 
-    def test_call_abs(self):
-        i = run('let v = python.call("abs", -7)')
+    def test_math_abs(self):
+        # Native Math usage in SpryCode
+        i = run('let v = Math.abs(-7)')
         assert val(i, "v") == 7
 
-    def test_call_str(self):
-        i = run('let v = python.call("str", 42)')
+    def test_string_conversion(self):
+        # Native String conversion in SpryCode
+        i = run('let v = String(42)')
         assert val(i, "v") == "42"
 
-    def test_import_math(self):
-        i = run('let m = python.import_module("math")\nlet v = m.floor(3.99)')
+    def test_math_floor(self):
+        # Native Math usage in SpryCode
+        i = run('let v = Math.floor(3.99)')
         assert val(i, "v") == 3
 
-    def test_eval_unknown_raises(self):
-        # `import` is a statement — ast.parse(mode="eval") rejects it
-        with pytest.raises(Exception):
-            run('python.eval("import os")')
-
-    def test_eval_dunder_import_blocked(self):
-        # __import__ not in safe builtins — must raise at eval time
-        from sprycode.interpreter import _PythonNamespace
-        ns = _PythonNamespace()
-        with pytest.raises((NameError, Exception)):
-            ns._py_eval('__import__("os")')
-
-    def test_call_sorted(self):
-        i = run('let v = python.call("sorted", [3, 1, 2])')
+    def test_array_sort(self):
+        # Native array sorting in SpryCode
+        i = run('let v = [3, 1, 2].sort()')
         assert val(i, "v") == [1, 2, 3]
+
+    def test_no_python_global(self):
+        # Confirm python.* is no longer in the global scope
+        with pytest.raises(Exception):
+            run('let v = python.eval("1 + 1")')
+
+    def test_native_sorted(self):
+        i = run('let v = sorted([3, 1, 2])')
+        assert val(i, "v") == [1, 2, 3]
+
+    def test_native_abs(self):
+        i = run('let v = abs(-42)')
+        assert val(i, "v") == 42
+
+    def test_native_sum(self):
+        i = run('let v = sum([1, 2, 3, 4, 5])')
+        assert val(i, "v") == 15
+
+    def test_native_sqrt(self):
+        i = run('let v = sqrt(16)')
+        assert val(i, "v") == 4.0
+
+    def test_native_max(self):
+        i = run('let v = max(1, 5, 3)')
+        assert val(i, "v") == 5
+
+    def test_native_min(self):
+        i = run('let v = min(1, 5, 3)')
+        assert val(i, "v") == 1
+
+    def test_native_round(self):
+        i = run('let v = round(3.14159)')
+        assert val(i, "v") == 3
+
+    def test_math_pow(self):
+        i = run('let v = Math.pow(2, 8)')
+        assert val(i, "v") == 256
+
+    def test_math_ceil(self):
+        i = run('let v = Math.ceil(3.01)')
+        assert val(i, "v") == 4
+
+    def test_math_sqrt(self):
+        i = run('let v = Math.sqrt(25)')
+        assert val(i, "v") == 5.0
+
+    def test_json_parse(self):
+        i = run('let v = JSON.parse(\'{"x":42}\').x')
+        assert val(i, "v") == 42
+
+    def test_json_stringify(self):
+        i = run('let v = JSON.stringify({a:1,b:2})')
+        assert isinstance(val(i, "v"), str)
+
 
 
 # ---------------------------------------------------------------------------

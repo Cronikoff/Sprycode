@@ -10861,22 +10861,77 @@ class _ProxyNamespace:
 # ---------------------------------------------------------------------------
 
 class _PerformanceNamespace:
-    """performance.now() and performance.mark() stubs."""
+    """performance namespace with basic mark/measure entry timeline support."""
 
-    import time as _time_module
+    def __init__(self) -> None:
+        self._entries: list[dict[str, Any]] = []
+        self._marks: dict[str, float] = {}
 
     def now(self) -> float:
         import time as _t
         return _t.perf_counter() * 1000.0
 
-    def mark(self, name: Any = None) -> None:
-        pass  # no-op stub
+    def mark(self, name: Any = None) -> dict[str, Any]:
+        mark_name = str(name) if name is not None else "default"
+        start_time = self.now()
+        self._marks[mark_name] = start_time
+        entry = {
+            "name": mark_name,
+            "entryType": "mark",
+            "startTime": start_time,
+            "duration": 0.0,
+        }
+        self._entries.append(entry)
+        return entry
 
-    def measure(self, name: Any = None, start: Any = None, end: Any = None) -> None:
-        pass  # no-op stub
+    def measure(self, name: Any = None, start: Any = None, end: Any = None) -> dict[str, Any]:
+        measure_name = str(name) if name is not None else "measure"
+        now = self.now()
+        start_key = str(start) if start is not None else None
+        end_key = str(end) if end is not None else None
+        start_time = self._marks.get(start_key, 0.0) if start_key else 0.0
+        end_time = self._marks.get(end_key, now) if end_key else now
+        duration = max(0.0, end_time - start_time)
+        entry = {
+            "name": measure_name,
+            "entryType": "measure",
+            "startTime": start_time,
+            "duration": duration,
+        }
+        self._entries.append(entry)
+        return entry
 
     def getEntriesByType(self, entry_type: Any = None) -> list:
-        return []
+        if entry_type is None:
+            return list(self._entries)
+        et = str(entry_type)
+        return [e for e in self._entries if e.get("entryType") == et]
+
+    def getEntriesByName(self, name: Any = None, entry_type: Any = None) -> list:
+        if name is None:
+            return self.getEntriesByType(entry_type)
+        n = str(name)
+        entries = [e for e in self._entries if e.get("name") == n]
+        if entry_type is None:
+            return entries
+        et = str(entry_type)
+        return [e for e in entries if e.get("entryType") == et]
+
+    def clearMarks(self, name: Any = None) -> None:
+        if name is None:
+            self._marks.clear()
+            self._entries = [e for e in self._entries if e.get("entryType") != "mark"]
+            return
+        n = str(name)
+        self._marks.pop(n, None)
+        self._entries = [e for e in self._entries if not (e.get("entryType") == "mark" and e.get("name") == n)]
+
+    def clearMeasures(self, name: Any = None) -> None:
+        if name is None:
+            self._entries = [e for e in self._entries if e.get("entryType") != "measure"]
+            return
+        n = str(name)
+        self._entries = [e for e in self._entries if not (e.get("entryType") == "measure" and e.get("name") == n)]
 
     def __repr__(self) -> str:
         return "performance"

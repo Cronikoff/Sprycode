@@ -4778,6 +4778,8 @@ class Interpreter:
             raise SpryRuntimeError(f"Struct {obj.name!r} has no property {prop!r}", node)
 
         if isinstance(obj, SpryPromise):
+            # Async-generator .next() returns Promise({value, done}); allow direct
+            # member access like g.next().value / g.next().done on fulfilled results.
             if obj.status == "fulfilled" and isinstance(obj._value, dict) and prop in obj._value:
                 return obj._value[prop]
             if prop == "status":
@@ -6745,6 +6747,7 @@ class Interpreter:
             try:
                 ctor_fn = fields.get("init") or fields.get("constructor")
                 if isinstance(ctor_fn, SpryFunction):
+                    # Keep class binding for new.target while constructor body executes.
                     self._call_bound_method(
                         BoundMethod(instance=instance, fn=ctor_fn),
                         args,

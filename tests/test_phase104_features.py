@@ -97,7 +97,7 @@ let v = performance.getEntriesByType("measure").length;
 
 
 class TestPerformanceEntries:
-    def test_get_entries_by_type_without_arg_returns_all(self):
+    def test_get_all_entries_when_no_type_specified(self):
         i = run("""
 performance.mark("a");
 performance.measure("m");

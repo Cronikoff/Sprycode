@@ -10864,12 +10864,19 @@ class _PerformanceNamespace:
     """performance namespace with basic mark/measure entry timeline support."""
 
     def __init__(self) -> None:
+        import time as _t
         self._entries: list[dict[str, Any]] = []
         self._marks: dict[str, float] = {}
+        self._time_origin = (_t.time() - _t.perf_counter()) * 1000.0
+        self._resource_timing_buffer_size = 250
 
     def now(self) -> float:
         import time as _t
         return _t.perf_counter() * 1000.0
+
+    @property
+    def timeOrigin(self) -> float:
+        return self._time_origin
 
     def mark(self, name: Any = None) -> dict[str, Any]:
         mark_name = str(name) if name is not None else "default"
@@ -10887,10 +10894,8 @@ class _PerformanceNamespace:
     def measure(self, name: Any = None, start: Any = None, end: Any = None) -> dict[str, Any]:
         measure_name = str(name) if name is not None else "measure"
         now = self.now()
-        start_key = str(start) if start is not None else None
-        end_key = str(end) if end is not None else None
-        start_time = self._marks.get(start_key, 0.0) if start_key else 0.0
-        end_time = self._marks.get(end_key, now) if end_key else now
+        start_time = self._resolve_time(start, 0.0)
+        end_time = self._resolve_time(end, now)
         duration = max(0.0, end_time - start_time)
         entry = {
             "name": measure_name,
@@ -10900,6 +10905,9 @@ class _PerformanceNamespace:
         }
         self._entries.append(entry)
         return entry
+
+    def getEntries(self) -> list:
+        return list(self._entries)
 
     def getEntriesByType(self, entry_type: Any = None) -> list:
         if entry_type is None:
@@ -10932,6 +10940,25 @@ class _PerformanceNamespace:
             return
         n = str(name)
         self._remove_entries("measure", n)
+
+    def clearResourceTimings(self) -> None:
+        self._remove_entries("resource")
+
+    def setResourceTimingBufferSize(self, max_size: Any) -> None:
+        try:
+            self._resource_timing_buffer_size = max(0, int(float(max_size)))
+        except (TypeError, ValueError):
+            self._resource_timing_buffer_size = 0
+
+    def _resolve_time(self, value: Any, default: float) -> float:
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        key = str(value)
+        if key in self._marks:
+            return self._marks[key]
+        return default
 
     def _remove_entries(self, entry_type: str, name: str | None = None) -> None:
         """Remove timeline entries by type, optionally filtering to a specific name."""

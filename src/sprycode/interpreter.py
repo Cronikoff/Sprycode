@@ -1075,10 +1075,7 @@ class SpryGenerator:
             return self._collected
         result: list[Any] = []
         while True:
-            item = self.next()
-            # Unwrap Promise if async generator
-            if isinstance(item, SpryPromise):
-                item = item._value if item.status == "fulfilled" else {"value": None, "done": True}
+            item = self._interp._unwrap_iterator_step(self.next())
             if item["done"]:
                 break
             result.append(item["value"])
@@ -2634,7 +2631,7 @@ class Interpreter:
                 if isinstance(iterable, SpryGenerator):
                     # Use the generator's next() protocol so we get the return value
                     while True:
-                        item = iterable.next()
+                        item = self._unwrap_iterator_step(iterable.next())
                         if item["done"]:
                             delegate_return_val = item["value"]
                             break
@@ -2776,7 +2773,7 @@ class Interpreter:
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
             if callee is None or callee is SPRY_UNDEFINED:
-                return SPRY_UNDEFINED
+                return None
             args: list[Any] = []
             for a in node.args:
                 if isinstance(a, SpreadElement):
@@ -2837,13 +2834,13 @@ class Interpreter:
         if isinstance(node, OptionalMemberExpression):
             obj = self._eval(node.object, env)
             if obj is None or isinstance(obj, _SpryUndefinedType):
-                return SPRY_UNDEFINED
+                return None
             return self._eval_member_on(obj, node.property, node)
 
         if isinstance(node, OptionalIndexExpression):
             obj = self._eval(node.object, env)
             if obj is None or isinstance(obj, _SpryUndefinedType):
-                return SPRY_UNDEFINED
+                return None
             idx = self._eval(node.index, env)
             try:
                 if isinstance(obj, dict):
@@ -3401,6 +3398,8 @@ class Interpreter:
         child = fn.closure.child()
         # Always define `arguments` (JS semantics: every function has access to all passed args)
         child.define("arguments", list(args), mutable=False)
+        prev_new_target = getattr(self._tl, "new_target", None)
+        self._tl.new_target = SPRY_UNDEFINED  # type: ignore[attr-defined]
 
         for i, (pname, _ptype) in enumerate(fn.params):
             # Dict destructuring param: __destruct__:a,b  or  __destruct__:key|alias,b
@@ -3452,25 +3451,28 @@ class Interpreter:
             child.define(fn.rest_param, list(rest_vals), mutable=False)
 
         try:
-            self._exec_block(fn.body, child)
-        except ReturnSignal as r:
+            try:
+                self._exec_block(fn.body, child)
+            except ReturnSignal as r:
+                if fn.is_async:
+                    val = r.value
+                    # Unwrap awaited promise in async fn
+                    if isinstance(val, SpryPromise):
+                        return val
+                    return SpryPromise(value=val)
+                return r.value
+            except (SpryUserError, SpryRuntimeError) as e:
+                if fn.is_async:
+                    # Preserve the original error object for proper try/catch in user code
+                    if isinstance(e, SpryUserError):
+                        return SpryPromise(value=None, error=e.value)
+                    return SpryPromise(value=None, error=str(e))
+                raise
             if fn.is_async:
-                val = r.value
-                # Unwrap awaited promise in async fn
-                if isinstance(val, SpryPromise):
-                    return val
-                return SpryPromise(value=val)
-            return r.value
-        except (SpryUserError, SpryRuntimeError) as e:
-            if fn.is_async:
-                # Preserve the original error object for proper try/catch in user code
-                if isinstance(e, SpryUserError):
-                    return SpryPromise(value=None, error=e.value)
-                return SpryPromise(value=None, error=str(e))
-            raise
-        if fn.is_async:
-            return SpryPromise(value=None)
-        return None
+                return SpryPromise(value=None)
+            return None
+        finally:
+            self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
 
     def _call_function_with_this(self, fn: "SpryFunction", args: list[Any], this_arg: Any, node: "Node") -> Any:
         """Call fn with `this` and `self` bound to this_arg in the execution env."""
@@ -3478,6 +3480,8 @@ class Interpreter:
         child.define("arguments", list(args), mutable=False)
         child.define("this", this_arg, mutable=False)
         child.define("self", this_arg, mutable=False)
+        prev_new_target = getattr(self._tl, "new_target", None)
+        self._tl.new_target = SPRY_UNDEFINED  # type: ignore[attr-defined]
         # Expose instance fields if this_arg is a SpryInstance
         initial_field_values: dict[str, Any] = {}
         if isinstance(this_arg, SpryInstance):
@@ -3527,22 +3531,25 @@ class Interpreter:
             child.define(fn.rest_param, list(args[len(fn.params):]), mutable=False)
         return_val = None
         try:
-            self._exec_block(fn.body, child)
-        except ReturnSignal as r:
-            return_val = r.value
-        # Sync back mutated fields if this_arg is a SpryInstance
-        if isinstance(this_arg, SpryInstance) and initial_field_values:
-            param_names = {p for p, _ in fn.params}
-            for fname, initial in initial_field_values.items():
-                if fname in param_names:
-                    continue
-                try:
-                    child_val = child.get(fname)
-                except SpryRuntimeError:
-                    continue
-                if child_val != initial:
-                    this_arg.fields[fname] = child_val
-        return return_val
+            try:
+                self._exec_block(fn.body, child)
+            except ReturnSignal as r:
+                return_val = r.value
+            # Sync back mutated fields if this_arg is a SpryInstance
+            if isinstance(this_arg, SpryInstance) and initial_field_values:
+                param_names = {p for p, _ in fn.params}
+                for fname, initial in initial_field_values.items():
+                    if fname in param_names:
+                        continue
+                    try:
+                        child_val = child.get(fname)
+                    except SpryRuntimeError:
+                        continue
+                    if child_val != initial:
+                        this_arg.fields[fname] = child_val
+            return return_val
+        finally:
+            self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
 
     def _call_task(self, task: SpryTask) -> Any:
         child = task.closure.child()
@@ -4771,6 +4778,8 @@ class Interpreter:
             raise SpryRuntimeError(f"Struct {obj.name!r} has no property {prop!r}", node)
 
         if isinstance(obj, SpryPromise):
+            if obj.status == "fulfilled" and isinstance(obj._value, dict) and prop in obj._value:
+                return obj._value[prop]
             if prop == "status":
                 return obj.status
             if prop == "state":
@@ -5453,16 +5462,21 @@ class Interpreter:
     # Loops
     # ------------------------------------------------------------------
 
+    def _unwrap_iterator_step(self, step: Any) -> Any:
+        """Unwrap async-generator Promise step payloads into {value, done} objects."""
+        if isinstance(step, SpryPromise):
+            if step.status == "fulfilled":
+                return step._value
+            return {"value": None, "done": True}
+        return step
+
     def _consume_iterator(self, iterator: Any, node: Any) -> list:
         """Consume a JS-style iterator object (has `next()` method) into a list."""
         # SpryGenerator: lazily call .next() until done
         if isinstance(iterator, SpryGenerator):
             items: list[Any] = []
             while True:
-                res = iterator.next()
-                # Async generators return SpryPromise({value, done})
-                if isinstance(res, SpryPromise):
-                    res = res._value if res.status == "fulfilled" else {"value": None, "done": True}
+                res = self._unwrap_iterator_step(iterator.next())
                 if res.get("done", False):
                     break
                 items.append(res.get("value"))
@@ -5486,7 +5500,7 @@ class Interpreter:
         if next_fn is None:
             return items
         while True:
-            result = self._call_value(next_fn, [])
+            result = self._unwrap_iterator_step(self._call_value(next_fn, []))
             if isinstance(result, dict):
                 if result.get("done"):
                     break
@@ -5649,7 +5663,7 @@ class Interpreter:
             if next_fn is None:
                 return False
             while True:
-                result = _call_next(next_fn)
+                result = self._unwrap_iterator_step(_call_next(next_fn))
                 if not isinstance(result, dict) or result.get("done", False):
                     break
                 if _exec_body_for_item(result.get("value")):
@@ -5659,10 +5673,7 @@ class Interpreter:
         # SpryGenerator: iterate lazily to support infinite generators with break
         if isinstance(iterable, SpryGenerator):
             while True:
-                result = iterable.next()
-                # Async generators return SpryPromise({value, done})
-                if isinstance(result, SpryPromise):
-                    result = result._value if result.status == "fulfilled" else {"value": None, "done": True}
+                result = self._unwrap_iterator_step(iterable.next())
                 if result.get("done", False):
                     break
                 if _exec_body_for_item(result.get("value")):
@@ -5684,9 +5695,7 @@ class Interpreter:
                         _lazy_iter_dict(_dict_iter)
                     elif isinstance(_dict_iter, SpryGenerator):
                         while True:
-                            _res = _dict_iter.next()
-                            if isinstance(_res, SpryPromise):
-                                _res = _res._value if _res.status == "fulfilled" else {"value": None, "done": True}
+                            _res = self._unwrap_iterator_step(_dict_iter.next())
                             if _res.get("done", False):
                                 break
                             if _exec_body_for_item(_res.get("value")):
@@ -5714,10 +5723,7 @@ class Interpreter:
                     # If iterator is itself a SpryGenerator, handle lazily
                     if isinstance(iterator, SpryGenerator):
                         while True:
-                            res = iterator.next()
-                            # Async generators return SpryPromise({value, done})
-                            if isinstance(res, SpryPromise):
-                                res = res._value if res.status == "fulfilled" else {"value": None, "done": True}
+                            res = self._unwrap_iterator_step(iterator.next())
                             if res.get("done", False):
                                 break
                             if _exec_body_for_item(res.get("value")):
@@ -6739,7 +6745,12 @@ class Interpreter:
             try:
                 ctor_fn = fields.get("init") or fields.get("constructor")
                 if isinstance(ctor_fn, SpryFunction):
-                    self._call_bound_method(BoundMethod(instance=instance, fn=ctor_fn), args, node)
+                    self._call_bound_method(
+                        BoundMethod(instance=instance, fn=ctor_fn),
+                        args,
+                        node,
+                        preserve_new_target=True,
+                    )
                 elif args:
                     # Positional-field constructor: Counter(10) → counter.count = 10
                     field_vars = [k for k, v in fields.items() if not callable(v) and not isinstance(v, SpryFunction)]
@@ -6786,128 +6797,140 @@ class Interpreter:
             return fn(*args)
         return None
 
-    def _call_bound_method(self, bm: BoundMethod, args: list[Any], node: Node) -> Any:
+    def _call_bound_method(
+        self,
+        bm: BoundMethod,
+        args: list[Any],
+        node: Node,
+        preserve_new_target: bool = False,
+    ) -> Any:
         """Call a method on an instance, binding `self` in the execution environment."""
         fn = bm.fn
+        prev_new_target = getattr(self._tl, "new_target", None)
+        if not preserve_new_target:
+            self._tl.new_target = SPRY_UNDEFINED  # type: ignore[attr-defined]
         # Generator methods: create a generator with self/this pre-bound in the closure
-        if fn.is_generator:
-            gen_closure = fn.closure.child()
-            gen_closure.define("self", bm.instance, mutable=False)
-            gen_closure.define("this", bm.instance, mutable=False)
-            if hasattr(bm, "_defining_class") and bm._defining_class is not None:
-                gen_closure.define("__current_class__", bm._defining_class, mutable=False)
-            elif isinstance(bm.instance, SpryInstance):
-                gen_closure.define("__current_class__", bm.instance.cls, mutable=False)
-            bound_gen_fn = SpryFunction(
-                name=fn.name,
-                params=fn.params,
-                body=fn.body,
-                closure=gen_closure,
-                defaults=fn.defaults,
-                rest_param=fn.rest_param,
-                is_async=getattr(fn, "is_async", False),
-                is_generator=True,
-            )
-            return SpryGenerator(bound_gen_fn, args, self)
-        child = fn.closure.child()
-        # Bind self so methods can do self.field = val
-        child.define("self", bm.instance, mutable=False)
-        child.define("this", bm.instance, mutable=False)
-        # Track which class's method we're currently executing — needed for multi-level super.
-        # bm.fn.closure is the env where the method was defined (the class's instance_env child).
-        # We store the "defining class" so that super resolves to *its* parent, not the instance's class.
-        if hasattr(bm, "_defining_class") and bm._defining_class is not None:
-            child.define("__current_class__", bm._defining_class, mutable=False)
-        elif isinstance(bm.instance, SpryInstance):
-            child.define("__current_class__", bm.instance.cls, mutable=False)
-        # Also expose instance fields as direct mutable vars (for count += 1 style),
-        # recording their initial values so we can sync back only what changed directly.
-        initial_field_values: dict[str, Any] = {}
-        for fname, fval in bm.instance.fields.items():
-            if fname not in child._vars:
-                child.define(fname, fval, mutable=True)
-                initial_field_values[fname] = fval
-
-        required = [
-            p for p, _ in fn.params
-            if p not in fn.defaults and not p.startswith("__destruct__") and not p.startswith("__array_destruct__")
-        ]
-        if len(args) < len(required):
-            raise SpryRuntimeError(
-                f"Method {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
-            )
-        # Define `arguments` so methods can introspect all passed args (JS semantics)
-        child.define("arguments", list(args), mutable=False)
-
-        for i, (pname, _ptype) in enumerate(fn.params):
-            if pname.startswith("__destruct__:"):
-                field_specs = pname[len("__destruct__:"):].split(",")
-                arg_val = args[i] if i < len(args) else {}
-                if not isinstance(arg_val, dict):
-                    raise SpryRuntimeError(
-                        f"Method {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
-                    )
-                for fspec in field_specs:
-                    fspec = fspec.strip()
-                    if "|" in fspec:
-                        fkey, flocal = fspec.split("|", 1)
-                    else:
-                        fkey = flocal = fspec
-                    # Apply default when key is absent (JS semantics: missing key, not null value)
-                    if fkey not in arg_val:
-                        default_key = f"__destruct_default__{flocal}"
-                        fval = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
-                    else:
-                        fval = arg_val[fkey]
-                    child.define(flocal, fval, mutable=False)
-            elif pname.startswith("__array_destruct__:"):
-                raw = pname[len("__array_destruct__:"):]
-                arr_rest_name: str | None = None
-                if "..." in raw:
-                    raw, arr_rest_name = raw.split("...", 1)
-                arr_field_names = [f for f in raw.split(",") if f]
-                arg_val = args[i] if i < len(args) else []
-                items = list(arg_val) if not isinstance(arg_val, list) else arg_val
-                for _j, _fname in enumerate(arr_field_names):
-                    child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
-                if arr_rest_name:
-                    child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
-            else:
-                if i < len(args):
-                    child.define(pname, args[i], mutable=False)
-                elif pname in fn.defaults:
-                    default_val = self._eval(fn.defaults[pname], fn.closure)
-                    child.define(pname, default_val, mutable=False)
-                else:
-                    child.define(pname, None, mutable=False)
-
-        if fn.rest_param is not None:
-            rest_vals = args[len(fn.params):]
-            child.define(fn.rest_param, list(rest_vals), mutable=False)
-
-        return_val = None
         try:
-            self._exec_block(fn.body, child)
-        except ReturnSignal as r:
-            return_val = r.value
+            if fn.is_generator:
+                gen_closure = fn.closure.child()
+                gen_closure.define("self", bm.instance, mutable=False)
+                gen_closure.define("this", bm.instance, mutable=False)
+                if hasattr(bm, "_defining_class") and bm._defining_class is not None:
+                    gen_closure.define("__current_class__", bm._defining_class, mutable=False)
+                elif isinstance(bm.instance, SpryInstance):
+                    gen_closure.define("__current_class__", bm.instance.cls, mutable=False)
+                bound_gen_fn = SpryFunction(
+                    name=fn.name,
+                    params=fn.params,
+                    body=fn.body,
+                    closure=gen_closure,
+                    defaults=fn.defaults,
+                    rest_param=fn.rest_param,
+                    is_async=getattr(fn, "is_async", False),
+                    is_generator=True,
+                )
+                return SpryGenerator(bound_gen_fn, args, self)
+            child = fn.closure.child()
+            # Bind self so methods can do self.field = val
+            child.define("self", bm.instance, mutable=False)
+            child.define("this", bm.instance, mutable=False)
+            # Track which class's method we're currently executing — needed for multi-level super.
+            # bm.fn.closure is the env where the method was defined (the class's instance_env child).
+            # We store the "defining class" so that super resolves to *its* parent, not the instance's class.
+            if hasattr(bm, "_defining_class") and bm._defining_class is not None:
+                child.define("__current_class__", bm._defining_class, mutable=False)
+            elif isinstance(bm.instance, SpryInstance):
+                child.define("__current_class__", bm.instance.cls, mutable=False)
+            # Also expose instance fields as direct mutable vars (for count += 1 style),
+            # recording their initial values so we can sync back only what changed directly.
+            initial_field_values: dict[str, Any] = {}
+            for fname, fval in bm.instance.fields.items():
+                if fname not in child._vars:
+                    child.define(fname, fval, mutable=True)
+                    initial_field_values[fname] = fval
 
-        # Sync back fields that were mutated directly (count += 1 style).
-        # We only sync when the local var changed from its initial value — this
-        # avoids overwriting mutations already applied via self.field = val.
-        # Skip fields that share a name with a parameter (params shadow fields
-        # and their value doesn't reflect the field mutation done via self.field = ...).
-        param_names = {p for p, _ in fn.params}
-        for fname, initial in initial_field_values.items():
-            if fname in param_names:
-                continue  # don't let param value overwrite self.field = val
+            required = [
+                p for p, _ in fn.params
+                if p not in fn.defaults and not p.startswith("__destruct__") and not p.startswith("__array_destruct__")
+            ]
+            if len(args) < len(required):
+                raise SpryRuntimeError(
+                    f"Method {fn.name!r} expects at least {len(required)} args, got {len(args)}", node
+                )
+            # Define `arguments` so methods can introspect all passed args (JS semantics)
+            child.define("arguments", list(args), mutable=False)
+
+            for i, (pname, _ptype) in enumerate(fn.params):
+                if pname.startswith("__destruct__:"):
+                    field_specs = pname[len("__destruct__:"):].split(",")
+                    arg_val = args[i] if i < len(args) else {}
+                    if not isinstance(arg_val, dict):
+                        raise SpryRuntimeError(
+                            f"Method {fn.name!r} expects an object for destructured param, got {type(arg_val).__name__}", node
+                        )
+                    for fspec in field_specs:
+                        fspec = fspec.strip()
+                        if "|" in fspec:
+                            fkey, flocal = fspec.split("|", 1)
+                        else:
+                            fkey = flocal = fspec
+                        # Apply default when key is absent (JS semantics: missing key, not null value)
+                        if fkey not in arg_val:
+                            default_key = f"__destruct_default__{flocal}"
+                            fval = self._eval(fn.defaults[default_key], fn.closure) if default_key in fn.defaults else None
+                        else:
+                            fval = arg_val[fkey]
+                        child.define(flocal, fval, mutable=False)
+                elif pname.startswith("__array_destruct__:"):
+                    raw = pname[len("__array_destruct__:"):]
+                    arr_rest_name: str | None = None
+                    if "..." in raw:
+                        raw, arr_rest_name = raw.split("...", 1)
+                    arr_field_names = [f for f in raw.split(",") if f]
+                    arg_val = args[i] if i < len(args) else []
+                    items = list(arg_val) if not isinstance(arg_val, list) else arg_val
+                    for _j, _fname in enumerate(arr_field_names):
+                        child.define(_fname.strip(), items[_j] if _j < len(items) else None, mutable=False)
+                    if arr_rest_name:
+                        child.define(arr_rest_name, items[len(arr_field_names):], mutable=False)
+                else:
+                    if i < len(args):
+                        child.define(pname, args[i], mutable=False)
+                    elif pname in fn.defaults:
+                        default_val = self._eval(fn.defaults[pname], fn.closure)
+                        child.define(pname, default_val, mutable=False)
+                    else:
+                        child.define(pname, None, mutable=False)
+
+            if fn.rest_param is not None:
+                rest_vals = args[len(fn.params):]
+                child.define(fn.rest_param, list(rest_vals), mutable=False)
+
+            return_val = None
             try:
-                child_val = child.get(fname)
-            except SpryRuntimeError:
-                continue
-            if child_val != initial:
-                bm.instance.fields[fname] = child_val
+                self._exec_block(fn.body, child)
+            except ReturnSignal as r:
+                return_val = r.value
 
-        return return_val
+            # Sync back fields that were mutated directly (count += 1 style).
+            # We only sync when the local var changed from its initial value — this
+            # avoids overwriting mutations already applied via self.field = val.
+            # Skip fields that share a name with a parameter (params shadow fields
+            # and their value doesn't reflect the field mutation done via self.field = ...).
+            param_names = {p for p, _ in fn.params}
+            for fname, initial in initial_field_values.items():
+                if fname in param_names:
+                    continue  # don't let param value overwrite self.field = val
+                try:
+                    child_val = child.get(fname)
+                except SpryRuntimeError:
+                    continue
+                if child_val != initial:
+                    bm.instance.fields[fname] = child_val
+
+            return return_val
+        finally:
+            self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
 
     def _call_dict_bound_method(self, fn: "SpryFunction", obj: dict,
                                 args: list, node: "Node") -> Any:
@@ -6919,6 +6942,8 @@ class Interpreter:
         child = fn.closure.child()
         child.define("self", obj, mutable=False)
         child.define("this", obj, mutable=False)
+        prev_new_target = getattr(self._tl, "new_target", None)
+        self._tl.new_target = SPRY_UNDEFINED  # type: ignore[attr-defined]
 
         required = [
             p for p, _ in fn.params
@@ -6945,6 +6970,8 @@ class Interpreter:
             self._exec_block(fn.body, child)
         except ReturnSignal as r:
             return_val = r.value
+        finally:
+            self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
 
         # Sync back mutated dict properties (this.x = val style)
         # Walk the child env to detect property writes applied via MemberAssignment.

@@ -4,7 +4,7 @@ Phase 8 feature tests:
   - `result ok/fail` literal expressions
   - `Set()` builtin — deduplication
   - `events` namespace — on/off/emit/once
-  - `python` namespace — eval/call/import_module
+  - standalone-language migration coverage — python.* removed
   - Computed property keys — `{[key]: value}`
   - `for [a, b] in list` — destructuring in for-of loop
   - `import "path" as alias` — AS token fix

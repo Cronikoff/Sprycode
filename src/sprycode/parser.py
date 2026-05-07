@@ -2332,8 +2332,8 @@ class Parser:
     def _parse_interface_method_signature(self) -> FunctionDeclaration | None:
         """Parse a bare method signature in an interface body: name(params) [-> ReturnType]
         Accepts any token as the method name (keywords included)."""
-        tok = self._current()
         name_tok = self._advance()  # consume method name (any token type allowed here)
+        tok = name_tok  # base diagnostics on the method name token
         self._expect(TokenType.LPAREN)
         params: list[tuple[str, str | None]] = []
         defaults: dict[str, Node] = {}

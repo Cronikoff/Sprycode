@@ -10920,18 +10920,28 @@ class _PerformanceNamespace:
     def clearMarks(self, name: Any = None) -> None:
         if name is None:
             self._marks.clear()
-            self._entries = [e for e in self._entries if e.get("entryType") != "mark"]
+            self._remove_entries("mark")
             return
         n = str(name)
         self._marks.pop(n, None)
-        self._entries = [e for e in self._entries if not (e.get("entryType") == "mark" and e.get("name") == n)]
+        self._remove_entries("mark", n)
 
     def clearMeasures(self, name: Any = None) -> None:
         if name is None:
-            self._entries = [e for e in self._entries if e.get("entryType") != "measure"]
+            self._remove_entries("measure")
             return
         n = str(name)
-        self._entries = [e for e in self._entries if not (e.get("entryType") == "measure" and e.get("name") == n)]
+        self._remove_entries("measure", n)
+
+    def _remove_entries(self, entry_type: str, name: str | None = None) -> None:
+        """Remove timeline entries by type, optionally filtering to a specific name."""
+        if name is None:
+            self._entries = [e for e in self._entries if e.get("entryType") != entry_type]
+            return
+        self._entries = [
+            e for e in self._entries
+            if not (e.get("entryType") == entry_type and e.get("name") == name)
+        ]
 
     def __repr__(self) -> str:
         return "performance"

@@ -535,7 +535,7 @@ class TestRunDebugFlag:
 
         output_lines: list[str] = []
 
-        import io, contextlib
+        import io
         buf = io.StringIO()
         # _print_env_vars uses click.echo or print to stderr — capture via monkeypatching
         import sprycode.cli as cli_mod

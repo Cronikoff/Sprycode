@@ -452,9 +452,9 @@ if click is not None:
     def _run_repl(secure: bool = False, debug: bool = False) -> None:
         """Interactive Read-Eval-Print Loop for SpryCode."""
         try:
-            import readline as _rl  # noqa: F401 -- enables history/editing on Unix
+            import readline as _rl  # noqa: F401 -- enables history/editing; optional
         except ImportError:
-            pass  # readline not available on Windows
+            pass  # readline not available in this environment
 
         banner = (
             f"SpryCode {__version__} REPL\n"

@@ -2484,7 +2484,7 @@ class Interpreter:
                 self.logger.warn(msg_str)
             elif level == "error":
                 self.logger.error(msg_str)
-            elif level in ("debug", "trace", "verbose"):
+            elif level in ("debug", "trace", "verbose", "notice", "success"):
                 self.logger.debug(msg_str)
             else:
                 self.logger.info(msg_str)

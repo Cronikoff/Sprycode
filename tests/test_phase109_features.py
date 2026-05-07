@@ -147,6 +147,10 @@ class TestLogLevels:
         i = run('log notice "notice"\nlet v = true')
         assert val(i, 'v') is True
 
+    def test_log_success(self):
+        i = run('log success "all good"\nlet v = true')
+        assert val(i, 'v') is True
+
     def test_log_debug_with_fstring(self):
         i = run('let x = 42\nlog debug f"value is {x}"\nlet v = true')
         assert val(i, 'v') is True

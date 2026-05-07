@@ -6804,7 +6804,10 @@ class Interpreter:
         node: Node,
         preserve_new_target: bool = False,
     ) -> Any:
-        """Call a method on an instance, binding `self` in the execution environment."""
+        """Call a method on an instance, binding `self` in the execution environment.
+
+        preserve_new_target=True is used for constructor execution under `new`.
+        """
         fn = bm.fn
         prev_new_target = getattr(self._tl, "new_target", None)
         if not preserve_new_target:

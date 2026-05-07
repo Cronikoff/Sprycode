@@ -865,9 +865,9 @@ class Lexer:
                     pattern += self._advance()
                 else:
                     raise LexerError("Unterminated regex literal", line, col)
-                # consume optional flags (g, i, m, s, u, y)
+                # consume optional flags (d, g, i, m, s, u, y)
                 flags = ""
-                while self.pos < len(self.source) and self._current() in "gimsuy":
+                while self.pos < len(self.source) and self._current() in "dgimsuy":
                     flags += self._advance()
                 regex_value = f"{pattern}\x00{flags}"  # embed flags after NUL separator
                 self._last_scan_token = Token(TokenType.REGEX, regex_value, line, col)

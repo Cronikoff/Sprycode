@@ -1459,6 +1459,7 @@ class Interpreter:
                        "ReferenceError", "EvalError", "URIError"):
             env.define(_ename, _ErrorNamespace(_ename))
         env.define("AggregateError", _AggregateErrorNamespace())
+        env.define("SuppressedError", _SuppressedErrorNamespace())
 
         # Date namespace
         env.define("Date", _DateNamespace())
@@ -3700,6 +3701,8 @@ class Interpreter:
                 return "u" in obj.flags_str
             if prop == "dotAll":
                 return "s" in obj.flags_str
+            if prop == "hasIndices":
+                return "d" in obj.flags_str
             raise SpryRuntimeError(f"Regex has no property {prop!r}", node)
 
         if isinstance(obj, SpryResult):
@@ -5024,8 +5027,125 @@ class Interpreter:
         if isinstance(obj, (_ObjectPrototype, _ObjectPrototypeHasOwnProperty, _ObjectPrototypeToString)):
             return obj._spry_get_prop(prop)
 
+        # SpryTypedArray — callback methods need access to self._call_value
+        if isinstance(obj, SpryTypedArray):
+            _call_fn = self._call_value
+            if prop == "map":
+                def _ta_map(fn: Any, _arr: SpryTypedArray = obj,
+                            _cf: Any = _call_fn) -> SpryTypedArray:
+                    result = SpryTypedArray(_arr._type_name, _arr._element_size, len(_arr._data))
+                    result._data = [_arr._coerce(_cf(fn, [v, i, _arr]))
+                                    for i, v in enumerate(_arr._data)]
+                    return result
+                return _ta_map
+            if prop == "filter":
+                def _ta_filter(fn: Any, _arr: SpryTypedArray = obj,
+                               _cf: Any = _call_fn) -> SpryTypedArray:
+                    items = [v for i, v in enumerate(_arr._data) if _cf(fn, [v, i, _arr])]
+                    return SpryTypedArray(_arr._type_name, _arr._element_size, items)
+                return _ta_filter
+            if prop == "find":
+                def _ta_find(fn: Any, _arr: SpryTypedArray = obj,
+                             _cf: Any = _call_fn) -> Any:
+                    for i, v in enumerate(_arr._data):
+                        if _cf(fn, [v, i, _arr]):
+                            return v
+                    return SPRY_UNDEFINED
+                return _ta_find
+            if prop == "findIndex":
+                def _ta_findIndex(fn: Any, _arr: SpryTypedArray = obj,
+                                  _cf: Any = _call_fn) -> int:
+                    for i, v in enumerate(_arr._data):
+                        if _cf(fn, [v, i, _arr]):
+                            return i
+                    return -1
+                return _ta_findIndex
+            if prop == "findLast":
+                def _ta_findLast(fn: Any, _arr: SpryTypedArray = obj,
+                                 _cf: Any = _call_fn) -> Any:
+                    for i in range(len(_arr._data) - 1, -1, -1):
+                        if _cf(fn, [_arr._data[i], i, _arr]):
+                            return _arr._data[i]
+                    return SPRY_UNDEFINED
+                return _ta_findLast
+            if prop == "findLastIndex":
+                def _ta_findLastIndex(fn: Any, _arr: SpryTypedArray = obj,
+                                      _cf: Any = _call_fn) -> int:
+                    for i in range(len(_arr._data) - 1, -1, -1):
+                        if _cf(fn, [_arr._data[i], i, _arr]):
+                            return i
+                    return -1
+                return _ta_findLastIndex
+            if prop == "every":
+                def _ta_every(fn: Any, _arr: SpryTypedArray = obj,
+                              _cf: Any = _call_fn) -> bool:
+                    return all(bool(_cf(fn, [v, i, _arr])) for i, v in enumerate(_arr._data))
+                return _ta_every
+            if prop == "some":
+                def _ta_some(fn: Any, _arr: SpryTypedArray = obj,
+                             _cf: Any = _call_fn) -> bool:
+                    return any(bool(_cf(fn, [v, i, _arr])) for i, v in enumerate(_arr._data))
+                return _ta_some
+            if prop == "forEach":
+                def _ta_forEach(fn: Any, _arr: SpryTypedArray = obj,
+                                _cf: Any = _call_fn) -> None:
+                    for i, v in enumerate(_arr._data):
+                        _cf(fn, [v, i, _arr])
+                return _ta_forEach
+            if prop == "reduce":
+                _TA_MISSING = object()
+
+                def _ta_reduce(fn: Any, initial: Any = _TA_MISSING, _arr: SpryTypedArray = obj,
+                               _cf: Any = _call_fn, _m: Any = _TA_MISSING) -> Any:
+                    data = _arr._data
+                    if not data:
+                        if initial is _m:
+                            raise SpryRuntimeError(
+                                f"reduce of empty typed array with no initial value", node)
+                        return initial
+                    acc = initial if initial is not _m else data[0]
+                    start = 0 if initial is not _m else 1
+                    for i in range(start, len(data)):
+                        acc = _cf(fn, [acc, data[i], i, _arr])
+                    return acc
+                return _ta_reduce
+            if prop == "reduceRight":
+                _TA_MISSING2 = object()
+
+                def _ta_reduceRight(fn: Any, initial: Any = _TA_MISSING2,
+                                    _arr: SpryTypedArray = obj,
+                                    _cf: Any = _call_fn, _m: Any = _TA_MISSING2) -> Any:
+                    data = _arr._data
+                    if not data:
+                        if initial is _m:
+                            raise SpryRuntimeError(
+                                f"reduceRight of empty typed array with no initial value", node)
+                        return initial
+                    acc = initial if initial is not _m else data[-1]
+                    start = len(data) - 2 if initial is _m else len(data) - 1
+                    for i in range(start, -1, -1):
+                        acc = _cf(fn, [acc, data[i], i, _arr])
+                    return acc
+                return _ta_reduceRight
+            if prop == "sort":
+                import functools as _ft
+
+                def _ta_sort(fn: Any = None, _arr: SpryTypedArray = obj,
+                             _cf: Any = _call_fn) -> SpryTypedArray:
+                    if fn is None:
+                        _arr._data.sort()
+                    else:
+                        def _cmp(a: Any, b: Any) -> int:
+                            r = _cf(fn, [a, b])
+                            return -1 if r < 0 else (1 if r > 0 else 0)
+                        _arr._data.sort(key=_ft.cmp_to_key(_cmp))
+                    return _arr
+                return _ta_sort
+            # Fall through to _spry_get_prop for pure methods
+            return obj._spry_get_prop(prop)
+
         if isinstance(obj, (SpryURL, SpryURLSearchParams, SpryArrayBuffer, SprySharedArrayBuffer,
-                             SpryTypedArray, SpryDataView,
+                             SpryDataView,
                              SpryTextEncoder, SpryTextDecoder,
                              SpryAbortController, SpryAbortSignal,
                              _AtomicsNamespace)):
@@ -9868,6 +9988,10 @@ class SpryDate:
     def getMilliseconds(self) -> int:
         return self._dt.microsecond // 1000
 
+    def getTimezoneOffset(self) -> int:
+        """Return timezone offset in minutes. SpryCode has no timezone support — always 0."""
+        return 0
+
     # ------------------------------------------------------------------
     # Setter methods — return new timestamp (ms since epoch), mutate self
     # ------------------------------------------------------------------
@@ -11162,9 +11286,10 @@ class SpryURL:
     """Basic URL object supporting common properties."""
 
     def __init__(self, href: str) -> None:
-        from urllib.parse import urlparse, parse_qs, urlencode
+        from urllib.parse import urlparse
         self._raw = href
         self._parsed = urlparse(href)
+        self._search_params = SpryURLSearchParams(self._parsed.query)
 
     @property
     def href(self) -> str:
@@ -11221,6 +11346,7 @@ class SpryURL:
             "pathname": self.pathname, "search": self.search,
             "hash": self.hash, "origin": self.origin,
             "username": self.username, "password": self.password,
+            "searchParams": self._search_params,
         }
         if prop in mapping:
             return mapping[prop]
@@ -12022,6 +12148,68 @@ class SpryTypedArray:
             return self.subarray
         if prop == "slice":
             return self.slice
+        if prop == "reverse":
+            self._data.reverse()
+            return self
+        if prop == "copyWithin":
+            def _ta_copyWithin(target: Any, start: Any = 0, end: Any = None,
+                               _arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                t = int(target)
+                s = int(start)
+                e = len(_arr._data) if end is None else int(end)
+                src = list(_arr._data[s:e])
+                for i, v in enumerate(src):
+                    pos = t + i
+                    if 0 <= pos < len(_arr._data):
+                        _arr._data[pos] = v
+                return _arr
+            return _ta_copyWithin
+        if prop == "join":
+            def _ta_join(sep: Any = ",", _arr: "SpryTypedArray" = self) -> str:
+                return str(sep).join(str(v) for v in _arr._data)
+            return _ta_join
+        if prop == "includes":
+            return lambda v, _arr=self: v in _arr._data
+        if prop == "indexOf":
+            def _ta_indexOf(v: Any, from_idx: Any = 0,
+                            _arr: "SpryTypedArray" = self) -> int:
+                try:
+                    return _arr._data.index(v, int(from_idx))
+                except ValueError:
+                    return -1
+            return _ta_indexOf
+        if prop == "lastIndexOf":
+            def _ta_lastIndexOf(v: Any, _arr: "SpryTypedArray" = self) -> int:
+                for i in range(len(_arr._data) - 1, -1, -1):
+                    if _arr._data[i] == v:
+                        return i
+                return -1
+            return _ta_lastIndexOf
+        if prop == "at":
+            def _ta_at(n: Any, _arr: "SpryTypedArray" = self) -> Any:
+                i = int(n)
+                if -len(_arr._data) <= i < len(_arr._data):
+                    return _arr._data[i]
+                return None
+            return _ta_at
+        if prop == "entries":
+            return SpryIterator([[i, v] for i, v in enumerate(self._data)])
+        if prop == "keys":
+            return SpryIterator(list(range(len(self._data))))
+        if prop == "values":
+            return SpryIterator(list(self._data))
+        if prop == "toReversed":
+            def _ta_toReversed(_arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                result = SpryTypedArray(_arr._type_name, _arr._element_size, len(_arr._data))
+                result._data = list(reversed(_arr._data))
+                return result
+            return _ta_toReversed
+        if prop == "toSorted":
+            def _ta_toSorted(_arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                result = SpryTypedArray(_arr._type_name, _arr._element_size, len(_arr._data))
+                result._data = sorted(_arr._data)
+                return result
+            return _ta_toSorted
         raise SpryRuntimeError(f"{self._type_name} has no property {prop!r}", None)
 
     def __repr__(self) -> str:
@@ -12249,9 +12437,49 @@ class _AggregateErrorNamespace:
         return "AggregateError"
 
 
-# ===========================================================================
-# Phase 20 — Web APIs
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# SuppressedError (TC39 Explicit Resource Management)
+# ---------------------------------------------------------------------------
+
+class SprySuppressedError(SpryErrorObject):
+    """SuppressedError — wraps an outer error alongside the suppressed inner error."""
+
+    def __init__(self, error: Any, suppressed: Any, message: str = "",
+                 cause: Any = None) -> None:
+        super().__init__("SuppressedError", str(message), cause=cause)
+        self.error = error
+        self.suppressed = suppressed
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "error":
+            return self.error
+        if prop == "suppressed":
+            return self.suppressed
+        return super()._spry_get_prop(prop)
+
+    def __repr__(self) -> str:
+        return f"SuppressedError: {self.message}"
+
+
+class _SuppressedErrorNamespace:
+    """SuppressedError global — SuppressedError(error, suppressed[, message]) or new SuppressedError(...)."""
+
+    def __call__(self, error: Any = None, suppressed: Any = None,
+                 message: Any = "", options: Any = None) -> SprySuppressedError:
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SprySuppressedError(error, suppressed, str(message), cause=cause)
+
+    def new(self, error: Any = None, suppressed: Any = None,
+            message: Any = "", options: Any = None) -> SprySuppressedError:
+        cause = None
+        if isinstance(options, dict) and "cause" in options:
+            cause = options["cause"]
+        return SprySuppressedError(error, suppressed, str(message), cause=cause)
+
+    def __repr__(self) -> str:
+        return "SuppressedError"
 
 # ---------------------------------------------------------------------------
 # crypto.subtle — SubtleCrypto

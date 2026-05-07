@@ -12149,8 +12149,10 @@ class SpryTypedArray:
         if prop == "slice":
             return self.slice
         if prop == "reverse":
-            self._data.reverse()
-            return self
+            def _ta_reverse(_arr: "SpryTypedArray" = self) -> "SpryTypedArray":
+                _arr._data.reverse()
+                return _arr
+            return _ta_reverse
         if prop == "copyWithin":
             def _ta_copyWithin(target: Any, start: Any = 0, end: Any = None,
                                _arr: "SpryTypedArray" = self) -> "SpryTypedArray":

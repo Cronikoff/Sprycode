@@ -9875,8 +9875,10 @@ class SpryDate:
     def _replace_dt(self, **kwargs: Any) -> float:
         """Replace datetime fields and return new timestamp.
 
-        Callers are responsible for converting values to ``int`` before passing
-        them; only ``int`` values are valid for ``datetime.replace()``.
+        Accepts ``int`` values for all standard ``datetime`` fields plus
+        ``microsecond`` (passed pre-multiplied by callers).  All values are
+        coerced to ``int`` here as a safety net for any callers that pass
+        numeric strings or floats.
         """
         import datetime as _dt
         self._dt = self._dt.replace(**{k: int(v) for k, v in kwargs.items()})
@@ -11117,10 +11119,10 @@ class _PerformanceNamespace:
         self._remove_entries("resource")
 
     def setResourceTimingBufferSize(self, max_size: Any) -> None:
+        import math as _math
         try:
             v = float(max_size)
-            if v != v or v == float("inf") or v == float("-inf"):
-                # NaN or Infinity → clamp to 0
+            if _math.isnan(v) or _math.isinf(v):
                 self._resource_timing_buffer_size = 0
             else:
                 self._resource_timing_buffer_size = max(0, int(v))

@@ -30,6 +30,34 @@ let v = performance.getEntries().length;
         assert val(i) == 2
 
 
+class TestPerformanceMeasureMarks:
+    def test_measure_uses_named_start_mark(self):
+        i = run("""
+performance.mark("start");
+let m = performance.measure("delta", "start");
+let mark = performance.getEntriesByName("start")[0];
+let v = m.startTime === mark.startTime && typeof m.duration === "number";
+""")
+        assert val(i) is True
+
+    def test_measure_missing_start_mark_falls_back_to_zero(self):
+        i = run("""
+let m = performance.measure("delta", "does-not-exist");
+let v = m.startTime === 0 && typeof m.duration === "number";
+""")
+        assert val(i) is True
+
+    def test_measure_missing_end_mark_falls_back_to_now(self):
+        i = run("""
+performance.mark("start");
+let before = performance.now();
+let m = performance.measure("delta", "start", "does-not-exist");
+let v = m.startTime === performance.getEntriesByName("start")[0].startTime &&
+        m.duration >= 0;
+""")
+        assert val(i) is True
+
+
 class TestPerformanceTimeOrigin:
     def test_time_origin_is_number(self):
         i = run("let v = typeof performance.timeOrigin;")

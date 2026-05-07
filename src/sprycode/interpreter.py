@@ -1393,9 +1393,6 @@ class Interpreter:
         # Event bus
         env.define("events", _EventsHelper(self._call_value))
 
-        # Python interop namespace
-        env.define("python", _PythonNamespace())
-
         # String global namespace
         _string_ns = _StringNamespace()
         _string_ns._interp = self
@@ -2487,6 +2484,8 @@ class Interpreter:
                 self.logger.warn(msg_str)
             elif level == "error":
                 self.logger.error(msg_str)
+            elif level in ("debug", "trace", "verbose"):
+                self.logger.debug(msg_str)
             else:
                 self.logger.info(msg_str)
             return None
@@ -5353,15 +5352,28 @@ class Interpreter:
                     n = int(self._eval(stage._skip_count, env))  # type: ignore[attr-defined]
                     value = value[n:] if isinstance(value, list) else value
                     continue
-                fn = env.get(stage.name)
-                if isinstance(fn, SpryFunction):
-                    value = self._call_function(fn, [value], stage)
-                elif isinstance(fn, (SpryLambda, LambdaExpression)):
-                    value = self._apply_lambda(fn, value, env)
-                elif callable(fn):
-                    value = fn(value)
+                fn = self._eval(stage, env)
+                operation = getattr(stage, "operation", None)
+                # Named function reference with explicit pipeline operation (map/filter/each)
+                if operation == "filter":
+                    if isinstance(value, list):
+                        value = [item for item in value if self._truthy(self._call_value(fn, [item]))]
+                    else:
+                        value = value if self._truthy(self._call_value(fn, [value])) else None
+                elif operation == "each":
+                    if isinstance(value, list):
+                        for item in value:
+                            self._call_value(fn, [item])
+                    else:
+                        self._call_value(fn, [value])
+                elif operation == "map":
+                    if isinstance(value, list):
+                        value = [self._call_value(fn, [item]) for item in value]
+                    else:
+                        value = self._call_value(fn, [value])
                 else:
-                    raise SpryRuntimeError(f"Cannot use {stage.name!r} as pipeline stage", stage)
+                    # No explicit operation — call function with whole value (e.g. nums |> len)
+                    value = self._call_value(fn, [value])
                 continue
 
             if isinstance(stage, ParseStatement):

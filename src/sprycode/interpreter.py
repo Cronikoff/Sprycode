@@ -2635,6 +2635,8 @@ class Interpreter:
                     # Use the generator's next() protocol so we get the return value
                     while True:
                         item = iterable.next()
+                        if isinstance(item, SpryPromise):
+                            item = item._value if item.status == "fulfilled" else {"value": None, "done": True}
                         if item["done"]:
                             delegate_return_val = item["value"]
                             break
@@ -2775,7 +2777,7 @@ class Interpreter:
 
         if isinstance(node, OptionalCallExpression):
             callee = self._eval(node.callee, env)
-            if callee is None or callee is SPRY_UNDEFINED:
+            if callee is None or isinstance(callee, _SpryUndefinedType):
                 return SPRY_UNDEFINED
             args: list[Any] = []
             for a in node.args:
@@ -2976,7 +2978,9 @@ class Interpreter:
             return self._eval_tagged_template(node, env)
 
         if isinstance(node, NewTargetExpression):
-            # Return the current constructor (class) if inside a `new` call, else undefined
+            if env.has("new.target"):
+                return env.get("new.target")
+            # Fallback for legacy construction paths that still use thread-local state
             new_target = getattr(self._tl, "new_target", None)
             return new_target if new_target is not None else SPRY_UNDEFINED
 
@@ -3282,7 +3286,7 @@ class Interpreter:
         if isinstance(callee, SpryFunction):
             # Seed `this` with the function's prototype so inherited props are visible
             this_obj: dict = {"__spry_proto__": callee._prototype}
-            result = self._call_function_with_this(callee, args, this_obj, node)
+            result = self._call_function_with_this(callee, args, this_obj, node, new_target=callee)
             # If the function explicitly returns an object, use that; else return this
             if result is not None and not isinstance(result, _SpryUndefinedType) and isinstance(result, (dict, SpryInstance)):
                 return result
@@ -3401,6 +3405,8 @@ class Interpreter:
         child = fn.closure.child()
         # Always define `arguments` (JS semantics: every function has access to all passed args)
         child.define("arguments", list(args), mutable=False)
+        # Plain function calls must always see undefined for new.target.
+        child.define("new.target", SPRY_UNDEFINED, mutable=False)
 
         for i, (pname, _ptype) in enumerate(fn.params):
             # Dict destructuring param: __destruct__:a,b  or  __destruct__:key|alias,b
@@ -3472,10 +3478,18 @@ class Interpreter:
             return SpryPromise(value=None)
         return None
 
-    def _call_function_with_this(self, fn: "SpryFunction", args: list[Any], this_arg: Any, node: "Node") -> Any:
+    def _call_function_with_this(
+        self,
+        fn: "SpryFunction",
+        args: list[Any],
+        this_arg: Any,
+        node: "Node",
+        new_target: Any = SPRY_UNDEFINED,
+    ) -> Any:
         """Call fn with `this` and `self` bound to this_arg in the execution env."""
         child = fn.closure.child()
         child.define("arguments", list(args), mutable=False)
+        child.define("new.target", new_target, mutable=False)
         child.define("this", this_arg, mutable=False)
         child.define("self", this_arg, mutable=False)
         # Expose instance fields if this_arg is a SpryInstance
@@ -5487,6 +5501,8 @@ class Interpreter:
             return items
         while True:
             result = self._call_value(next_fn, [])
+            if isinstance(result, SpryPromise):
+                result = result._value if result.status == "fulfilled" else {"value": None, "done": True}
             if isinstance(result, dict):
                 if result.get("done"):
                     break
@@ -5650,6 +5666,8 @@ class Interpreter:
                 return False
             while True:
                 result = _call_next(next_fn)
+                if isinstance(result, SpryPromise):
+                    result = result._value if result.status == "fulfilled" else {"value": None, "done": True}
                 if not isinstance(result, dict) or result.get("done", False):
                     break
                 if _exec_body_for_item(result.get("value")):
@@ -6734,20 +6752,15 @@ class Interpreter:
 
         # Call init() / constructor() if defined (skip when building inheritance field structure)
         if not _for_inheritance:
-            prev_new_target = getattr(self._tl, "new_target", None)
-            self._tl.new_target = cls  # type: ignore[attr-defined]
-            try:
-                ctor_fn = fields.get("init") or fields.get("constructor")
-                if isinstance(ctor_fn, SpryFunction):
-                    self._call_bound_method(BoundMethod(instance=instance, fn=ctor_fn), args, node)
-                elif args:
-                    # Positional-field constructor: Counter(10) → counter.count = 10
-                    field_vars = [k for k, v in fields.items() if not callable(v) and not isinstance(v, SpryFunction)]
-                    for i, arg in enumerate(args):
-                        if i < len(field_vars):
-                            instance.set(field_vars[i], arg)
-            finally:
-                self._tl.new_target = prev_new_target  # type: ignore[attr-defined]
+            ctor_fn = fields.get("init") or fields.get("constructor")
+            if isinstance(ctor_fn, SpryFunction):
+                self._call_bound_method(BoundMethod(instance=instance, fn=ctor_fn), args, node, new_target=cls)
+            elif args:
+                # Positional-field constructor: Counter(10) → counter.count = 10
+                field_vars = [k for k, v in fields.items() if not callable(v) and not isinstance(v, SpryFunction)]
+                for i, arg in enumerate(args):
+                    if i < len(field_vars):
+                        instance.set(field_vars[i], arg)
 
         return instance
 
@@ -6786,12 +6799,19 @@ class Interpreter:
             return fn(*args)
         return None
 
-    def _call_bound_method(self, bm: BoundMethod, args: list[Any], node: Node) -> Any:
+    def _call_bound_method(
+        self,
+        bm: BoundMethod,
+        args: list[Any],
+        node: Node,
+        new_target: Any = SPRY_UNDEFINED,
+    ) -> Any:
         """Call a method on an instance, binding `self` in the execution environment."""
         fn = bm.fn
         # Generator methods: create a generator with self/this pre-bound in the closure
         if fn.is_generator:
             gen_closure = fn.closure.child()
+            gen_closure.define("new.target", new_target, mutable=False)
             gen_closure.define("self", bm.instance, mutable=False)
             gen_closure.define("this", bm.instance, mutable=False)
             if hasattr(bm, "_defining_class") and bm._defining_class is not None:
@@ -6810,6 +6830,7 @@ class Interpreter:
             )
             return SpryGenerator(bound_gen_fn, args, self)
         child = fn.closure.child()
+        child.define("new.target", new_target, mutable=False)
         # Bind self so methods can do self.field = val
         child.define("self", bm.instance, mutable=False)
         child.define("this", bm.instance, mutable=False)
@@ -6917,6 +6938,7 @@ class Interpreter:
         stored in a dict so that ``this.x`` inside the method resolves to the dict.
         """
         child = fn.closure.child()
+        child.define("new.target", SPRY_UNDEFINED, mutable=False)
         child.define("self", obj, mutable=False)
         child.define("this", obj, mutable=False)
 

@@ -14321,11 +14321,15 @@ class _QueueNamespace:
     def __init__(self, call_fn: Any = None) -> None:
         self._call_fn = call_fn
 
-    def new(self, *_args: Any) -> SpryQueue:
-        return SpryQueue()
+    def new(self, items: Any = None) -> SpryQueue:
+        q = SpryQueue()
+        if isinstance(items, list):
+            for item in items:
+                q.enqueue(item)
+        return q
 
-    def __call__(self, *_args: Any) -> SpryQueue:
-        return SpryQueue()
+    def __call__(self, items: Any = None) -> SpryQueue:
+        return self.new(items)
 
     def create(self, *args: Any) -> SpryQueue:
         return self(*args)
@@ -14383,7 +14387,7 @@ class SpryChannel:
 
     @property
     def isClosed(self) -> bool:
-        return self._closed
+        return self.closed
 
     @property
     def closed(self) -> bool:

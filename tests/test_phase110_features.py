@@ -457,9 +457,7 @@ class TestQueue:
 
     def test_queue_to_list_alias_and_create_ctor(self):
         i = run("""
-            let q = Queue.create()
-            q.enqueue(1)
-            q.enqueue(2)
+            let q = Queue.create([1, 2])
             let items = q.toList()
         """)
         assert val(i, "items") == [1, 2]

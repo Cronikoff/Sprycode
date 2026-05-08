@@ -14242,7 +14242,6 @@ class _NavigatorNamespace:
 
     def __repr__(self) -> str:
         return "Navigator"
-        return "Navigator"
 
 
 # Phase 110: Microservice primitives
@@ -14657,4 +14656,3 @@ def _make_pipeline(call_fn: Any) -> Any:
         return _run
 
     return _pipeline
-

@@ -465,8 +465,6 @@ class Parser:
             self._advance()
             self._match(TokenType.SEMICOLON)
             return DebuggerStatement(line=tok.line, column=tok.column)
-        if tok.type == TokenType.RETRY and self._peek().type == TokenType.LPAREN:
-            return self._parse_retry_statement()
         if tok.type == TokenType.ENUM:
             return self._parse_enum()
         if tok.type == TokenType.CLASS:
@@ -479,10 +477,6 @@ class Parser:
             return self._parse_switch()
         if tok.type == TokenType.DO:
             return self._parse_do_while()
-        if tok.type == TokenType.LOOP and self._peek().type != TokenType.COLON:
-            return self._parse_loop()
-        if tok.type == TokenType.RETRY and self._peek().type == TokenType.LPAREN:
-            return self._parse_retry_statement()
         if tok.type == TokenType.SPAWN:
             return self._parse_spawn()
         if tok.type == TokenType.WEBSOCKET:
@@ -1662,12 +1656,6 @@ class Parser:
             body=body, condition=condition,
             line=tok.line, column=tok.column,
         )
-
-    def _parse_loop(self) -> LoopStatement:
-        """loop { <body> } — infinite loop, broken by `break`."""
-        tok = self._expect(TokenType.LOOP)
-        body = self._parse_block()
-        return LoopStatement(body=body, line=tok.line, column=tok.column)
 
     def _parse_retry_statement(self) -> RetryStatement:
         """retry(<count>) { <body> } — retry block up to n times on exception."""

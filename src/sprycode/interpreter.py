@@ -14323,16 +14323,19 @@ class _QueueNamespace:
 
     def new(self, items: Any = None) -> SpryQueue:
         q = SpryQueue()
-        if isinstance(items, list):
-            for item in items:
-                q.enqueue(item)
+        if items is None:
+            return q
+        if not isinstance(items, list):
+            raise SpryRuntimeError("Queue expects an array of initial items", None)
+        for item in items:
+            q.enqueue(item)
         return q
 
     def __call__(self, items: Any = None) -> SpryQueue:
         return self.new(items)
 
-    def create(self, *args: Any) -> SpryQueue:
-        return self(*args)
+    def create(self, items: Any = None) -> SpryQueue:
+        return self.new(items)
 
     def _spry_get_prop(self, prop: str) -> Any:
         if prop in ("new", "create"):

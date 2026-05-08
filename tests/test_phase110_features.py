@@ -881,7 +881,7 @@ class TestCircuitBreaker:
         """)
         assert val(i, "result") == 42
 
-    def test_circuit_breaker_opens_after_threshold(self):
+    def test_circuit_breaker_opens_after_threshold_after_repeated_failures(self):
         """After 3 failures, circuit opens."""
         i = run("""
             let cb = new CircuitBreaker({ threshold: 3, timeout: 30000 })

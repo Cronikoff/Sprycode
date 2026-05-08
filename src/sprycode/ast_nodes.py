@@ -1061,7 +1061,12 @@ class DebuggerStatement(Node):
 
 @dataclass
 class LoopStatement(Node):
-    """loop { ... } — infinite loop; only exits via break."""
+    """loop { ... } — infinite loop; only exits via break.
+
+    The optional ``label`` field allows labeled break/continue:
+    ``break myLabel`` inside a nested loop will break out of the loop that
+    carries the matching label.
+    """
     body: "list[Node] | None" = None
     label: str | None = None
 

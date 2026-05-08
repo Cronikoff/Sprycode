@@ -14078,7 +14078,7 @@ class SpryChannel:
 
     def __init__(self, capacity: int = 0) -> None:
         self._buffer: list = []
-        self._capacity = int(capacity) if capacity else 0  # 0 = unbounded
+        self._capacity = int(capacity)  # 0 = unbounded
         self._closed = False
 
     def send(self, value: Any) -> None:

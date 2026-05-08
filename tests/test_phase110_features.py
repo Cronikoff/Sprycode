@@ -549,7 +549,7 @@ let c = callCount
         assert val(i, "c") == 0
 
     def test_debounce_zero_ms_executes_on_next_call(self):
-        """With ms=0 each call flushes the previous one."""
+        """With ms=0 each subsequent call flushes the previous pending call."""
         i = run("""
 var callCount = 0
 fn inc() { callCount += 1 }
@@ -560,10 +560,9 @@ d()
 d.flush()
 let c = callCount
 """)
-        # Each call with ms=0 flushes the previous pending call then schedules a new one.
-        # 3 calls: first schedules, second flushes+schedules, third flushes+schedules.
-        # Final flush executes the last pending.
-        assert val(i, "c") >= 1
+        # call1: schedules. call2: flushes (count=1) + schedules. call3: flushes (count=2) + schedules.
+        # flush(): executes last pending (count=3).
+        assert val(i, "c") == 3
 
     def test_debounce_flush_returns_result(self):
         i = run("""

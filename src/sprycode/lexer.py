@@ -139,6 +139,7 @@ class TokenType(Enum):
     UNTIL = auto()
     DO = auto()
     FINALLY = auto()
+    LOOP = auto()
 
     # Keywords — switch / case
     SWITCH = auto()
@@ -402,6 +403,7 @@ KEYWORDS: dict[str, TokenType] = {
     "repeat": TokenType.REPEAT,
     "until": TokenType.UNTIL,
     "do": TokenType.DO,
+    "loop": TokenType.LOOP,
     "finally": TokenType.FINALLY,
     "switch": TokenType.SWITCH,
     "default": TokenType.DEFAULT,

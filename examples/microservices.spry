@@ -190,7 +190,7 @@ task fullPipeline {
 }
 
 // ── Micromanage structural pathway until solved ───────────────────────────
-task microManageUntilSolved {
+task micromanageUntilSolved {
     let backlog = Queue.new([1, 2, 3, 4, 5])
     var total = 0
 
@@ -219,5 +219,5 @@ task main {
     throttleDemo()
     debounceDemo()
     fullPipeline()
-    microManageUntilSolved()
+    micromanageUntilSolved()
 }

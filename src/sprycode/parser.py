@@ -393,14 +393,9 @@ class Parser:
             return self._parse_for()
         if tok.type == TokenType.WHILE:
             return self._parse_while()
-        if tok.type == TokenType.LOOP:
-            # `loop:` — used as a label for a for/while statement
-            if self._peek().type == TokenType.COLON:
-                label_tok = self._advance()  # consume 'loop'
-                self._advance()              # consume ':'
-                body_stmt = self._parse_statement()
-                return LabeledStatement(label=label_tok.value, body=body_stmt,
-                                        line=label_tok.line, column=label_tok.column)
+        # `loop:` labels are handled by the generic labeled-statement path;
+        # only treat `loop` specially when it's not followed by ':'.
+        if tok.type == TokenType.LOOP and self._peek().type != TokenType.COLON:
             return self._parse_loop()
         if tok.type == TokenType.BREAK:
             self._advance()

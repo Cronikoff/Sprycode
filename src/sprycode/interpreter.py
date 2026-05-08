@@ -11,6 +11,7 @@ import math
 import os
 import re
 import time
+import collections
 from decimal import Decimal
 from typing import Any
 
@@ -1453,13 +1454,6 @@ class Interpreter:
         # Promise namespace
         env.define("Promise", _PromiseNamespace())
 
-        # Phase 110: microservice primitives
-        env.define("Queue", _QueueNamespace())
-        env.define("Channel", _ChannelNamespace())
-        env.define("CircuitBreaker", _CircuitBreakerNamespace(self._call_value))
-        env.define("throttle", lambda fn, ms=500: _ThrottledFunction(fn, float(ms), self._call_value))
-        env.define("debounce", lambda fn, ms=300: _DebouncedFunction(fn, float(ms), self._call_value))
-
         # Error types
         for _ename in ("Error", "TypeError", "RangeError", "SyntaxError",
                        "ReferenceError", "EvalError", "URIError"):
@@ -1619,6 +1613,14 @@ class Interpreter:
 
         # BigInt constructor (Phase 63)
         env.define("BigInt", _BigIntNamespace())
+
+        # Phase 110: Microservice primitives
+        env.define("Queue", _QueueNamespace(self._call_value))
+        env.define("Channel", _ChannelNamespace(self._call_value))
+        env.define("CircuitBreaker", _CircuitBreakerNamespace(self._call_value))
+        env.define("throttle", _make_throttle(self._call_value))
+        env.define("debounce", _make_debounce(self._call_value))
+        env.define("pipeline", _make_pipeline(self._call_value))
 
         return env
 
@@ -2145,6 +2147,8 @@ class Interpreter:
             value = self._eval(node.value, env)
             if isinstance(obj, SpryProxy):
                 obj._spry_set_prop(node.property, value)
+            elif hasattr(obj, "_spry_set_prop") and not isinstance(obj, (SpryInstance, dict, SpryClass, SpryFunction)):
+                obj._spry_set_prop(node.property, value)
             elif isinstance(obj, SpryInstance):
                 # Check for setter first
                 setter_key = f"__setter__{node.property}"
@@ -2441,6 +2445,12 @@ class Interpreter:
         if isinstance(node, WhileStatement):
             return self._exec_while(node, env)
 
+        if isinstance(node, LoopStatement):
+            return self._exec_loop(node, env)
+
+        if isinstance(node, RetryStatement):
+            return self._exec_retry_statement(node, env)
+
         if isinstance(node, BreakStatement):
             raise BreakSignal(node.label)
 
@@ -2627,6 +2637,12 @@ class Interpreter:
 
         if isinstance(node, DoWhileStatement):
             return self._exec_do_while(node, env)
+
+        if isinstance(node, LoopStatement):
+            return self._exec_loop(node, env)
+
+        if isinstance(node, RetryStatement):
+            return self._exec_retry_statement(node, env)
 
         if isinstance(node, SpawnStatement):
             return self._exec_spawn(node, env)
@@ -5196,11 +5212,8 @@ class Interpreter:
                              _ReadableStreamController, _TransformStreamDefaultController,
                              _CompressionStreamImpl,
                              SpryBroadcastChannel, SpryMessageChannel, SpryMessagePort,
-                             _NavigatorNamespace, _SubtleCryptoNamespace)):
-            return obj._spry_get_prop(prop)
-
-        if isinstance(obj, (SpryQueue, SpryChannel, SpryCircuitBreaker,
-                             _ThrottledFunction, _DebouncedFunction)):
+                             _NavigatorNamespace, _SubtleCryptoNamespace,
+                             SpryQueue, SpryChannel, SpryCircuitBreaker)):
             return obj._spry_get_prop(prop)
 
         if isinstance(obj, (SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod)):
@@ -6038,7 +6051,50 @@ class Interpreter:
                 raise SpryRuntimeError("While loop exceeded maximum iteration limit (100,000)", node)
         return None
 
-    def _exec_repeat_until(self, node: RepeatUntilStatement, env: Environment) -> Any:
+    def _exec_loop(self, node: LoopStatement, env: Environment) -> Any:
+        """loop { <body> } — infinite loop, broken by `break`."""
+        max_iterations = 1_000_000
+        count = 0
+        while True:
+            child = env.child()
+            try:
+                self._exec_block(node.body, child)
+            except BreakSignal as bs:
+                if bs.label is None or bs.label == node.label:
+                    break
+                raise
+            except ContinueSignal as cs:
+                if cs.label is None or cs.label == node.label:
+                    pass
+                else:
+                    raise
+            count += 1
+            if count >= max_iterations:
+                raise SpryRuntimeError("Loop exceeded maximum iteration limit (1,000,000)", node)
+        return None
+
+    def _exec_retry_statement(self, node: RetryStatement, env: Environment) -> Any:
+        """retry(<n>) { <body> } — retry body up to n times on exception.
+
+        On success returns the result of the last statement in the body.
+        After n failures raises the last exception.
+        """
+        max_tries = int(self._eval(node.count, env))
+        if max_tries < 1:
+            max_tries = 1
+        last_exc: Exception = SpryRuntimeError("retry block never ran", node)
+        for attempt in range(max_tries):
+            child = env.child()
+            try:
+                result = self._exec_block(node.body, child)
+                return result  # success
+            except (SpryRuntimeError, Exception) as exc:
+                last_exc = exc
+                if attempt < max_tries - 1:
+                    continue
+        raise last_exc
+
+    def _exec_repeat_until(self, node: "RepeatUntilStatement", env: "Environment") -> Any:
         max_iterations = 100_000
         count = 0
         while True:
@@ -6054,51 +6110,6 @@ class Interpreter:
                 raise SpryRuntimeError("Repeat loop exceeded maximum iteration limit (100,000)", node)
             if self._truthy(self._eval(node.condition, env)):
                 break
-        return None
-
-    def _exec_loop(self, node: LoopStatement, env: Environment) -> Any:
-        """Infinite loop — runs until an explicit break."""
-        max_iterations = 100_000
-        count = 0
-        while True:
-            child = env.child()
-            try:
-                self._exec_block(node.body, child)
-            except BreakSignal as bs:
-                label = getattr(bs, "label", None)
-                if label is None or label == getattr(node, "label", None):
-                    break
-                raise
-            except ContinueSignal:
-                pass
-            count += 1
-            if count >= max_iterations:
-                raise SpryRuntimeError("loop exceeded maximum iteration limit (100,000)", node)
-        return None
-
-    def _exec_retry_statement(self, node: RetryStatement, env: Environment) -> Any:
-        """Retry a block up to <attempts> times; optional catch on final failure."""
-        last_exc: Exception | None = None
-        for attempt in range(node.attempts):
-            try:
-                child = env.child()
-                self._exec_block(node.body, child)
-                return None  # success
-            except (SpryRuntimeError, SpryUserError, Exception) as exc:
-                last_exc = exc
-                # If this was NOT the last attempt, continue retrying
-                if attempt < node.attempts - 1:
-                    continue
-        # All attempts exhausted
-        if node.handler is not None and last_exc is not None:
-            child = env.child()
-            if node.catch_name:
-                err_val = getattr(last_exc, "value", str(last_exc))
-                child.define(node.catch_name, err_val)
-            self._exec_block(node.handler, child)
-            return None
-        if last_exc is not None:
-            raise last_exc
         return None
 
     def _exec_match(self, node: MatchStatement, env: Environment) -> Any:
@@ -13993,252 +14004,258 @@ class _NavigatorNamespace:
 
     def __repr__(self) -> str:
         return "Navigator"
+        return "Navigator"
 
 
-# ---------------------------------------------------------------------------
 # Phase 110: Microservice primitives
-# Queue, Channel, CircuitBreaker, throttle, debounce
 # ---------------------------------------------------------------------------
 
 
 class SpryQueue:
-    """FIFO / LIFO queue for inter-service message passing.
+    """In-memory FIFO queue for message passing between services.
 
-    SpryCode API:
-      let q = new Queue()
-      q.enqueue(item)       — add to back
-      q.push(item)          — alias for enqueue
-      q.dequeue()           — remove and return front item (or undefined)
-      q.pop()               — alias for dequeue
-      q.peek()              — return front item without removing (or undefined)
-      q.size                — number of items
-      q.isEmpty             — true when empty
-      q.clear()             — remove all items
-      q.toArray()           — snapshot as an Array
+    SpryCode usage::
+        let q = Queue.new()
+        q.enqueue(1)
+        q.enqueue(2)
+        let v = q.dequeue()   // 1
     """
 
     def __init__(self) -> None:
-        self._items: list = []
+        self._data: collections.deque = collections.deque()
 
-    def enqueue(self, item: Any) -> None:
-        self._items.append(item)
+    # --- public methods ---
 
-    def push(self, item: Any) -> None:
-        self._items.append(item)
+    def enqueue(self, value: Any) -> None:
+        self._data.append(value)
 
     def dequeue(self) -> Any:
-        if not self._items:
-            return SPRY_UNDEFINED
-        return self._items.pop(0)
-
-    def pop(self) -> Any:
-        return self.dequeue()
+        if not self._data:
+            raise SpryRuntimeError("Queue is empty", None)
+        return self._data.popleft()
 
     def peek(self) -> Any:
-        if not self._items:
-            return SPRY_UNDEFINED
-        return self._items[0]
+        if not self._data:
+            raise SpryRuntimeError("Queue is empty", None)
+        return self._data[0]
 
     @property
     def size(self) -> int:
-        return len(self._items)
+        return len(self._data)
 
-    @property
     def isEmpty(self) -> bool:
-        return len(self._items) == 0
+        return len(self._data) == 0
 
     def clear(self) -> None:
-        self._items.clear()
+        self._data.clear()
 
     def toArray(self) -> list:
-        return list(self._items)
+        return list(self._data)
+
+    # --- SpryCode property access ---
 
     def _spry_get_prop(self, prop: str) -> Any:
-        _map: dict = {
+        _methods: dict = {
             "enqueue": self.enqueue,
-            "push": self.push,
             "dequeue": self.dequeue,
-            "pop": self.pop,
             "peek": self.peek,
-            "size": self.size,
             "isEmpty": self.isEmpty,
             "clear": self.clear,
             "toArray": self.toArray,
         }
-        if prop in _map:
-            return _map[prop]
+        if prop == "size":
+            return self.size
+        if prop in _methods:
+            return _methods[prop]
         raise SpryRuntimeError(f"Queue has no property {prop!r}", None)
 
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"Queue.{prop} is not settable", None)
+
     def __repr__(self) -> str:
-        return f"Queue({self._items!r})"
+        return f"Queue({list(self._data)!r})"
 
 
 class _QueueNamespace:
-    """Queue global constructor."""
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
 
-    def new(self) -> SpryQueue:
+    def new(self, *_args: Any) -> SpryQueue:
         return SpryQueue()
 
-    def __call__(self) -> SpryQueue:
+    def __call__(self, *_args: Any) -> SpryQueue:
         return SpryQueue()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "new":
+            return self.new
+        raise SpryRuntimeError(f"Queue.{prop} not found", None)
 
     def __repr__(self) -> str:
         return "Queue"
 
 
-class SpryChannel:
-    """Synchronous typed message channel between producers and consumers.
+# ---------------------------------------------------------------------------
 
-    SpryCode API:
-      let ch = new Channel()
-      ch.send(value)        — put a message on the channel buffer
-      ch.receive()          — take (and remove) the first message, or undefined
-      ch.tryReceive()       — alias for receive()
-      ch.close()            — mark channel closed
-      ch.isClosed           — true after close()
-      ch.size               — number of pending messages
-      ch.isEmpty            — true when no pending messages
+
+class SpryChannel:
+    """Synchronous bounded/unbounded message channel.
+
+    SpryCode usage::
+        let ch = Channel.new()
+        ch.send("hello")
+        let msg = ch.receive()
     """
 
-    def __init__(self) -> None:
-        self._buffer: list = []
+    def __init__(self, capacity: int = 0) -> None:
+        self._capacity = int(capacity) if capacity else 0  # 0 = unbounded
+        self._data: collections.deque = collections.deque()
         self._closed = False
 
     def send(self, value: Any) -> None:
         if self._closed:
-            raise SpryRuntimeError("Cannot send on a closed Channel", None)
-        self._buffer.append(value)
+            raise SpryRuntimeError("Cannot send to a closed Channel", None)
+        if self._capacity > 0 and len(self._data) >= self._capacity:
+            raise SpryRuntimeError(
+                f"Channel is full (capacity={self._capacity})", None
+            )
+        self._data.append(value)
 
     def receive(self) -> Any:
-        if not self._buffer:
-            return SPRY_UNDEFINED
-        return self._buffer.pop(0)
+        if not self._data:
+            if self._closed:
+                return SPRY_UNDEFINED
+            raise SpryRuntimeError("Channel is empty", None)
+        return self._data.popleft()
 
     def tryReceive(self) -> Any:
-        return self.receive()
+        """Return next item or undefined (never throws)."""
+        if not self._data:
+            return SPRY_UNDEFINED
+        return self._data.popleft()
 
     def close(self) -> None:
         self._closed = True
 
     @property
-    def isClosed(self) -> bool:
+    def closed(self) -> bool:
         return self._closed
 
     @property
     def size(self) -> int:
-        return len(self._buffer)
+        return len(self._data)
 
-    @property
     def isEmpty(self) -> bool:
-        return len(self._buffer) == 0
+        return len(self._data) == 0
 
     def _spry_get_prop(self, prop: str) -> Any:
-        _map: dict = {
+        _methods: dict = {
             "send": self.send,
             "receive": self.receive,
             "tryReceive": self.tryReceive,
             "close": self.close,
-            "isClosed": self.isClosed,
-            "size": self.size,
             "isEmpty": self.isEmpty,
         }
-        if prop in _map:
-            return _map[prop]
+        if prop == "size":
+            return self.size
+        if prop == "closed":
+            return self.closed
+        if prop in _methods:
+            return _methods[prop]
         raise SpryRuntimeError(f"Channel has no property {prop!r}", None)
 
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"Channel.{prop} is not settable", None)
+
     def __repr__(self) -> str:
-        return f"Channel(size={len(self._buffer)}, closed={self._closed})"
+        return f"Channel(size={len(self._data)}, closed={self._closed})"
 
 
 class _ChannelNamespace:
-    """Channel global constructor."""
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
 
-    def new(self) -> SpryChannel:
-        return SpryChannel()
+    def new(self, capacity: Any = 0) -> SpryChannel:
+        return SpryChannel(int(capacity) if capacity else 0)
 
-    def __call__(self) -> SpryChannel:
-        return SpryChannel()
+    def __call__(self, capacity: Any = 0) -> SpryChannel:
+        return SpryChannel(int(capacity) if capacity else 0)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "new":
+            return self.new
+        raise SpryRuntimeError(f"Channel.{prop} not found", None)
 
     def __repr__(self) -> str:
         return "Channel"
 
 
-# Circuit-breaker states
-_CB_CLOSED = "CLOSED"          # normal — requests pass through
-_CB_OPEN = "OPEN"              # tripped — requests fail fast
-_CB_HALF_OPEN = "HALF_OPEN"    # probe — one request allowed through
+# ---------------------------------------------------------------------------
+
+
+_CB_CLOSED = "closed"
+_CB_OPEN = "open"
+_CB_HALF_OPEN = "half-open"
 
 
 class SpryCircuitBreaker:
-    """Microservice circuit-breaker pattern.
+    """Circuit Breaker pattern for fault tolerance.
 
-    SpryCode API:
-      let cb = new CircuitBreaker({ threshold: 3, timeout: 5000 })
-      cb.call(fn, ...args)   — call fn; trip breaker after <threshold> failures
-      cb.state               — "CLOSED" | "OPEN" | "HALF_OPEN"
-      cb.failures            — current failure count
-      cb.reset()             — manually reset to CLOSED
+    States:
+      - ``closed``   — normal operation, calls go through
+      - ``open``     — calls are rejected immediately (circuit tripped)
+      - ``half-open``— probe state: one call is allowed to test recovery
+
+    SpryCode usage::
+        let cb = CircuitBreaker.new(3, 5000)
+        let result = cb.call(myFn)
     """
 
-    def __init__(
-        self,
-        threshold: int = 3,
-        timeout_ms: int = 5000,
-        call_fn: Any = None,
-    ) -> None:
-        self._threshold = max(1, int(threshold))
-        self._timeout_ms = max(0, int(timeout_ms))
+    def __init__(self, threshold: int = 3, reset_timeout_ms: int = 5000,
+                 call_fn: Any = None) -> None:
+        self._threshold = int(threshold)
+        self._reset_timeout_ms = int(reset_timeout_ms)
         self._call_fn = call_fn
         self._failures = 0
         self._state = _CB_CLOSED
         self._opened_at: float = 0.0
 
-    # ---- internal helpers ----
-
     def _invoke(self, fn: Any, args: list) -> Any:
-        if callable(fn):
-            return fn(*args)
         if self._call_fn is not None:
             return self._call_fn(fn, args)
-        raise SpryRuntimeError("CircuitBreaker: target is not callable", None)
+        if callable(fn):
+            return fn(*args)
+        return None
 
     def _check_half_open(self) -> None:
-        """Transition OPEN → HALF_OPEN after timeout."""
-        import time as _t
         if self._state == _CB_OPEN:
-            elapsed_ms = (_t.time() - self._opened_at) * 1000
-            if elapsed_ms >= self._timeout_ms:
+            elapsed_ms = (time.monotonic() - self._opened_at) * 1000
+            if elapsed_ms >= self._reset_timeout_ms:
                 self._state = _CB_HALF_OPEN
-
-    # ---- public API ----
 
     def call(self, fn: Any, *args: Any) -> Any:
         self._check_half_open()
         if self._state == _CB_OPEN:
-            raise SpryRuntimeError(
-                "CircuitBreaker is OPEN — service unavailable", None)
+            raise SpryRuntimeError("CircuitBreaker is open — call rejected", None)
         try:
             result = self._invoke(fn, list(args))
-            # success: reset failure counter and close the breaker
+            # success
             self._failures = 0
             self._state = _CB_CLOSED
             return result
         except Exception as exc:
             self._failures += 1
-            if self._failures >= self._threshold:
-                import time as _t
+            if self._state == _CB_HALF_OPEN or self._failures >= self._threshold:
                 self._state = _CB_OPEN
-                self._opened_at = _t.time()
-            raise
+                self._opened_at = time.monotonic()
+            raise exc
 
     def reset(self) -> None:
         self._failures = 0
         self._state = _CB_CLOSED
-        self._opened_at = 0.0
 
     @property
     def state(self) -> str:
-        self._check_half_open()
         return self._state
 
     @property
@@ -14246,131 +14263,151 @@ class SpryCircuitBreaker:
         return self._failures
 
     def _spry_get_prop(self, prop: str) -> Any:
-        _map: dict = {
-            "call": self.call,
-            "reset": self.reset,
-            "state": self.state,
-            "failures": self.failures,
-        }
-        if prop in _map:
-            return _map[prop]
+        if prop == "state":
+            return self.state
+        if prop == "failures":
+            return self.failures
+        if prop in ("call", "reset"):
+            return getattr(self, prop)
         raise SpryRuntimeError(f"CircuitBreaker has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"CircuitBreaker.{prop} is not settable", None)
 
     def __repr__(self) -> str:
         return f"CircuitBreaker(state={self._state!r}, failures={self._failures})"
 
 
-def _make_circuit_breaker(opts: Any = None, call_fn: Any = None) -> SpryCircuitBreaker:
-    threshold = 3
-    timeout_ms = 5000
-    if isinstance(opts, dict):
-        threshold = int(opts.get("threshold", threshold))
-        timeout_ms = int(opts.get("timeout", timeout_ms))
-    return SpryCircuitBreaker(threshold=threshold, timeout_ms=timeout_ms, call_fn=call_fn)
-
-
 class _CircuitBreakerNamespace:
-    """CircuitBreaker global constructor."""
-
     def __init__(self, call_fn: Any = None) -> None:
         self._call_fn = call_fn
 
-    def new(self, opts: Any = None) -> SpryCircuitBreaker:
-        return _make_circuit_breaker(opts, call_fn=self._call_fn)
+    def new(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
+        return SpryCircuitBreaker(
+            threshold=int(threshold),
+            reset_timeout_ms=int(reset_timeout_ms),
+            call_fn=self._call_fn,
+        )
 
-    def __call__(self, opts: Any = None) -> SpryCircuitBreaker:
-        return _make_circuit_breaker(opts, call_fn=self._call_fn)
+    def __call__(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
+        return self.new(threshold, reset_timeout_ms)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "new":
+            return self.new
+        raise SpryRuntimeError(f"CircuitBreaker.{prop} not found", None)
 
     def __repr__(self) -> str:
         return "CircuitBreaker"
 
 
 # ---------------------------------------------------------------------------
-# throttle / debounce — rate-limiting for microservice calls
-# ---------------------------------------------------------------------------
 
 
-class _ThrottledFunction:
-    """Wraps a function so it is called at most once per <interval_ms> milliseconds."""
+def _make_throttle(call_fn: Any) -> Any:
+    """throttle(fn, intervalMs) — returns a throttled wrapper.
 
-    def __init__(self, fn: Any, interval_ms: float, call_fn: Any = None) -> None:
-        self._fn = fn
-        self._interval = interval_ms / 1000.0  # convert to seconds
-        self._call_fn = call_fn
-        self._last_called: float = 0.0
-        self._last_result: Any = SPRY_UNDEFINED
+    In the synchronous SpryCode model, throttle tracks the last call time and
+    ignores calls that arrive within ``intervalMs`` of the previous call.
+    Returns the last successful return value on suppressed calls.
+    """
 
-    def _invoke(self, args: list) -> Any:
-        if callable(self._fn):
-            return self._fn(*args)
-        if self._call_fn is not None:
-            return self._call_fn(self._fn, args)
-        return SPRY_UNDEFINED
+    def _throttle(fn: Any, interval_ms: Any = 0) -> Any:
+        interval_s = float(interval_ms) / 1000.0
+        state = {"last": -float("inf"), "last_result": SPRY_UNDEFINED}
 
-    def __call__(self, *args: Any) -> Any:
-        import time as _t
-        now = _t.time()
-        if now - self._last_called >= self._interval:
-            self._last_called = now
-            self._last_result = self._invoke(list(args))
-        return self._last_result
+        def _wrapper(*args: Any) -> Any:
+            now = time.monotonic()
+            if now - state["last"] >= interval_s:
+                state["last"] = now
+                if call_fn is not None:
+                    state["last_result"] = call_fn(fn, list(args))
+                elif callable(fn):
+                    state["last_result"] = fn(*args)
+                return state["last_result"]
+            return state["last_result"]
 
-    def _spry_get_prop(self, prop: str) -> Any:
-        raise SpryRuntimeError(f"ThrottledFunction has no property {prop!r}", None)
+        return _wrapper
 
-    def __repr__(self) -> str:
-        return f"ThrottledFunction(interval={self._interval * 1000:.0f}ms)"
+    return _throttle
 
 
-class _DebouncedFunction:
-    """Wraps a function so it is only called after <delay_ms> ms of silence."""
+def _make_debounce(call_fn: Any) -> Any:
+    """debounce(fn, delayMs) — returns a debounced wrapper.
 
-    def __init__(self, fn: Any, delay_ms: float, call_fn: Any = None) -> None:
-        self._fn = fn
-        self._delay = delay_ms / 1000.0  # convert to seconds
-        self._call_fn = call_fn
-        self._pending_args: list | None = None
-        self._pending_at: float = 0.0
-        self._last_result: Any = SPRY_UNDEFINED
+    In the synchronous SpryCode model, the debounced function is called only
+    when ``flush()`` is invoked on the wrapper or when the delay has elapsed
+    since the last call.  Successive calls within the delay window update the
+    pending arguments.
+    """
 
-    def _invoke(self, args: list) -> Any:
-        if callable(self._fn):
-            return self._fn(*args)
-        if self._call_fn is not None:
-            return self._call_fn(self._fn, args)
-        return SPRY_UNDEFINED
+    def _debounce(fn: Any, delay_ms: Any = 0) -> Any:
+        delay_s = float(delay_ms) / 1000.0
+        state: dict = {"pending": False, "args": [], "scheduled_at": 0.0, "last_result": SPRY_UNDEFINED}
 
-    def _flush(self) -> Any:
-        """Flush any pending call immediately."""
-        if self._pending_args is not None:
-            self._last_result = self._invoke(self._pending_args)
-            self._pending_args = None
-        return self._last_result
+        def _invoke() -> Any:
+            if call_fn is not None:
+                state["last_result"] = call_fn(fn, state["args"])
+            elif callable(fn):
+                state["last_result"] = fn(*state["args"])
+            state["pending"] = False
+            state["args"] = []
+            return state["last_result"]
 
-    def __call__(self, *args: Any) -> Any:
-        import time as _t
-        self._pending_args = list(args)
-        self._pending_at = _t.time()
-        # In synchronous SpryCode there is no real timer; flush after delay has elapsed
-        # (checked on next invocation or explicit flush)
-        import time as _t2
-        if _t2.time() - self._pending_at >= self._delay:
-            return self._flush()
-        return self._last_result
+        def _wrapper(*args: Any) -> Any:
+            state["pending"] = True
+            state["args"] = list(args)
+            state["scheduled_at"] = time.monotonic()
+            # Auto-flush: if delay is zero or already elapsed, invoke immediately
+            if delay_s == 0 or (time.monotonic() - state["scheduled_at"]) >= delay_s:
+                return _invoke()
+            return state["last_result"]
 
-    def flush(self) -> Any:
-        """Immediately invoke the pending debounced call, if any."""
-        return self._flush()
+        def _flush() -> Any:
+            if state["pending"]:
+                return _invoke()
+            return state["last_result"]
 
-    def cancel(self) -> None:
-        """Cancel any pending debounced call."""
-        self._pending_args = None
+        def _cancel() -> None:
+            state["pending"] = False
+            state["args"] = []
 
-    def _spry_get_prop(self, prop: str) -> Any:
-        _map: dict = {"flush": self.flush, "cancel": self.cancel}
-        if prop in _map:
-            return _map[prop]
-        raise SpryRuntimeError(f"DebouncedFunction has no property {prop!r}", None)
+        # Attach flush/cancel as attributes for SpryCode access
+        _wrapper.flush = _flush  # type: ignore[attr-defined]
+        _wrapper.cancel = _cancel  # type: ignore[attr-defined]
 
-    def __repr__(self) -> str:
-        return f"DebouncedFunction(delay={self._delay * 1000:.0f}ms)"
+        def _spry_get_prop(prop: str) -> Any:
+            if prop == "flush":
+                return _flush
+            if prop == "cancel":
+                return _cancel
+            raise SpryRuntimeError(f"debounced function has no property {prop!r}", None)
+
+        _wrapper._spry_get_prop = _spry_get_prop  # type: ignore[attr-defined]
+
+        return _wrapper
+
+    return _debounce
+
+
+def _make_pipeline(call_fn: Any) -> Any:
+    """pipeline(...fns) — compose functions left-to-right.
+
+    Returns a function that passes its argument through each stage in order::
+        let process = pipeline(validate, transform, format)
+        let result = process(rawData)
+    """
+
+    def _pipeline(*fns: Any) -> Any:
+        def _run(value: Any) -> Any:
+            current = value
+            for fn in fns:
+                if call_fn is not None:
+                    current = call_fn(fn, [current])
+                elif callable(fn):
+                    current = fn(current)
+            return current
+        return _run
+
+    return _pipeline
+

@@ -88,6 +88,7 @@ class TokenType(Enum):
     VERIFY = auto()
     PRESERVE = auto()
     RETRY = auto()
+    LOOP = auto()
     MODE = auto()
     COMPARE = auto()
     FILTER = auto()
@@ -139,8 +140,6 @@ class TokenType(Enum):
     UNTIL = auto()
     DO = auto()
     FINALLY = auto()
-    LOOP = auto()
-    ATTEMPTS = auto()
 
     # Keywords — switch / case
     SWITCH = auto()
@@ -405,7 +404,6 @@ KEYWORDS: dict[str, TokenType] = {
     "until": TokenType.UNTIL,
     "do": TokenType.DO,
     "loop": TokenType.LOOP,
-    "attempts": TokenType.ATTEMPTS,
     "finally": TokenType.FINALLY,
     "switch": TokenType.SWITCH,
     "default": TokenType.DEFAULT,

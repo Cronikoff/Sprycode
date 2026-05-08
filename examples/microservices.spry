@@ -22,13 +22,15 @@ task pollUntilReady {
 task fetchWithRetry {
     var tries = 0
 
-    retry 3 {
-        tries += 1
-        log info "Attempt " + str(tries)
-        if tries < 3 {
-            throw "Transient error"
+    try {
+        retry(3) {
+            tries += 1
+            log info "Attempt " + str(tries)
+            if tries < 3 {
+                throw "Transient error"
+            }
+            log info "Fetch succeeded on attempt " + str(tries)
         }
-        log info "Fetch succeeded on attempt " + str(tries)
     } catch err {
         log error "All retries exhausted: " + str(err)
     }

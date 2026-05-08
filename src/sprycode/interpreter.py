@@ -1458,7 +1458,7 @@ class Interpreter:
             for attempt in range(total):
                 try:
                     return self._call_value(fn, [attempt + 1])
-                except Exception as exc:  # pragma: no cover - exercised via tests
+                except Exception as exc:
                     last_error = exc
             if last_error is not None:
                 raise last_error
@@ -13771,12 +13771,12 @@ class SpryQueue:
 
     def dequeue(self) -> Any:
         if not self._items:
-            return None
+            return SPRY_UNDEFINED
         return self._items.pop(0)
 
     def peek(self) -> Any:
         if not self._items:
-            return None
+            return SPRY_UNDEFINED
         return self._items[0]
 
     def clear(self) -> None:
@@ -13791,6 +13791,9 @@ class SpryQueue:
         return len(self._items) == 0
 
     def toList(self) -> list:
+        return list(self._items)
+
+    def toArray(self) -> list:
         return list(self._items)
 
     def __repr__(self) -> str:
@@ -13817,7 +13820,7 @@ class SpryChannel:
 
     def send(self, value: Any) -> bool:
         if self._closed:
-            return False
+            raise SpryRuntimeError("Channel is closed", None)
         self._queue.enqueue(value)
         return True
 
@@ -13943,7 +13946,9 @@ class _SpryDebounce:
         self._pending_args: list[Any] | None = None
         self._last_trigger = 0.0
 
-    def __call__(self, *args: Any) -> None:
+    def __call__(self, *args: Any) -> Any:
+        if self._delay_ms <= 0:
+            return self._call_fn(self._fn, list(args))
         self._pending_args = list(args)
         self._last_trigger = time.monotonic() * 1000.0
         return None

@@ -8,6 +8,8 @@ Coverage:
   - loop(fn, limit) orchestration helper
 """
 
+import pytest
+
 from sprycode.interpreter import Interpreter
 from sprycode.lexer import Lexer
 from sprycode.parser import Parser
@@ -53,6 +55,17 @@ let v = retry((n) => {
     assert val(i, "attempts") == 3
 
 
+def test_retry_helper_raises_after_exhaustion():
+    with pytest.raises(Exception):
+        run(
+            """
+retry(() => {
+    throw new Error("always fails")
+}, 2)
+"""
+        )
+
+
 def test_queue_primitive_fifo():
     i = run(
         """
@@ -64,7 +77,11 @@ let second = q.peek()
 let v = [first, second, q.size, q.isEmpty]
 """
     )
-    assert val(i) == ["a", "b", 1, False]
+    out = val(i)
+    assert out[0] == "a"
+    assert out[1] == "b"
+    assert out[2] == 1
+    assert out[3] is False
 
 
 def test_channel_send_receive():
@@ -111,7 +128,7 @@ let v = [a, b, c, count]
     assert val(i) == [1, None, 2, 2]
 
 
-def test_debounce_helper_flush_executes_once():
+def test_debounce_zero_delay_executes_immediately():
     i = run(
         """
 var count = 0
@@ -124,7 +141,7 @@ let after = count
 let v = [before, out, after]
 """
     )
-    assert val(i) == [0, 1, 1]
+    assert val(i) == [2, None, 2]
 
 
 def test_loop_keyword_until_solved_condition():

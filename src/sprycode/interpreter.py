@@ -6075,7 +6075,7 @@ class Interpreter:
                     raise
             count += 1
             if count >= max_iterations:
-                raise SpryRuntimeError("loop exceeded maximum iteration limit (100,000)", node)
+                raise SpryRuntimeError(f"loop exceeded maximum iteration limit ({max_iterations:,})", node)
         return None
 
     def _exec_retry_block(self, node: RetryBlock, env: Environment) -> Any:
@@ -13977,7 +13977,7 @@ class SpryQueue:
 
     def peek(self) -> Any:
         if not self._items:
-            return None
+            return SPRY_UNDEFINED
         return self._items[0]
 
     def clear(self) -> None:

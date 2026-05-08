@@ -259,6 +259,12 @@ class Parser:
         TokenType.FN,            # "fn"/"function" — usable as identifier in some contexts
     })
 
+    # Token types that may be used as statement label names (for break/continue).
+    _LABEL_LIKE = frozenset({
+        TokenType.IDENTIFIER,
+        TokenType.LOOP,   # 'loop' may be a label: loop: for (...)
+    })
+
     def _expect_ident(self) -> Token:
         """Expect any token that may serve as an identifier (variable/parameter name)."""
         tok = self._current()
@@ -396,18 +402,16 @@ class Parser:
             self._advance()
             # Optional label: break outer  (only if label is on the same line)
             # Also accept contextual keywords that may be used as label names (e.g. 'loop').
-            _LABEL_TYPES = {TokenType.IDENTIFIER, TokenType.LOOP}
             label = None
-            if (self._current().type in _LABEL_TYPES and not self._at_end()
+            if (self._current().type in self._LABEL_LIKE and not self._at_end()
                     and self._current().line == tok.line):
                 label = self._advance().value
             return BreakStatement(label=label, line=tok.line, column=tok.column)
         if tok.type == TokenType.CONTINUE:
             self._advance()
             # Optional label: continue outer  (only if label is on the same line)
-            _LABEL_TYPES = {TokenType.IDENTIFIER, TokenType.LOOP}
             label = None
-            if (self._current().type in _LABEL_TYPES and not self._at_end()
+            if (self._current().type in self._LABEL_LIKE and not self._at_end()
                     and self._current().line == tok.line):
                 label = self._advance().value
             return ContinueStatement(label=label, line=tok.line, column=tok.column)

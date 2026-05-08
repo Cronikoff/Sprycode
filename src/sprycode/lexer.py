@@ -138,6 +138,7 @@ class TokenType(Enum):
     REPEAT = auto()
     UNTIL = auto()
     DO = auto()
+    LOOP = auto()       # `loop { ... }` — infinite loop, exits via break
     FINALLY = auto()
 
     # Keywords — switch / case
@@ -196,7 +197,6 @@ class TokenType(Enum):
     WHEN = auto()     # match guard: case pattern when condition =>
     SUPER = auto()    # super() constructor/method call
     CONST = auto()    # const (immutable binding, alias for let)
-    LOOP = auto()     # loop { } — infinite loop
 
     # Types
     TEXT = auto()
@@ -403,6 +403,7 @@ KEYWORDS: dict[str, TokenType] = {
     "repeat": TokenType.REPEAT,
     "until": TokenType.UNTIL,
     "do": TokenType.DO,
+    "loop": TokenType.LOOP,
     "finally": TokenType.FINALLY,
     "switch": TokenType.SWITCH,
     "default": TokenType.DEFAULT,
@@ -438,7 +439,6 @@ KEYWORDS: dict[str, TokenType] = {
     "when": TokenType.WHEN,
     "super": TokenType.SUPER,
     "const": TokenType.CONST,
-    "loop": TokenType.LOOP,
     "debugger": TokenType.DEBUGGER,
     # Types (both capitalized form for annotations and lowercase for operations)
     "Text": TokenType.TEXT,

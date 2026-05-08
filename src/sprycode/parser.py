@@ -129,6 +129,8 @@ from .ast_nodes import (
     DeclarationList,
     ComputedFieldDeclaration,
     DebuggerStatement,
+    LoopStatement,
+    RetryBlockStatement,
 )
 from .lexer import Token, TokenType
 
@@ -393,17 +395,19 @@ class Parser:
         if tok.type == TokenType.BREAK:
             self._advance()
             # Optional label: break outer  (only if label is on the same line)
+            # Also allow LOOP keyword as a label (e.g. `break loop`)
             label = None
-            if (self._check(TokenType.IDENTIFIER) and not self._at_end()
-                    and self._current().line == tok.line):
+            if (not self._at_end() and self._current().line == tok.line
+                    and self._current().type in (TokenType.IDENTIFIER, TokenType.LOOP)):
                 label = self._advance().value
             return BreakStatement(label=label, line=tok.line, column=tok.column)
         if tok.type == TokenType.CONTINUE:
             self._advance()
             # Optional label: continue outer  (only if label is on the same line)
+            # Also allow LOOP keyword as a label (e.g. `continue loop`)
             label = None
-            if (self._check(TokenType.IDENTIFIER) and not self._at_end()
-                    and self._current().line == tok.line):
+            if (not self._at_end() and self._current().line == tok.line
+                    and self._current().type in (TokenType.IDENTIFIER, TokenType.LOOP)):
                 label = self._advance().value
             return ContinueStatement(label=label, line=tok.line, column=tok.column)
         if tok.type == TokenType.CREATE:
@@ -450,6 +454,9 @@ class Parser:
             return self._parse_switch()
         if tok.type == TokenType.DO:
             return self._parse_do_while()
+        # loop { } — but not loop: for ... (label)
+        if tok.type == TokenType.LOOP and self._peek().type != TokenType.COLON:
+            return self._parse_loop()
         if tok.type == TokenType.SPAWN:
             return self._parse_spawn()
         if tok.type == TokenType.WEBSOCKET:
@@ -460,6 +467,9 @@ class Parser:
             return self._parse_debit()
         if tok.type == TokenType.CREDIT:
             return self._parse_credit()
+        # retry(n) { } — retry block (distinct from file-op retry clause)
+        if tok.type == TokenType.RETRY and self._peek().type == TokenType.LPAREN:
+            return self._parse_retry_block()
 
         # `type Alias = ...` — type alias declaration (no-op at runtime)
         if (tok.type == TokenType.IDENTIFIER and tok.value == "type"
@@ -474,8 +484,10 @@ class Parser:
 
         # Labeled statement: label: for/while/do {...}
         # Detect: IDENTIFIER followed immediately by COLON
-        if tok.type == TokenType.IDENTIFIER and self._peek().type == TokenType.COLON:
-            label_tok = self._advance()  # consume identifier
+        # Also allow LOOP keyword as a label name (backward compatibility: `loop: for ...`)
+        if (tok.type == TokenType.IDENTIFIER or tok.type == TokenType.LOOP) \
+                and self._peek().type == TokenType.COLON:
+            label_tok = self._advance()  # consume identifier (or LOOP keyword used as label)
             self._advance()              # consume ':'
             body_stmt = self._parse_statement()
             return LabeledStatement(label=label_tok.value, body=body_stmt,
@@ -529,7 +541,7 @@ class Parser:
             _BLOCK_KEYWORDS = {
                 TokenType.LET, TokenType.CONST, TokenType.VAR,
                 TokenType.FN, TokenType.FN_STAR, TokenType.IF, TokenType.FOR,
-                TokenType.WHILE, TokenType.DO, TokenType.RETURN, TokenType.THROW,
+                TokenType.WHILE, TokenType.DO, TokenType.LOOP, TokenType.RETURN, TokenType.THROW,
                 TokenType.TRY, TokenType.BREAK, TokenType.CONTINUE,
                 TokenType.CLASS, TokenType.SWITCH, TokenType.ASYNC,
                 TokenType.USING,
@@ -2451,6 +2463,25 @@ class Parser:
         condition = self._parse_expression()
         return DoWhileStatement(body=body, condition=condition,
                                 line=tok.line, column=tok.column)
+
+    def _parse_loop(self) -> LoopStatement:
+        """loop { body } — infinite loop, runs until break."""
+        tok = self._expect(TokenType.LOOP)
+        body = self._parse_block()
+        return LoopStatement(body=body, line=tok.line, column=tok.column)
+
+    def _parse_retry_block(self) -> RetryBlockStatement:
+        """retry(n) { body } — retry body up to n times on exception."""
+        tok = self._expect(TokenType.RETRY)
+        self._expect(TokenType.LPAREN)
+        n_tok = self._expect(TokenType.NUMBER)
+        self._expect(TokenType.RPAREN)
+        body = self._parse_block()
+        return RetryBlockStatement(
+            max_retries=int(float(n_tok.value)),
+            body=body,
+            line=tok.line, column=tok.column,
+        )
 
     def _parse_spawn(self) -> SpawnStatement:
         """spawn <call_expr>"""

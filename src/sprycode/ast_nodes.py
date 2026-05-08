@@ -1061,18 +1061,13 @@ class DebuggerStatement(Node):
 
 @dataclass
 class LoopStatement(Node):
-    """loop { ... } — infinite loop; only exits via break.
-
-    The optional ``label`` field allows labeled break/continue:
-    ``break myLabel`` inside a nested loop will break out of the loop that
-    carries the matching label.
-    """
-    body: "list[Node] | None" = None
-    label: str | None = None
+    """loop { <body> } — infinite loop, broken by `break`."""
+    body: "Block | None" = None
+    label: "str | None" = None
 
 
 @dataclass
 class RetryStatement(Node):
-    """retry <n> { ... } — execute body, retry up to n times on error."""
-    count: int = 1
-    body: "list[Node] | None" = None
+    """retry(<n>) { <body> } — retry body up to n times on exception."""
+    count: "Node | None" = None   # expression yielding an integer
+    body: "Block | None" = None

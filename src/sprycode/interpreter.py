@@ -14276,7 +14276,10 @@ class _CircuitBreakerNamespace:
         self._call_fn = call_fn
 
     def _resolve_args(self, threshold: Any, reset_timeout_ms: Any) -> tuple:
-        """Support both positional args and legacy dict form { threshold:, timeout: }."""
+        """Support both positional args and an options dict such as { threshold:, timeout: }.
+
+        The dict form also accepts ``reset_timeout_ms`` as an alias for ``timeout``.
+        """
         if isinstance(threshold, dict):
             opts = threshold
             th = opts.get("threshold", 3)

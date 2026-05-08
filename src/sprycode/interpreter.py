@@ -14149,7 +14149,7 @@ class SpryChannel:
             "close": self.close,
             "isEmpty": self.isEmpty,
         }
-        if prop in ("size", "buffered"):  # buffered is a legacy alias for size
+        if prop in ("size", "buffered"):  # buffered is an alias for size
             return self.size
         if prop == "closed":
             return self.closed

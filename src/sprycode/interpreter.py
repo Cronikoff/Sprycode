@@ -14326,7 +14326,7 @@ class _QueueNamespace:
         if items is None:
             return q
         if not isinstance(items, list):
-            raise SpryRuntimeError("Queue expects an array of initial items", None)
+            raise SpryRuntimeError("Queue expects a list of initial items", None)
         for item in items:
             q.enqueue(item)
         return q

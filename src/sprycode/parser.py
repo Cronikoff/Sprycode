@@ -129,6 +129,8 @@ from .ast_nodes import (
     DeclarationList,
     ComputedFieldDeclaration,
     DebuggerStatement,
+    LoopStatement,
+    RetryStatement,
 )
 from .lexer import Token, TokenType
 
@@ -255,6 +257,7 @@ class Parser:
         TokenType.TO,            # "to" — commonly used as variable name in ranges
         TokenType.STOP,          # "stop" — commonly used as variable name
         TokenType.FN,            # "fn"/"function" — usable as identifier in some contexts
+        TokenType.ATTEMPTS,      # "attempts" — used in retry N { } attempts N contexts
     })
 
     def _expect_ident(self) -> Token:
@@ -393,8 +396,10 @@ class Parser:
         if tok.type == TokenType.BREAK:
             self._advance()
             # Optional label: break outer  (only if label is on the same line)
+            # Label can be an identifier or a keyword used as a label (e.g. `loop`)
             label = None
-            if (self._check(TokenType.IDENTIFIER) and not self._at_end()
+            if (self._current().type in self._IDENTIFIER_LIKE | {TokenType.LOOP}
+                    and not self._at_end()
                     and self._current().line == tok.line):
                 label = self._advance().value
             return BreakStatement(label=label, line=tok.line, column=tok.column)
@@ -402,7 +407,8 @@ class Parser:
             self._advance()
             # Optional label: continue outer  (only if label is on the same line)
             label = None
-            if (self._check(TokenType.IDENTIFIER) and not self._at_end()
+            if (self._current().type in self._IDENTIFIER_LIKE | {TokenType.LOOP}
+                    and not self._at_end()
                     and self._current().line == tok.line):
                 label = self._advance().value
             return ContinueStatement(label=label, line=tok.line, column=tok.column)
@@ -428,6 +434,18 @@ class Parser:
             return self._parse_match()
         if tok.type == TokenType.REPEAT:
             return self._parse_repeat_until()
+        if tok.type == TokenType.LOOP:
+            # `loop: for ...` — "loop" used as a label name
+            if self._peek().type == TokenType.COLON:
+                label_tok = self._advance()   # consume 'loop'
+                self._advance()               # consume ':'
+                body_stmt = self._parse_statement()
+                return LabeledStatement(label=label_tok.value, body=body_stmt,
+                                        line=label_tok.line, column=label_tok.column)
+            return self._parse_loop()
+        if tok.type == TokenType.RETRY and self._peek().type in (
+                TokenType.NUMBER, TokenType.LBRACE):
+            return self._parse_retry_statement()
         if tok.type == TokenType.ASSERT:
             return self._parse_assert()
         if tok.type == TokenType.IMPORT:
@@ -1621,6 +1639,44 @@ class Parser:
         condition = self._parse_value_expression()
         return RepeatUntilStatement(
             body=body, condition=condition,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_loop(self) -> LoopStatement:
+        """loop { <body> } — infinite loop until break."""
+        tok = self._expect(TokenType.LOOP)
+        body = self._parse_block()
+        return LoopStatement(body=body, line=tok.line, column=tok.column)
+
+    def _parse_retry_statement(self) -> RetryStatement:
+        """retry [<N>] { <body> } [attempts <N>] [catch <name> { <handler> }]
+
+        Accepted forms:
+          retry { ... }                 — 1 attempt (no retry)
+          retry 3 { ... }               — up to 3 attempts
+          retry { ... } attempts 3      — same with postfix count
+          retry 3 { ... } catch e { }   — with error handler
+        """
+        tok = self._expect(TokenType.RETRY)
+        attempts = 3  # sensible default
+        # Optional leading count: retry 3 { ... }
+        if self._check(TokenType.NUMBER):
+            attempts = int(float(self._advance().value))
+        body = self._parse_block()
+        # Optional postfix: attempts <N>
+        if self._check(TokenType.ATTEMPTS):
+            self._advance()
+            attempts = int(float(self._expect(TokenType.NUMBER).value))
+        # Optional catch: catch <name> { ... }
+        catch_name: str | None = None
+        handler: "Block | None" = None
+        if self._check(TokenType.CATCH):
+            self._advance()
+            catch_name = self._advance().value
+            handler = self._parse_block()
+        return RetryStatement(
+            attempts=attempts, body=body,
+            catch_name=catch_name, handler=handler,
             line=tok.line, column=tok.column,
         )
 

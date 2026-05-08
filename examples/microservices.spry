@@ -1,0 +1,200 @@
+// SpryCode Example — Microservice Patterns (Phase 110)
+// Demonstrates: loop, retry, Queue, Channel, CircuitBreaker, throttle, debounce
+
+app MicroserviceDemo version "1.0.0"
+
+// ── loop: infinite loop until break ──────────────────────────────────────
+task pollUntilReady {
+    var attempts = 0
+
+    loop {
+        attempts += 1
+        log info "Polling... attempt " + str(attempts)
+
+        if attempts >= 3 {
+            log info "Service is ready"
+            break
+        }
+    }
+}
+
+// ── retry block ───────────────────────────────────────────────────────────
+task fetchWithRetry {
+    var tries = 0
+
+    retry 3 {
+        tries += 1
+        log info "Attempt " + str(tries)
+        if tries < 3 {
+            throw "Transient error"
+        }
+        log info "Fetch succeeded on attempt " + str(tries)
+    } catch err {
+        log error "All retries exhausted: " + str(err)
+    }
+}
+
+// ── Queue: FIFO message buffer ────────────────────────────────────────────
+task queueDemo {
+    let inbox = new Queue()
+
+    // Producer: enqueue work items
+    inbox.enqueue("order:001")
+    inbox.enqueue("order:002")
+    inbox.enqueue("order:003")
+
+    log info "Inbox size: " + str(inbox.size)
+
+    // Consumer: drain the queue
+    loop {
+        if inbox.isEmpty { break }
+        let item = inbox.dequeue()
+        log info "Processing " + item
+    }
+
+    log info "Queue empty: " + str(inbox.isEmpty)
+}
+
+// ── Channel: typed message passing ───────────────────────────────────────
+task channelDemo {
+    let eventCh = new Channel()
+
+    // Producer service emits events
+    let events = ["user.login", "payment.ok", "order.shipped"]
+    for ev in events {
+        eventCh.send(ev)
+    }
+
+    log info "Channel size: " + str(eventCh.size)
+
+    // Consumer service reads events
+    loop {
+        if eventCh.isEmpty { break }
+        let event = eventCh.receive()
+        log info "Dispatching event: " + event
+    }
+
+    eventCh.close()
+    log info "Channel closed: " + str(eventCh.isClosed)
+}
+
+// ── CircuitBreaker: microservice resilience ───────────────────────────────
+task circuitBreakerDemo {
+    let cb = new CircuitBreaker({ threshold: 2, timeout: 5000 })
+
+    fn callDownstream(payload) {
+        return "response:" + payload
+    }
+
+    // Normal calls
+    let r1 = cb.call(callDownstream, "ping")
+    log info "CB result: " + r1
+    log info "CB state: " + cb.state
+
+    // Simulate failure + auto-open
+    fn broken() { throw "downstream unavailable" }
+
+    try {
+        cb.call(broken)
+    } catch e {
+        log warn "Call 1 failed: " + str(e)
+    }
+    try {
+        cb.call(broken)
+    } catch e {
+        log warn "Call 2 failed: " + str(e)
+    }
+
+    log info "CB state after failures: " + cb.state
+
+    // Reset manually
+    cb.reset()
+    log info "CB state after reset: " + cb.state
+}
+
+// ── throttle: rate-limiting calls ─────────────────────────────────────────
+task throttleDemo {
+    var callCount = 0
+
+    fn sendMetric(label) {
+        callCount += 1
+        log debug "Metric sent: " + label + " (call #" + str(callCount) + ")"
+    }
+
+    // Throttle to one call per 500 ms
+    let throttledSend = throttle(sendMetric, 500)
+
+    throttledSend("cpu.usage")
+    throttledSend("cpu.usage")   // skipped — too soon
+    throttledSend("cpu.usage")   // skipped — too soon
+
+    log info "Total metric calls: " + str(callCount)
+}
+
+// ── debounce: coalescing rapid calls ─────────────────────────────────────
+task debounceDemo {
+    var searchValue = ""
+
+    fn executeSearch(query) {
+        searchValue = query
+        log debug "Searching for: " + query
+    }
+
+    // Debounce to fire only after 300 ms of quiet
+    let debouncedSearch = debounce(executeSearch, 300)
+
+    debouncedSearch("s")
+    debouncedSearch("sp")
+    debouncedSearch("spr")
+    debouncedSearch("spry")   // only this one should fire on flush
+
+    debouncedSearch.flush()
+
+    log info "Final search value: " + searchValue
+}
+
+// ── Full microservice pipeline ────────────────────────────────────────────
+task fullPipeline {
+    let inbox  = new Queue()
+    let outbox = new Channel()
+    let cb     = new CircuitBreaker({ threshold: 5 })
+
+    fn process(item) {
+        return item * 2
+    }
+
+    // Produce
+    let nums = [1, 2, 3, 4, 5]
+    for n in nums {
+        inbox.enqueue(n)
+    }
+
+    // Process via circuit breaker, send to channel
+    loop {
+        if inbox.isEmpty { break }
+        let v = inbox.dequeue()
+        let result = cb.call(process, v)
+        outbox.send(result)
+    }
+
+    // Consume
+    let results = []
+    loop {
+        if outbox.isEmpty { break }
+        results.push(outbox.receive())
+    }
+
+    log info "Pipeline results: " + str(results)
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────
+task main {
+    pollUntilReady()
+    fetchWithRetry()
+    queueDemo()
+    channelDemo()
+    circuitBreakerDemo()
+    throttleDemo()
+    debounceDemo()
+    fullPipeline()
+}

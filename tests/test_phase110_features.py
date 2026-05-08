@@ -166,6 +166,15 @@ class TestLoopStatement:
         """)
         assert val(i, "outer") == 1
 
+    def test_loop_until_alias_matches_repeat_until(self):
+        i = run("""
+            var count = 0
+            loop {
+                count = count + 1
+            } until count >= 3
+        """)
+        assert val(i, "count") == 3
+
 
 # ---------------------------------------------------------------------------
 # retry block
@@ -446,6 +455,15 @@ class TestQueue:
         """)
         assert val(i, "v") == 5
 
+    def test_queue_to_list_alias_and_create_ctor(self):
+        i = run("""
+            let q = Queue.create()
+            q.enqueue(1)
+            q.enqueue(2)
+            let items = q.toList()
+        """)
+        assert val(i, "items") == [1, 2]
+
     def test_queue_size(self):
         i = run('''
 let q = Queue.new()
@@ -626,6 +644,16 @@ class TestChannel:
         """)
         assert val(i, "v") == 42
 
+    def test_channel_create_ctor_and_is_closed_alias(self):
+        i = run("""
+            let ch = Channel.create()
+            let c1 = ch.isClosed
+            ch.close()
+            let c2 = ch.isClosed
+        """)
+        assert val(i, "c1") is False
+        assert val(i, "c2") is True
+
     def test_channel_drain_with_loop(self):
         """Drain a channel into an array using loop."""
         from sprycode.interpreter import SPRY_UNDEFINED
@@ -798,6 +826,13 @@ class TestCircuitBreaker:
             let s = cb.state
         """)
         assert val(i, "s") == "closed"
+
+    def test_circuit_breaker_execute_alias_and_create_ctor(self):
+        i = run("""
+            let cb = CircuitBreaker.create(3, 1000)
+            let v = cb.execute(fn(x) => x + 1, 41)
+        """)
+        assert val(i, "v") == 42
 
     def test_circuit_breaker_passes_successful_calls(self):
         i = run('''

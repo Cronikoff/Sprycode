@@ -14289,6 +14289,9 @@ class SpryQueue:
     def toArray(self) -> list:
         return list(self._data)
 
+    def toList(self) -> list:
+        return self.toArray()
+
     # --- SpryCode property access ---
 
     def _spry_get_prop(self, prop: str) -> Any:
@@ -14298,6 +14301,7 @@ class SpryQueue:
             "peek": self.peek,
             "isEmpty": self.isEmpty,
             "clear": self.clear,
+            "toList": self.toList,
             "toArray": self.toArray,
         }
         if prop == "size":
@@ -14323,9 +14327,12 @@ class _QueueNamespace:
     def __call__(self, *_args: Any) -> SpryQueue:
         return SpryQueue()
 
+    def create(self, *args: Any) -> SpryQueue:
+        return self(*args)
+
     def _spry_get_prop(self, prop: str) -> Any:
-        if prop == "new":
-            return self.new
+        if prop in ("new", "create"):
+            return getattr(self, prop)
         raise SpryRuntimeError(f"Queue.{prop} not found", None)
 
     def __repr__(self) -> str:
@@ -14375,6 +14382,10 @@ class SpryChannel:
         self._closed = True
 
     @property
+    def isClosed(self) -> bool:
+        return self._closed
+
+    @property
     def closed(self) -> bool:
         return self._closed
 
@@ -14395,7 +14406,7 @@ class SpryChannel:
         }
         if prop in ("size", "buffered"):  # buffered is an alias for size
             return self.size
-        if prop == "closed":
+        if prop in ("closed", "isClosed"):
             return self.closed
         if prop in _methods:
             return _methods[prop]
@@ -14418,9 +14429,12 @@ class _ChannelNamespace:
     def __call__(self, capacity: Any = 0) -> SpryChannel:
         return SpryChannel(int(capacity) if capacity else 0)
 
+    def create(self, capacity: Any = 0) -> SpryChannel:
+        return self(capacity)
+
     def _spry_get_prop(self, prop: str) -> Any:
-        if prop == "new":
-            return self.new
+        if prop in ("new", "create"):
+            return getattr(self, prop)
         raise SpryRuntimeError(f"Channel.{prop} not found", None)
 
     def __repr__(self) -> str:
@@ -14487,6 +14501,9 @@ class SpryCircuitBreaker:
                 self._opened_at = time.monotonic()
             raise exc
 
+    def execute(self, fn: Any, *args: Any) -> Any:
+        return self.call(fn, *args)
+
     def reset(self) -> None:
         self._failures = 0
         self._state = _CB_CLOSED
@@ -14504,7 +14521,7 @@ class SpryCircuitBreaker:
             return self.state
         if prop in ("failures", "failureCount"):  # support both property names for compatibility
             return self.failures
-        if prop in ("call", "reset"):
+        if prop in ("call", "execute", "reset"):
             return getattr(self, prop)
         raise SpryRuntimeError(f"CircuitBreaker has no property {prop!r}", None)
 
@@ -14538,9 +14555,12 @@ class _CircuitBreakerNamespace:
     def __call__(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
         return self.new(threshold, reset_timeout_ms)
 
+    def create(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
+        return self.new(threshold, reset_timeout_ms)
+
     def _spry_get_prop(self, prop: str) -> Any:
-        if prop == "new":
-            return self.new
+        if prop in ("new", "create"):
+            return getattr(self, prop)
         raise SpryRuntimeError(f"CircuitBreaker.{prop} not found", None)
 
     def __repr__(self) -> str:

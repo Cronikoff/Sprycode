@@ -397,7 +397,6 @@ KEYWORDS: dict[str, TokenType] = {
     "export": TokenType.EXPORT,
     "for": TokenType.FOR,
     "while": TokenType.WHILE,
-    "loop": TokenType.REPEAT,
     "break": TokenType.BREAK,
     "continue": TokenType.CONTINUE,
     "repeat": TokenType.REPEAT,

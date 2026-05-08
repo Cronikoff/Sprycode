@@ -127,13 +127,16 @@ let v = [before, out, after]
     assert val(i) == [0, 1, 1]
 
 
-def test_loop_helper_until_solved_dict():
+def test_loop_keyword_until_solved_condition():
     i = run(
         """
-let v = loop((i) => {
-    if i >= 2 { return { solved: true, value: i + 1 } }
-    return false
-}, 10)
+var attempts = 0
+var solved = false
+loop {
+    attempts += 1
+    if attempts >= 3 { solved = true }
+} until solved
+let v = attempts
 """
     )
     assert val(i) == 3

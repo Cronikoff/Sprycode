@@ -1464,19 +1464,6 @@ class Interpreter:
                 raise last_error
             return None
 
-        def _loop_until_solved(fn: Any, max_iterations: Any = 1000) -> Any:
-            limit = max(1, int(max_iterations))
-            for idx in range(limit):
-                result = self._call_value(fn, [idx])
-                if isinstance(result, dict):
-                    if bool(result.get("solved")) or bool(result.get("done")):
-                        return result.get("value")
-                    if result.get("ok") is True:
-                        return result.get("value", result.get("result"))
-                elif self._truthy(result):
-                    return result
-            raise SpryRuntimeError(f"loop exceeded maximum iteration limit ({limit})", None)
-
         def _throttle(fn: Any, delay_ms: Any = 0) -> Any:
             return _SpryThrottle(self._call_value, fn, delay_ms)
 
@@ -1484,7 +1471,6 @@ class Interpreter:
             return _SpryDebounce(self._call_value, fn, delay_ms)
 
         env.define("retry", _retry_call)
-        env.define("loop", _loop_until_solved)
         env.define("Queue", _QueueNamespace())
         env.define("Channel", _ChannelNamespace())
         env.define("CircuitBreaker", _CircuitBreakerNamespace(self._call_value))

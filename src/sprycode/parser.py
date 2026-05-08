@@ -426,6 +426,9 @@ class Parser:
             return self._parse_expect()
         if tok.type == TokenType.MATCH:
             return self._parse_match()
+        if (tok.type == TokenType.IDENTIFIER and tok.value == "loop"
+                and self._peek().type == TokenType.LBRACE):
+            return self._parse_loop_until_alias()
         if tok.type == TokenType.REPEAT:
             return self._parse_repeat_until()
         if tok.type == TokenType.ASSERT:
@@ -1616,6 +1619,16 @@ class Parser:
 
     def _parse_repeat_until(self) -> RepeatUntilStatement:
         tok = self._expect(TokenType.REPEAT)
+        body = self._parse_block()
+        self._expect(TokenType.UNTIL)
+        condition = self._parse_value_expression()
+        return RepeatUntilStatement(
+            body=body, condition=condition,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_loop_until_alias(self) -> RepeatUntilStatement:
+        tok = self._expect(TokenType.IDENTIFIER)
         body = self._parse_block()
         self._expect(TokenType.UNTIL)
         condition = self._parse_value_expression()

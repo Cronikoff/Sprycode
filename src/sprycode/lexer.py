@@ -88,6 +88,7 @@ class TokenType(Enum):
     VERIFY = auto()
     PRESERVE = auto()
     RETRY = auto()
+    LOOP = auto()
     MODE = auto()
     COMPARE = auto()
     FILTER = auto()
@@ -402,6 +403,7 @@ KEYWORDS: dict[str, TokenType] = {
     "repeat": TokenType.REPEAT,
     "until": TokenType.UNTIL,
     "do": TokenType.DO,
+    "loop": TokenType.LOOP,
     "finally": TokenType.FINALLY,
     "switch": TokenType.SWITCH,
     "default": TokenType.DEFAULT,

@@ -2147,6 +2147,8 @@ class Interpreter:
             value = self._eval(node.value, env)
             if isinstance(obj, SpryProxy):
                 obj._spry_set_prop(node.property, value)
+            elif hasattr(obj, "_spry_set_prop") and not isinstance(obj, (SpryInstance, dict, SpryClass, SpryFunction)):
+                obj._spry_set_prop(node.property, value)
             elif isinstance(obj, SpryInstance):
                 # Check for setter first
                 setter_key = f"__setter__{node.property}"
@@ -2442,6 +2444,12 @@ class Interpreter:
 
         if isinstance(node, WhileStatement):
             return self._exec_while(node, env)
+
+        if isinstance(node, LoopStatement):
+            return self._exec_loop(node, env)
+
+        if isinstance(node, RetryStatement):
+            return self._exec_retry_statement(node, env)
 
         if isinstance(node, BreakStatement):
             raise BreakSignal(node.label)
@@ -5198,7 +5206,8 @@ class Interpreter:
                              _ReadableStreamController, _TransformStreamDefaultController,
                              _CompressionStreamImpl,
                              SpryBroadcastChannel, SpryMessageChannel, SpryMessagePort,
-                             _NavigatorNamespace, _SubtleCryptoNamespace)):
+                             _NavigatorNamespace, _SubtleCryptoNamespace,
+                             SpryQueue, SpryChannel, SpryCircuitBreaker)):
             return obj._spry_get_prop(prop)
 
         if isinstance(obj, (SpryFunction, SpryLambda, SpryMultiLambda, BoundMethod)):
@@ -6036,24 +6045,6 @@ class Interpreter:
                 raise SpryRuntimeError("While loop exceeded maximum iteration limit (100,000)", node)
         return None
 
-    def _exec_repeat_until(self, node: RepeatUntilStatement, env: Environment) -> Any:
-        max_iterations = 100_000
-        count = 0
-        while True:
-            child = env.child()
-            try:
-                self._exec_block(node.body, child)
-            except BreakSignal:
-                break
-            except ContinueSignal:
-                pass
-            count += 1
-            if count >= max_iterations:
-                raise SpryRuntimeError("Repeat loop exceeded maximum iteration limit (100,000)", node)
-            if self._truthy(self._eval(node.condition, env)):
-                break
-        return None
-
     def _exec_loop(self, node: LoopStatement, env: Environment) -> Any:
         """loop { <body> } — infinite loop, broken by `break`."""
         max_iterations = 1_000_000
@@ -6096,6 +6087,24 @@ class Interpreter:
                 if attempt < max_tries - 1:
                     continue
         raise last_exc
+
+    def _exec_repeat_until(self, node: "RepeatUntilStatement", env: "Environment") -> Any:
+        max_iterations = 100_000
+        count = 0
+        while True:
+            child = env.child()
+            try:
+                self._exec_block(node.body, child)
+            except BreakSignal:
+                break
+            except ContinueSignal:
+                pass
+            count += 1
+            if count >= max_iterations:
+                raise SpryRuntimeError("Repeat loop exceeded maximum iteration limit (100,000)", node)
+            if self._truthy(self._eval(node.condition, env)):
+                break
+        return None
 
     def _exec_match(self, node: MatchStatement, env: Environment) -> Any:
         subject_val = self._eval(node.subject, env)
@@ -13990,7 +13999,7 @@ class _NavigatorNamespace:
     def __repr__(self) -> str:
         return "Navigator"
 
-# ---------------------------------------------------------------------------
+
 # Phase 110: Microservice primitives
 # ---------------------------------------------------------------------------
 
@@ -14394,3 +14403,4 @@ def _make_pipeline(call_fn: Any) -> Any:
         return _run
 
     return _pipeline
+

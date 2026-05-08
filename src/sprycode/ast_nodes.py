@@ -621,17 +621,16 @@ class WhileStatement(Node):
 
 @dataclass
 class LoopStatement(Node):
-    """loop { <body> }  — infinite loop, runs until break"""
-    body: Block | None = None
-    label: str | None = None
+    """loop { <body> } — infinite loop, broken by `break`."""
+    body: "Block | None" = None
+    label: "str | None" = None
 
 
 @dataclass
 class RetryStatement(Node):
-    """retry(<attempts> [, delay: <ms>]) { <body> }  — retry on error"""
-    attempts: Node | None = None
-    delay_ms: Node | None = None   # optional millisecond delay between retries (no-op in sync)
-    body: Block | None = None
+    """retry(<n>) { <body> } — retry body up to n times on exception."""
+    count: "Node | None" = None   # expression yielding an integer
+    body: "Block | None" = None
 
 
 @dataclass

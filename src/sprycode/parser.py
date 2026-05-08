@@ -401,6 +401,10 @@ class Parser:
             return self._parse_for()
         if tok.type == TokenType.WHILE:
             return self._parse_while()
+        # `loop:` labels are handled by the generic labeled-statement path;
+        # only treat `loop` specially when it's not followed by ':'.
+        if tok.type == TokenType.LOOP and self._peek().type != TokenType.COLON:
+            return self._parse_loop()
         if tok.type == TokenType.BREAK:
             self._advance()
             # Optional label: break outer  (only if label is on the same line)
@@ -449,6 +453,8 @@ class Parser:
             self._advance()
             self._match(TokenType.SEMICOLON)
             return DebuggerStatement(line=tok.line, column=tok.column)
+        if tok.type == TokenType.RETRY and self._peek().type == TokenType.LPAREN:
+            return self._parse_retry_statement()
         if tok.type == TokenType.ENUM:
             return self._parse_enum()
         if tok.type == TokenType.CLASS:
@@ -464,7 +470,7 @@ class Parser:
         if tok.type == TokenType.LOOP and self._peek().type != TokenType.COLON:
             return self._parse_loop()
         if tok.type == TokenType.RETRY and self._peek().type == TokenType.LPAREN:
-            return self._parse_retry()
+            return self._parse_retry_statement()
         if tok.type == TokenType.SPAWN:
             return self._parse_spawn()
         if tok.type == TokenType.WEBSOCKET:
@@ -1629,6 +1635,12 @@ class Parser:
             line=tok.line, column=tok.column,
         )
 
+    def _parse_loop(self) -> LoopStatement:
+        """loop { <body> } — infinite loop, broken by `break`."""
+        tok = self._expect(TokenType.LOOP)
+        body = self._parse_block()
+        return LoopStatement(body=body, line=tok.line, column=tok.column)
+
     def _parse_repeat_until(self) -> RepeatUntilStatement:
         tok = self._expect(TokenType.REPEAT)
         body = self._parse_block()
@@ -1638,6 +1650,15 @@ class Parser:
             body=body, condition=condition,
             line=tok.line, column=tok.column,
         )
+
+    def _parse_retry_statement(self) -> RetryStatement:
+        """retry(<count>) { <body> } — retry block up to n times on exception."""
+        tok = self._expect(TokenType.RETRY)
+        self._expect(TokenType.LPAREN)
+        count_expr = self._parse_value_expression()
+        self._expect(TokenType.RPAREN)
+        body = self._parse_block()
+        return RetryStatement(count=count_expr, body=body, line=tok.line, column=tok.column)
 
     def _parse_match(self) -> MatchStatement:
         tok = self._expect(TokenType.MATCH)
@@ -2466,39 +2487,6 @@ class Parser:
         condition = self._parse_expression()
         return DoWhileStatement(body=body, condition=condition,
                                 line=tok.line, column=tok.column)
-
-    def _parse_loop(self) -> LoopStatement:
-        """loop { <body> }  — infinite loop until break"""
-        tok = self._expect(TokenType.LOOP)
-        body = self._parse_block()
-        return LoopStatement(body=body, line=tok.line, column=tok.column)
-
-    def _parse_retry(self) -> RetryStatement:
-        """retry(<attempts> [, delay: <ms>]) { <body> }"""
-        tok = self._expect(TokenType.RETRY)
-        self._expect(TokenType.LPAREN)
-        attempts = self._parse_expression()
-        delay_ms = None
-        if self._match(TokenType.COMMA):
-            # optional named arg: delay: <expr>  or  { delay: <expr> }
-            if self._check(TokenType.LBRACE):
-                # retry(3, { delay: 100 })
-                self._advance()
-                while not self._check(TokenType.RBRACE) and not self._at_end():
-                    key_tok = self._expect_ident()
-                    self._expect(TokenType.COLON)
-                    val_expr = self._parse_expression()
-                    if key_tok.value == "delay":
-                        delay_ms = val_expr
-                    self._match(TokenType.COMMA)
-                self._expect(TokenType.RBRACE)
-            else:
-                # retry(3, 100)  — positional delay
-                delay_ms = self._parse_expression()
-        self._expect(TokenType.RPAREN)
-        body = self._parse_block()
-        return RetryStatement(attempts=attempts, delay_ms=delay_ms, body=body,
-                              line=tok.line, column=tok.column)
 
     def _parse_spawn(self) -> SpawnStatement:
         """spawn <call_expr>"""

@@ -260,6 +260,14 @@ class Parser:
         TokenType.LOOP,          # "loop" — usable as identifier/property name
     })
 
+    # Token types that are also valid loop/statement label names.
+    # Must be kept in sync with any keyword added via _IDENTIFIER_LIKE that
+    # can be used as a label in `label: for/while/loop { }` syntax.
+    _LABEL_TOKEN_TYPES = frozenset({
+        TokenType.IDENTIFIER,
+        TokenType.LOOP,
+    })
+
     def _expect_ident(self) -> Token:
         """Expect any token that may serve as an identifier (variable/parameter name)."""
         tok = self._current()
@@ -397,8 +405,7 @@ class Parser:
             self._advance()
             # Optional label: break outer  (only if label is on the same line)
             label = None
-            _label_like = {TokenType.IDENTIFIER, TokenType.LOOP}
-            if (self._current().type in _label_like and not self._at_end()
+            if (self._current().type in self._LABEL_TOKEN_TYPES and not self._at_end()
                     and self._current().line == tok.line):
                 label = self._advance().value
             return BreakStatement(label=label, line=tok.line, column=tok.column)
@@ -406,8 +413,7 @@ class Parser:
             self._advance()
             # Optional label: continue outer  (only if label is on the same line)
             label = None
-            _label_like = {TokenType.IDENTIFIER, TokenType.LOOP}
-            if (self._current().type in _label_like and not self._at_end()
+            if (self._current().type in self._LABEL_TOKEN_TYPES and not self._at_end()
                     and self._current().line == tok.line):
                 label = self._advance().value
             return ContinueStatement(label=label, line=tok.line, column=tok.column)
@@ -483,8 +489,7 @@ class Parser:
 
         # Labeled statement: label: for/while/do {...}
         # Detect: IDENTIFIER (or keyword-used-as-label) followed immediately by COLON
-        _label_tokens = {TokenType.IDENTIFIER, TokenType.LOOP}  # keywords that can also be labels
-        if tok.type in _label_tokens and self._peek().type == TokenType.COLON:
+        if tok.type in self._LABEL_TOKEN_TYPES and self._peek().type == TokenType.COLON:
             label_tok = self._advance()  # consume identifier/label-keyword
             self._advance()              # consume ':'
             body_stmt = self._parse_statement()

@@ -14318,7 +14318,7 @@ class SpryDebouncedFn:
         self._delay_ms = float(delay_ms)
         self._call_fn = call_fn
         self._last_called: float = -float("inf")
-        self._pending_args: "list | None" = None  # None = no pending call
+        self._pending_args: list | None = None  # None = no pending call
         self._last_result: Any = SPRY_UNDEFINED
 
     def _invoke(self, args: list) -> Any:

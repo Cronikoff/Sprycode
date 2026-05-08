@@ -1059,16 +1059,15 @@ class DebuggerStatement(Node):
     """debugger; — breakpoint hint, no-op at runtime unless debug mode is active."""
 
 
-
 @dataclass
 class LoopStatement(Node):
-    """loop { ... } — infinite loop; must be exited with break."""
+    """loop { <body> } — infinite loop, broken by `break`."""
     body: "Block | None" = None
     label: "str | None" = None
 
 
 @dataclass
-class RetryBlock(Node):
-    """retry <N> { ... } — execute body; on exception retry up to N times total."""
-    count: int = 1
+class RetryStatement(Node):
+    """retry(<n>) { <body> } — retry body up to n times on exception."""
+    count: "Node | None" = None   # expression yielding an integer
     body: "Block | None" = None

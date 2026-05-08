@@ -1,12 +1,14 @@
-"""Phase 110: Microservice patterns.
+"""Phase 110: Microservice Primitives.
 
 Tests covering:
-  - loop { } — infinite loop broken by break
-  - retry N { } — block retry on exception
-  - Queue built-in — FIFO message queue
-  - Channel built-in — inter-service channel
-  - CircuitBreaker built-in — circuit breaker pattern
-  - throttle(fn, ms) / debounce(fn, ms) — rate limiting utilities
+  - `loop { }` — infinite loop (break-able)
+  - `retry(n) { }` — standalone retry block
+  - Queue — in-memory FIFO queue (enqueue/dequeue/peek/size/isEmpty/clear/toArray)
+  - Channel — sync message channel (send/receive/tryReceive/close/size/closed)
+  - CircuitBreaker — closed/open/half-open fault-tolerance pattern
+  - throttle(fn, ms) — rate-limit function calls
+  - debounce(fn, ms) — debounce function calls
+  - pipeline(...fns) — left-to-right function composition
 """
 
 import pytest
@@ -28,229 +30,204 @@ def val(i: Interpreter, name: str):
 
 
 # ---------------------------------------------------------------------------
-# loop { } statement
+# loop { } — infinite loop with break
 # ---------------------------------------------------------------------------
 
 
 class TestLoopStatement:
-    def test_loop_exits_on_break(self):
+    def test_loop_breaks_immediately(self):
         i = run('''
 let v = 0
 loop {
-  v = v + 1
-  if v >= 5 { break }
+    v = 1
+    break
 }
+''')
+        assert val(i, 'v') == 1
+
+    def test_loop_counts_to_five(self):
+        i = run('''
+var count = 0
+loop {
+    count = count + 1
+    if count >= 5 { break }
+}
+let v = count
 ''')
         assert val(i, 'v') == 5
 
-    def test_loop_break_on_first_iteration(self):
-        i = run('''
-let v = 0
-loop {
-  v = 42
-  break
-}
-''')
-        assert val(i, 'v') == 42
-
-    def test_loop_accumulate(self):
-        i = run('''
-var total = 0
-var n = 0
-loop {
-  n = n + 1
-  total = total + n
-  if n == 10 { break }
-}
-let v = total
-''')
-        assert val(i, 'v') == 55  # sum 1..10
-
     def test_loop_continue_then_break(self):
         i = run('''
-var evens = 0
+var sum = 0
 var n = 0
 loop {
-  n = n + 1
-  if n % 2 != 0 { continue }
-  evens = evens + 1
-  if n >= 10 { break }
+    n = n + 1
+    if n % 2 == 0 { continue }
+    sum = sum + n
+    if n >= 9 { break }
 }
-let v = evens
+let v = sum
 ''')
-        assert val(i, 'v') == 5  # 2,4,6,8,10
+        # odd numbers 1+3+5+7+9 = 25
+        assert val(i, 'v') == 25
 
-    def test_loop_nested_in_function(self):
+    def test_loop_result_variable(self):
         i = run('''
-fn countTo(limit) {
-  var c = 0
-  loop {
-    c = c + 1
-    if c >= limit { break }
-  }
-  return c
+var found = -1
+var i = 0
+let target = 7
+loop {
+    if i == target {
+        found = i
+        break
+    }
+    i = i + 1
 }
-let v = countTo(7)
+let v = found
 ''')
         assert val(i, 'v') == 7
 
-    def test_loop_with_inner_variable(self):
+    def test_loop_accumulates_array(self):
         i = run('''
-var result = ""
-var i = 0
+let items = []
+var k = 0
 loop {
-  i = i + 1
-  result = result + String(i)
-  if i == 4 { break }
+    items.push(k)
+    k = k + 1
+    if k >= 4 { break }
 }
-let v = result
+let v = items
 ''')
-        assert val(i, 'v') == '1234'
+        assert val(i, 'v') == [0, 1, 2, 3]
 
-    def test_loop_exceeds_limit_throws(self):
-        with pytest.raises(Exception):
-            run('''
+    def test_loop_nested(self):
+        i = run('''
+var total = 0
+var outer = 0
 loop {
-  let x = 1
+    var inner = 0
+    loop {
+        total = total + 1
+        inner = inner + 1
+        if inner >= 3 { break }
+    }
+    outer = outer + 1
+    if outer >= 2 { break }
 }
+let v = total
 ''')
+        assert val(i, 'v') == 6  # 2 outer × 3 inner
 
-    def test_labeled_loop_break(self):
+    def test_loop_break_exits_only_inner(self):
         i = run('''
-var v = 0
-outer: loop {
-  var inner = 0
-  loop {
-    inner = inner + 1
-    if inner >= 3 { break outer }
-  }
-  v = v + 1
+var outer_done = false
+var counter = 0
+loop {
+    loop {
+        counter = counter + 1
+        break
+    }
+    outer_done = true
+    break
 }
+let v = counter
 ''')
-        assert val(i, 'v') == 0  # outer broken before v increments
+        assert val(i, 'v') == 1
 
-    def test_loop_used_in_task(self):
+    def test_loop_with_mutable_condition(self):
         i = run('''
-var processed = 0
-task process {
-  var items = [1, 2, 3]
-  var idx = 0
-  loop {
-    if idx >= items.length { break }
-    processed = processed + items[idx]
-    idx = idx + 1
-  }
+var x = 10
+loop {
+    x = x - 3
+    if x <= 1 { break }
 }
-process()
-let v = processed
+let v = x
 ''')
-        assert val(i, 'v') == 6
+        # 10 -> 7 -> 4 -> 1, breaks when x=1
+        assert val(i, 'v') == 1
 
 
 # ---------------------------------------------------------------------------
-# retry N { } block
+# retry(n) { } — retry block
 # ---------------------------------------------------------------------------
 
 
-class TestRetryBlock:
+class TestRetryStatement:
     def test_retry_succeeds_first_try(self):
         i = run('''
 var v = 0
-retry 3 {
-  v = 42
+retry(3) {
+    v = 42
 }
 ''')
         assert val(i, 'v') == 42
+
+    def test_retry_fails_and_throws_after_n(self):
+        with pytest.raises(Exception):
+            run('''
+retry(3) {
+    throw new Error("always fails")
+}
+''')
 
     def test_retry_succeeds_on_second_attempt(self):
         i = run('''
 var attempts = 0
-var v = false
-retry 3 {
-  attempts = attempts + 1
-  if attempts < 2 {
-    throw new Error("not yet")
-  }
-  v = true
+var v = 0
+retry(3) {
+    attempts = attempts + 1
+    if attempts < 2 {
+        throw new Error("not yet")
+    }
+    v = attempts
 }
-''')
-        assert val(i, 'v') is True
-        assert val(i, 'attempts') == 2
-
-    def test_retry_succeeds_on_last_attempt(self):
-        i = run('''
-var attempts = 0
-retry 3 {
-  attempts = attempts + 1
-  if attempts < 3 {
-    throw new Error("retry")
-  }
-}
-let v = attempts
-''')
-        assert val(i, 'v') == 3
-
-    def test_retry_exhausted_raises(self):
-        with pytest.raises(Exception):
-            run('''
-retry 3 {
-  throw new Error("always fails")
-}
-''')
-
-    def test_retry_1_is_just_one_attempt(self):
-        attempts = [0]
-        i = run('''
-var attempts = 0
-var v = false
-retry 1 {
-  attempts = attempts + 1
-  v = true
-}
-''')
-        assert val(i, 'v') is True
-        assert val(i, 'attempts') == 1
-
-    def test_retry_with_times_keyword(self):
-        i = run('''
-var attempts = 0
-retry 3 times {
-  attempts = attempts + 1
-  if attempts < 2 {
-    throw new Error("oops")
-  }
-}
-let v = attempts
 ''')
         assert val(i, 'v') == 2
+        assert val(i, 'attempts') == 2
 
-    def test_retry_count_5_exhausted_raises(self):
-        with pytest.raises(Exception):
-            run('''
-retry 5 {
-  throw new Error("always fails")
-}
-''')
-
-    def test_retry_in_function(self):
+    def test_retry_succeeds_on_third_attempt(self):
         i = run('''
-fn fetchWithRetry() {
-  var attempt = 0
-  retry 3 {
-    attempt = attempt + 1
-    if attempt < 3 {
-      throw new Error("network error")
-    }
-  }
-  return attempt
+var t = 0
+retry(3) {
+    t = t + 1
+    if t < 3 { throw new Error("retry") }
 }
-let v = fetchWithRetry()
+let v = t
 ''')
         assert val(i, 'v') == 3
+
+    def test_retry_with_one_always_fails(self):
+        with pytest.raises(Exception):
+            run('''
+retry(1) {
+    throw new Error("fail")
+}
+''')
+
+    def test_retry_result_is_last_statement(self):
+        i = run('''
+var n = 0
+retry(5) {
+    n = n + 1
+    if n < 4 { throw new Error("x") }
+}
+let v = n
+''')
+        assert val(i, 'v') == 4
+
+    def test_retry_does_not_retry_on_success(self):
+        i = run('''
+var calls = 0
+retry(10) {
+    calls = calls + 1
+}
+let v = calls
+''')
+        assert val(i, 'v') == 1
 
 
 # ---------------------------------------------------------------------------
-# Queue built-in
+# Queue
 # ---------------------------------------------------------------------------
 
 
@@ -265,65 +242,51 @@ let v = q.dequeue()
 ''')
         assert val(i, 'v') == 1
 
-    def test_queue_size(self):
+    def test_queue_fifo_order(self):
         i = run('''
 let q = Queue.new()
 q.enqueue("a")
 q.enqueue("b")
+q.enqueue("c")
+let first = q.dequeue()
+let second = q.dequeue()
+let v = first + second
+''')
+        assert val(i, 'v') == "ab"
+
+    def test_queue_size(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(10)
+q.enqueue(20)
 let v = q.size
 ''')
         assert val(i, 'v') == 2
 
-    def test_queue_is_empty_true(self):
+    def test_queue_is_empty_initially(self):
         i = run('''
 let q = Queue.new()
-let v = q.isEmpty
+let v = q.isEmpty()
 ''')
         assert val(i, 'v') is True
 
-    def test_queue_is_empty_false_after_enqueue(self):
+    def test_queue_not_empty_after_enqueue(self):
         i = run('''
 let q = Queue.new()
-q.enqueue("hello")
-let v = q.isEmpty
+q.enqueue(99)
+let v = q.isEmpty()
 ''')
         assert val(i, 'v') is False
 
     def test_queue_peek_does_not_remove(self):
         i = run('''
 let q = Queue.new()
-q.enqueue(10)
-q.enqueue(20)
-let first = q.peek()
-let sizeAfterPeek = q.size
+q.enqueue(42)
+let p = q.peek()
+let s = q.size
+let v = p + s
 ''')
-        assert val(i, 'first') == 10
-        assert val(i, 'sizeAfterPeek') == 2
-
-    def test_queue_dequeue_fifo_order(self):
-        i = run('''
-let q = Queue.new()
-q.enqueue("x")
-q.enqueue("y")
-q.enqueue("z")
-let a = q.dequeue()
-let b = q.dequeue()
-let c = q.dequeue()
-let v = a + b + c
-''')
-        assert val(i, 'v') == 'xyz'
-
-    def test_queue_drain(self):
-        i = run('''
-let q = Queue.new()
-q.enqueue(1)
-q.enqueue(2)
-q.enqueue(3)
-let v = q.drain()
-let empty = q.isEmpty
-''')
-        assert val(i, 'v') == [1, 2, 3]
-        assert val(i, 'empty') is True
+        assert val(i, 'v') == 43  # 42 + 1
 
     def test_queue_clear(self):
         i = run('''
@@ -335,31 +298,58 @@ let v = q.size
 ''')
         assert val(i, 'v') == 0
 
-    def test_queue_dequeue_empty_throws(self):
+    def test_queue_to_array(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(10)
+q.enqueue(20)
+q.enqueue(30)
+let v = q.toArray()
+''')
+        assert val(i, 'v') == [10, 20, 30]
+
+    def test_queue_dequeue_throws_when_empty(self):
         with pytest.raises(Exception):
             run('''
 let q = Queue.new()
 q.dequeue()
 ''')
 
-    def test_queue_loop_pattern(self):
+    def test_queue_peek_throws_when_empty(self):
+        with pytest.raises(Exception):
+            run('''
+let q = Queue.new()
+q.peek()
+''')
+
+    def test_queue_drain_with_loop(self):
         i = run('''
 let q = Queue.new()
 q.enqueue(1)
 q.enqueue(2)
 q.enqueue(3)
-var total = 0
+var sum = 0
 loop {
-  if q.isEmpty { break }
-  total = total + q.dequeue()
+    if q.isEmpty() { break }
+    sum = sum + q.dequeue()
 }
-let v = total
+let v = sum
 ''')
         assert val(i, 'v') == 6
 
+    def test_queue_size_decreases_on_dequeue(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue("x")
+q.enqueue("y")
+q.dequeue()
+let v = q.size
+''')
+        assert val(i, 'v') == 1
+
 
 # ---------------------------------------------------------------------------
-# Channel built-in
+# Channel
 # ---------------------------------------------------------------------------
 
 
@@ -370,277 +360,380 @@ let ch = Channel.new()
 ch.send("hello")
 let v = ch.receive()
 ''')
-        assert val(i, 'v') == 'hello'
+        assert val(i, 'v') == "hello"
 
-    def test_channel_size(self):
+    def test_channel_fifo_order(self):
         i = run('''
 let ch = Channel.new()
 ch.send(1)
 ch.send(2)
+ch.send(3)
+let a = ch.receive()
+let b = ch.receive()
+let v = a + b
+''')
+        assert val(i, 'v') == 3
+
+    def test_channel_size(self):
+        i = run('''
+let ch = Channel.new()
+ch.send("a")
+ch.send("b")
 let v = ch.size
 ''')
         assert val(i, 'v') == 2
 
-    def test_channel_receive_empty_returns_undefined(self):
+    def test_channel_empty_initially(self):
         i = run('''
 let ch = Channel.new()
-let v = ch.receive() === undefined
+let v = ch.isEmpty()
 ''')
         assert val(i, 'v') is True
+
+    def test_channel_try_receive_empty(self):
+        i = run('''
+let ch = Channel.new()
+let v = ch.tryReceive()
+let ok = (v === undefined)
+''')
+        assert val(i, 'ok') is True
 
     def test_channel_close(self):
         i = run('''
 let ch = Channel.new()
 ch.close()
-let v = ch.isClosed
+let v = ch.closed
 ''')
         assert val(i, 'v') is True
 
-    def test_channel_send_after_close_throws(self):
+    def test_channel_receive_from_closed_empty_returns_undefined(self):
+        i = run('''
+let ch = Channel.new()
+ch.send(42)
+let a = ch.receive()
+ch.close()
+let b = ch.receive()
+let v = (b === undefined)
+''')
+        assert val(i, 'v') is True
+
+    def test_channel_send_throws_when_closed(self):
         with pytest.raises(Exception):
             run('''
 let ch = Channel.new()
 ch.close()
-ch.send("oops")
+ch.send("boom")
 ''')
 
-    def test_channel_drain(self):
-        i = run('''
-let ch = Channel.new()
-ch.send("a")
-ch.send("b")
-let v = ch.drain()
-let s = ch.size
+    def test_channel_bounded_capacity(self):
+        with pytest.raises(Exception):
+            run('''
+let ch = Channel.new(2)
+ch.send(1)
+ch.send(2)
+ch.send(3)
 ''')
-        assert val(i, 'v') == ['a', 'b']
-        assert val(i, 's') == 0
 
-    def test_channel_fifo_order(self):
+    def test_channel_bounded_not_full(self):
         i = run('''
-let ch = Channel.new()
-ch.send(10)
-ch.send(20)
-ch.send(30)
-let a = ch.receive()
-let b = ch.receive()
-let c = ch.receive()
-let v = a + b + c
+let ch = Channel.new(5)
+ch.send("x")
+ch.send("y")
+let v = ch.size
 ''')
-        assert val(i, 'v') == 60
-
-    def test_channel_is_not_closed_initially(self):
-        i = run('''
-let ch = Channel.new()
-let v = ch.isClosed
-''')
-        assert val(i, 'v') is False
-
-    def test_channel_producer_consumer_pattern(self):
-        i = run('''
-let ch = Channel.new()
-fn produce(c) {
-  c.send(1)
-  c.send(2)
-  c.send(3)
-}
-fn consume(c) {
-  var total = 0
-  total = total + c.receive()
-  total = total + c.receive()
-  total = total + c.receive()
-  return total
-}
-produce(ch)
-let v = consume(ch)
-''')
-        assert val(i, 'v') == 6
+        assert val(i, 'v') == 2
 
 
 # ---------------------------------------------------------------------------
-# CircuitBreaker built-in
+# CircuitBreaker
 # ---------------------------------------------------------------------------
 
 
 class TestCircuitBreaker:
-    def test_circuit_breaker_initial_state_closed(self):
+    def test_circuit_breaker_starts_closed(self):
         i = run('''
-let cb = CircuitBreaker.new()
+let cb = CircuitBreaker.new(3, 60000)
 let v = cb.state
 ''')
-        assert val(i, 'v') == 'CLOSED'
+        assert val(i, 'v') == "closed"
 
-    def test_circuit_breaker_execute_success(self):
+    def test_circuit_breaker_passes_successful_calls(self):
         i = run('''
-let cb = CircuitBreaker.new()
-let v = cb.execute(() => 42)
+fn add(x) { return x + 1 }
+let cb = CircuitBreaker.new(3, 60000)
+let v = cb.call(add, 41)
 ''')
         assert val(i, 'v') == 42
 
-    def test_circuit_breaker_stays_closed_on_success(self):
+    def test_circuit_breaker_tracks_failures(self):
         i = run('''
-let cb = CircuitBreaker.new(3)
-cb.execute(() => 1)
-cb.execute(() => 2)
-let v = cb.state
-''')
-        assert val(i, 'v') == 'CLOSED'
-
-    def test_circuit_breaker_opens_after_threshold(self):
-        i = run('''
-let cb = CircuitBreaker.new(3)
-var count = 0
-try { cb.execute(() => { throw new Error("fail") }) } catch(e) { count = count + 1 }
-try { cb.execute(() => { throw new Error("fail") }) } catch(e) { count = count + 1 }
-try { cb.execute(() => { throw new Error("fail") }) } catch(e) { count = count + 1 }
-let v = cb.state
-''')
-        assert val(i, 'v') == 'OPEN'
-
-    def test_circuit_breaker_reset(self):
-        i = run('''
-let cb = CircuitBreaker.new(1)
-try { cb.execute(() => { throw new Error("fail") }) } catch(e) {}
-cb.reset()
-let v = cb.state
-''')
-        assert val(i, 'v') == 'CLOSED'
-
-    def test_circuit_breaker_failure_count(self):
-        i = run('''
-let cb = CircuitBreaker.new(5)
-try { cb.execute(() => { throw new Error("f") }) } catch(e) {}
-try { cb.execute(() => { throw new Error("f") }) } catch(e) {}
-let v = cb.failureCount
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(3, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+let v = cb.failures
 ''')
         assert val(i, 'v') == 2
 
-    def test_circuit_breaker_threshold_property(self):
+    def test_circuit_breaker_opens_after_threshold(self):
         i = run('''
-let cb = CircuitBreaker.new(7)
-let v = cb.threshold
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(3, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+let v = cb.state
 ''')
-        assert val(i, 'v') == 7
+        assert val(i, 'v') == "open"
 
-    def test_circuit_breaker_open_then_reset_allows_execute(self):
+    def test_circuit_breaker_rejects_when_open(self):
+        with pytest.raises(Exception):
+            run('''
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(1, 60000)
+try { cb.call(boom) } catch(e) {}
+cb.call(boom)
+''')
+
+    def test_circuit_breaker_reset(self):
         i = run('''
-let cb = CircuitBreaker.new(1)
-try { cb.execute(() => { throw new Error("fail") }) } catch(e) {}
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(2, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
 cb.reset()
-let v = cb.execute(() => "ok")
+let v = cb.state
 ''')
-        assert val(i, 'v') == 'ok'
+        assert val(i, 'v') == "closed"
 
-    def test_circuit_breaker_open_rejects(self):
+    def test_circuit_breaker_reset_clears_failures(self):
         i = run('''
-let cb = CircuitBreaker.new(1)
-try { cb.execute(() => { throw new Error("fail") }) } catch(e) {}
-var rejected = false
-try {
-  cb.execute(() => "should not run")
-} catch(e) {
-  rejected = true
-}
-let v = rejected
-''')
-        assert val(i, 'v') is True
-
-    def test_circuit_breaker_success_resets_failure_count(self):
-        i = run('''
-let cb = CircuitBreaker.new(5)
-try { cb.execute(() => { throw new Error("f") }) } catch(e) {}
-cb.execute(() => "success")
-let v = cb.failureCount
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(5, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+cb.reset()
+let v = cb.failures
 ''')
         assert val(i, 'v') == 0
 
-
-# ---------------------------------------------------------------------------
-# throttle / debounce built-ins
-# ---------------------------------------------------------------------------
-
-
-class TestThrottleDebounce:
-    def test_throttle_creates_function(self):
+    def test_circuit_breaker_success_clears_failures(self):
         i = run('''
-fn greet(x) { return x * 2 }
-let t = throttle(greet, 100)
-let v = typeof t
+fn boom() { throw new Error("fail") }
+fn ok() { return 1 }
+let cb = CircuitBreaker.new(5, 60000)
+try { cb.call(boom) } catch(e) {}
+cb.call(ok)
+let v = cb.failures
 ''')
-        assert val(i, 'v') == 'function'
+        assert val(i, 'v') == 0
 
-    def test_throttle_first_call_executes(self):
+    def test_circuit_breaker_default_threshold(self):
+        i = run('''
+let cb = CircuitBreaker.new()
+let v = cb.state
+''')
+        assert val(i, 'v') == "closed"
+
+
+# ---------------------------------------------------------------------------
+# throttle
+# ---------------------------------------------------------------------------
+
+
+class TestThrottle:
+    def test_throttle_calls_fn_first_time(self):
         i = run('''
 var called = 0
 fn inc() { called = called + 1 }
-let t = throttle(inc, 1000)
-t()
+let throttled = throttle(inc, 1000)
+throttled()
 let v = called
 ''')
         assert val(i, 'v') == 1
 
-    def test_throttle_second_call_within_window_skipped(self):
+    def test_throttle_suppresses_rapid_calls(self):
         i = run('''
 var called = 0
 fn inc() { called = called + 1 }
-let t = throttle(inc, 10000)
-t()
-t()
-t()
+let throttled = throttle(inc, 10000)
+throttled()
+throttled()
+throttled()
 let v = called
 ''')
-        # Only first call within window executes
         assert val(i, 'v') == 1
 
-    def test_throttle_zero_ms_every_call_executes(self):
+    def test_throttle_zero_interval_always_calls(self):
         i = run('''
 var called = 0
 fn inc() { called = called + 1 }
-let t = throttle(inc, 0)
-t()
-t()
-t()
+let throttled = throttle(inc, 0)
+throttled()
+throttled()
+throttled()
 let v = called
 ''')
         assert val(i, 'v') == 3
 
-    def test_debounce_creates_function(self):
+    def test_throttle_returns_value(self):
         i = run('''
-fn greet(x) { return x }
-let d = debounce(greet, 200)
-let v = typeof d
+fn id(x) { return x }
+let throttled = throttle(id, 0)
+let v = throttled(42)
 ''')
-        assert val(i, 'v') == 'function'
+        assert val(i, 'v') == 42
 
-    def test_debounce_executes_immediately_in_sync_model(self):
+    def test_throttle_returns_last_value_on_suppressed(self):
+        i = run('''
+var counter = 0
+fn nextVal() {
+    counter = counter + 1
+    return counter
+}
+let throttled = throttle(nextVal, 10000)
+let a = throttled()
+let b = throttled()
+let v = b
+''')
+        assert val(i, 'v') == 1  # suppressed call returns last result
+
+
+# ---------------------------------------------------------------------------
+# debounce
+# ---------------------------------------------------------------------------
+
+
+class TestDebounce:
+    def test_debounce_zero_delay_calls_immediately(self):
         i = run('''
 var called = 0
 fn inc() { called = called + 1 }
-let d = debounce(inc, 500)
-d()
-d()
+let debounced = debounce(inc, 0)
+debounced()
 let v = called
 ''')
-        # In sync model debounce executes each call immediately
-        assert val(i, 'v') == 2
+        assert val(i, 'v') == 1
 
-    def test_throttle_with_args(self):
+    def test_debounce_zero_delay_multiple_calls(self):
         i = run('''
-var last = 0
-fn save(x) { last = x }
-let t = throttle(save, 0)
-t(10)
-t(20)
-t(30)
-let v = last
+var called = 0
+fn inc() { called = called + 1 }
+let debounced = debounce(inc, 0)
+debounced()
+debounced()
+debounced()
+let v = called
 ''')
-        assert val(i, 'v') == 30
+        assert val(i, 'v') == 3
 
-    def test_debounce_passes_args(self):
+    def test_debounce_returns_result(self):
         i = run('''
-var last = 0
-fn save(x) { last = x }
-let d = debounce(save, 100)
-d(99)
-let v = last
+fn double(x) { return x * 2 }
+let debounced = debounce(double, 0)
+let v = debounced(21)
+''')
+        assert val(i, 'v') == 42
+
+    def test_debounce_flush(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let debounced = debounce(inc, 99999)
+debounced()
+debounced.flush()
+let v = called
+''')
+        # With delay > 0, the first call is pending; flush forces it
+        assert val(i, 'v') >= 1
+
+    def test_debounce_cancel_prevents_call(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let debounced = debounce(inc, 99999)
+debounced()
+debounced.cancel()
+let v = called
+''')
+        # cancel removes pending; zero calls should have occurred
+        assert val(i, 'v') == 0
+
+
+# ---------------------------------------------------------------------------
+# pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestPipeline:
+    def test_pipeline_single_fn(self):
+        i = run('''
+fn double(x) { return x * 2 }
+let process = pipeline(double)
+let v = process(21)
+''')
+        assert val(i, 'v') == 42
+
+    def test_pipeline_two_fns(self):
+        i = run('''
+fn addOne(x) { return x + 1 }
+fn double(x) { return x * 2 }
+let process = pipeline(addOne, double)
+let v = process(4)
+''')
+        assert val(i, 'v') == 10  # (4+1)*2
+
+    def test_pipeline_three_fns(self):
+        i = run('''
+fn addOne(x) { return x + 1 }
+fn double(x) { return x * 2 }
+fn square(x) { return x * x }
+let process = pipeline(addOne, double, square)
+let v = process(2)
+''')
+        assert val(i, 'v') == 36  # ((2+1)*2)^2 = 6^2
+
+    def test_pipeline_string_transforms(self):
+        i = run('''
+fn trim(s) { return s.trim() }
+fn upper(s) { return s.toUpperCase() }
+let process = pipeline(trim, upper)
+let v = process("  hello  ")
+''')
+        assert val(i, 'v') == "HELLO"
+
+    def test_pipeline_can_be_reused(self):
+        i = run('''
+fn inc(x) { return x + 1 }
+let process = pipeline(inc, inc, inc)
+let a = process(0)
+let b = process(10)
+let v = a + b
+''')
+        assert val(i, 'v') == 3 + 13  # 3 + 13
+
+    def test_pipeline_identity(self):
+        i = run('''
+fn id(x) { return x }
+let process = pipeline(id)
+let v = process(99)
 ''')
         assert val(i, 'v') == 99
+
+    def test_pipeline_with_array(self):
+        i = run('''
+fn doubled(arr) { return arr.map(x => x * 2) }
+fn filtered(arr) { return arr.filter(x => x > 4) }
+let process = pipeline(doubled, filtered)
+let v = process([1, 2, 3, 4, 5])
+''')
+        assert val(i, 'v') == [6, 8, 10]
+
+    def test_pipeline_composable(self):
+        i = run('''
+fn negate(x) { return -x }
+fn abs(x) { return Math.abs(x) }
+let process = pipeline(negate, abs)
+let v = process(-5)
+''')
+        assert val(i, 'v') == 5

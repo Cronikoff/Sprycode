@@ -1470,9 +1470,11 @@ class Interpreter:
         def _micromanage(step_fn: Any, solved_fn: Any, max_loops: Any = 1000) -> Any:
             """Loop microservice steps until solved_fn returns truthy or max_loops is reached."""
             try:
-                max_attempts = max(1, int(max_loops))
+                max_attempts = int(max_loops)
             except (TypeError, ValueError):
                 raise SpryRuntimeError("micromanage max_loops must be a valid integer", None)
+            if max_attempts < 1:
+                raise SpryRuntimeError("micromanage max_loops must be >= 1", None)
             last_result: Any = SPRY_UNDEFINED
             for attempt in range(1, max_attempts + 1):
                 last_result = self._call_value(step_fn, [attempt])

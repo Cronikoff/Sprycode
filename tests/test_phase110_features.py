@@ -1136,6 +1136,16 @@ class TestMicroServiceIntegration:
                 )
             """)
 
+    def test_micromanage_zero_max_loops_raises(self):
+        with pytest.raises(SpryRuntimeError):
+            run("""
+                micromanage(
+                    fn(attempt) { return attempt },
+                    fn(last, attempt) => true,
+                    0
+                )
+            """)
+
     def test_micromanage_with_retry_and_circuit_breaker(self):
         i = run("""
             let cb = CircuitBreaker.new({ threshold: 5, timeout: 30000 })

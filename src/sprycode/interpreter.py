@@ -14258,7 +14258,7 @@ class SpryCircuitBreaker:
     def _spry_get_prop(self, prop: str) -> Any:
         if prop == "state":
             return self.state
-        if prop in ("failures", "failureCount"):  # failureCount is a legacy alias
+        if prop in ("failures", "failureCount"):  # support both property names for compatibility
             return self.failures
         if prop in ("call", "reset"):
             return getattr(self, prop)

@@ -1468,15 +1468,15 @@ class Interpreter:
             return None
 
         def _micromanage(step_fn: Any, solved_fn: Any, max_loops: Any = 1000) -> Any:
-            total = max(1, int(max_loops))
+            max_attempts = max(1, int(max_loops))
             last_result: Any = SPRY_UNDEFINED
-            for attempt in range(1, total + 1):
-                last_result = self._call_value(step_fn, [attempt, last_result])
+            for attempt in range(1, max_attempts + 1):
+                last_result = self._call_value(step_fn, [attempt])
                 solved = self._call_value(solved_fn, [last_result, attempt])
                 if self._truthy(solved):
                     return last_result
             raise SpryRuntimeError(
-                f"micromanage exceeded max_loops ({total}) without reaching solved state",
+                f"micromanage exceeded max_loops ({max_attempts}) without reaching solved state",
                 None,
             )
 

@@ -1083,7 +1083,7 @@ class TestDebounce:
 
 
 class TestMicroServiceIntegration:
-    def test_micromanage_loops_until_queue_is_solved(self):
+    def test_micromanage_loops_until_queue_is_empty(self):
         i = run("""
             let q = Queue.new([1, 2, 3, 4])
             var total = 0

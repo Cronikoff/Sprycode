@@ -11,6 +11,7 @@ import math
 import os
 import re
 import time
+import collections
 from decimal import Decimal
 from typing import Any
 
@@ -14005,8 +14006,7 @@ class SpryQueue:
     """
 
     def __init__(self) -> None:
-        import collections as _col
-        self._data: "collections.deque" = _col.deque()
+        self._data: collections.deque = collections.deque()
 
     # --- public methods ---
 
@@ -14092,9 +14092,8 @@ class SpryChannel:
     """
 
     def __init__(self, capacity: int = 0) -> None:
-        import collections as _col
         self._capacity = int(capacity) if capacity else 0  # 0 = unbounded
-        self._data: "collections.deque" = _col.deque()
+        self._data: collections.deque = collections.deque()
         self._closed = False
 
     def send(self, value: Any) -> None:
@@ -14213,9 +14212,8 @@ class SpryCircuitBreaker:
         return None
 
     def _check_half_open(self) -> None:
-        import time as _time
         if self._state == _CB_OPEN:
-            elapsed_ms = (_time.monotonic() - self._opened_at) * 1000
+            elapsed_ms = (time.monotonic() - self._opened_at) * 1000
             if elapsed_ms >= self._reset_timeout_ms:
                 self._state = _CB_HALF_OPEN
 
@@ -14232,9 +14230,8 @@ class SpryCircuitBreaker:
         except Exception as exc:
             self._failures += 1
             if self._state == _CB_HALF_OPEN or self._failures >= self._threshold:
-                import time as _time
                 self._state = _CB_OPEN
-                self._opened_at = _time.monotonic()
+                self._opened_at = time.monotonic()
             raise exc
 
     def reset(self) -> None:
@@ -14298,14 +14295,13 @@ def _make_throttle(call_fn: Any) -> Any:
     ignores calls that arrive within ``intervalMs`` of the previous call.
     Returns the last successful return value on suppressed calls.
     """
-    import time as _time
 
     def _throttle(fn: Any, interval_ms: Any = 0) -> Any:
         interval_s = float(interval_ms) / 1000.0
         state = {"last": -float("inf"), "last_result": SPRY_UNDEFINED}
 
         def _wrapper(*args: Any) -> Any:
-            now = _time.monotonic()
+            now = time.monotonic()
             if now - state["last"] >= interval_s:
                 state["last"] = now
                 if call_fn is not None:
@@ -14328,7 +14324,6 @@ def _make_debounce(call_fn: Any) -> Any:
     since the last call.  Successive calls within the delay window update the
     pending arguments.
     """
-    import time as _time
 
     def _debounce(fn: Any, delay_ms: Any = 0) -> Any:
         delay_s = float(delay_ms) / 1000.0
@@ -14346,9 +14341,9 @@ def _make_debounce(call_fn: Any) -> Any:
         def _wrapper(*args: Any) -> Any:
             state["pending"] = True
             state["args"] = list(args)
-            state["scheduled_at"] = _time.monotonic()
+            state["scheduled_at"] = time.monotonic()
             # Auto-flush: if delay is zero or already elapsed, invoke immediately
-            if delay_s == 0 or (_time.monotonic() - state["scheduled_at"]) >= delay_s:
+            if delay_s == 0 or (time.monotonic() - state["scheduled_at"]) >= delay_s:
                 return _invoke()
             return state["last_result"]
 

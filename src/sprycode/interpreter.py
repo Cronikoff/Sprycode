@@ -140,6 +140,8 @@ from .ast_nodes import (
     ComputedFieldDeclaration,
     NewExpression,
     DebuggerStatement,
+    LoopStatement,
+    RetryBlock,
 )
 from .permissions import PermissionSet
 from .runtime.stdlib import (
@@ -1611,6 +1613,35 @@ class Interpreter:
         # BigInt constructor (Phase 63)
         env.define("BigInt", _BigIntNamespace())
 
+        # Phase 110 — Microservice built-ins
+        env.define("Queue", _SpryQueueNamespace())
+        env.define("Channel", _SpryChannelNamespace())
+        env.define("CircuitBreaker", _SpryCircuitBreakerNamespace(call_fn=self._call_value))
+
+        # throttle(fn, ms) — call fn at most once per ms window (sync: first call wins)
+        def _throttle(fn: Any, ms: Any = 0) -> Any:
+            _last: list = [-float("inf")]  # mutable cell
+
+            def _throttled(*args: Any) -> Any:
+                now_ms = time.monotonic() * 1000
+                window = float(ms) if ms else 0.0
+                if now_ms - _last[0] >= window:
+                    _last[0] = now_ms
+                    return self._call_value(fn, list(args))
+                return SPRY_UNDEFINED
+
+            return _throttled
+
+        # debounce(fn, ms) — delay fn call; in sync model executes immediately
+        def _debounce(fn: Any, ms: Any = 0) -> Any:
+            def _debounced(*args: Any) -> Any:
+                return self._call_value(fn, list(args))
+
+            return _debounced
+
+        env.define("throttle", _throttle)
+        env.define("debounce", _debounce)
+
         return env
 
     def _eval_fstring(self, template: str, env: "Environment") -> str:
@@ -2431,6 +2462,12 @@ class Interpreter:
 
         if isinstance(node, WhileStatement):
             return self._exec_while(node, env)
+
+        if isinstance(node, LoopStatement):
+            return self._exec_loop(node, env)
+
+        if isinstance(node, RetryBlock):
+            return self._exec_retry_block(node, env)
 
         if isinstance(node, BreakStatement):
             raise BreakSignal(node.label)
@@ -5933,7 +5970,7 @@ class Interpreter:
         """Execute a labeled statement, catching break/continue with matching label."""
         body = node.body
         # Propagate label to inner loop node via proper AST field (ForStatement, WhileStatement)
-        if isinstance(body, (ForStatement, ForCStyleStatement, WhileStatement)):
+        if isinstance(body, (ForStatement, ForCStyleStatement, WhileStatement, LoopStatement)):
             body.label = node.label
         try:
             return self._exec(body, env)
@@ -6017,6 +6054,42 @@ class Interpreter:
             count += 1
             if count >= max_iterations:
                 raise SpryRuntimeError("While loop exceeded maximum iteration limit (100,000)", node)
+        return None
+
+    def _exec_loop(self, node: LoopStatement, env: Environment) -> Any:
+        """Execute an infinite `loop { }` statement.  Exits on ``break``."""
+        max_iterations = 100_000
+        count = 0
+        while True:
+            child = env.child()
+            try:
+                self._exec_block(node.body, child)
+            except BreakSignal as bs:
+                if bs.label is None or bs.label == node.label:
+                    break
+                raise
+            except ContinueSignal as cs:
+                if cs.label is None or cs.label == node.label:
+                    pass
+                else:
+                    raise
+            count += 1
+            if count >= max_iterations:
+                raise SpryRuntimeError("loop exceeded maximum iteration limit (100,000)", node)
+        return None
+
+    def _exec_retry_block(self, node: RetryBlock, env: Environment) -> Any:
+        """Execute body, retrying up to *count* times total on any exception."""
+        last_exc: Exception | None = None
+        for attempt in range(max(1, node.count)):
+            try:
+                child = env.child()
+                return self._exec_block(node.body, child)
+            except (SpryUserError, SpryRuntimeError) as exc:
+                last_exc = exc
+        # All attempts exhausted — re-raise the last error
+        if last_exc is not None:
+            raise last_exc
         return None
 
     def _exec_repeat_until(self, node: RepeatUntilStatement, env: Environment) -> Any:
@@ -13876,6 +13949,268 @@ class _MessageChannelNamespace:
 
     def __repr__(self) -> str:
         return "MessageChannel"
+
+
+# ---------------------------------------------------------------------------
+# Phase 110 — Microservice built-ins
+# ---------------------------------------------------------------------------
+
+
+class SpryQueue:
+    """FIFO Queue for microservice message passing.
+
+    Methods: enqueue(item), dequeue(), peek(), size, isEmpty, clear, drain() -> list
+    """
+
+    def __init__(self) -> None:
+        self._items: list = []
+
+    # ---------- mutating operations ----------
+
+    def enqueue(self, item: Any) -> None:
+        self._items.append(item)
+
+    def dequeue(self) -> Any:
+        if not self._items:
+            raise SpryRuntimeError("Queue is empty", None)
+        return self._items.pop(0)
+
+    def peek(self) -> Any:
+        if not self._items:
+            return None
+        return self._items[0]
+
+    def clear(self) -> None:
+        self._items.clear()
+
+    def drain(self) -> list:
+        items = list(self._items)
+        self._items.clear()
+        return items
+
+    # ---------- property-style getters ----------
+
+    @property
+    def size(self) -> int:
+        return len(self._items)
+
+    @property
+    def isEmpty(self) -> bool:
+        return len(self._items) == 0
+
+    # ---------- SpryCode property protocol ----------
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "enqueue":
+            return self.enqueue
+        if prop == "dequeue":
+            return self.dequeue
+        if prop == "peek":
+            return self.peek
+        if prop == "clear":
+            return self.clear
+        if prop == "drain":
+            return self.drain
+        if prop == "size":
+            return self.size
+        if prop == "isEmpty":
+            return self.isEmpty
+        raise SpryRuntimeError(f"Queue has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"Queue({self._items!r})"
+
+
+class _SpryQueueNamespace:
+    """Queue — constructor namespace: Queue.new() or new Queue()."""
+
+    def new(self) -> SpryQueue:
+        return SpryQueue()
+
+    def __call__(self, *args: Any) -> SpryQueue:
+        return SpryQueue()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "new":
+            return self.new
+        raise SpryRuntimeError(f"Queue has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "Queue"
+
+
+class SpryChannel:
+    """Channel for synchronous inter-service message passing.
+
+    Methods: send(msg), receive() -> Any, close(), drain() -> list
+    Properties: size, isClosed
+    """
+
+    def __init__(self) -> None:
+        self._buf: list = []
+        self._closed = False
+
+    def send(self, msg: Any) -> None:
+        if self._closed:
+            raise SpryRuntimeError("Cannot send on a closed Channel", None)
+        self._buf.append(msg)
+
+    def receive(self) -> Any:
+        if not self._buf:
+            return SPRY_UNDEFINED
+        return self._buf.pop(0)
+
+    def close(self) -> None:
+        self._closed = True
+
+    def drain(self) -> list:
+        items = list(self._buf)
+        self._buf.clear()
+        return items
+
+    @property
+    def size(self) -> int:
+        return len(self._buf)
+
+    @property
+    def isClosed(self) -> bool:
+        return self._closed
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "send":
+            return self.send
+        if prop == "receive":
+            return self.receive
+        if prop == "close":
+            return self.close
+        if prop == "drain":
+            return self.drain
+        if prop == "size":
+            return self.size
+        if prop == "isClosed":
+            return self.isClosed
+        raise SpryRuntimeError(f"Channel has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"Channel(size={self.size}, closed={self._closed})"
+
+
+class _SpryChannelNamespace:
+    """Channel — constructor namespace."""
+
+    def new(self) -> SpryChannel:
+        return SpryChannel()
+
+    def __call__(self, *args: Any) -> SpryChannel:
+        return SpryChannel()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "new":
+            return self.new
+        raise SpryRuntimeError(f"Channel has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "Channel"
+
+
+class SpryCircuitBreaker:
+    """Circuit Breaker pattern for resilience.
+
+    States: CLOSED (normal) → OPEN (failing) → HALF_OPEN (testing)
+
+    ``execute(fn)``      — call *fn* through the breaker; throws if open.
+    ``reset()``          — force back to CLOSED.
+    ``open()``           — force open the breaker.
+    ``state``            — current state string ('CLOSED'|'OPEN'|'HALF_OPEN').
+    ``failureCount``     — number of consecutive failures.
+    ``threshold``        — failure count before opening (default 3).
+    """
+
+    CLOSED = "CLOSED"
+    OPEN = "OPEN"
+    HALF_OPEN = "HALF_OPEN"
+
+    def __init__(self, threshold: int = 3, call_fn: Any = None) -> None:
+        self._threshold = max(1, int(threshold))
+        self._failures = 0
+        self._state = SpryCircuitBreaker.CLOSED
+        self._call_fn = call_fn
+
+    def execute(self, fn: Any) -> Any:
+        if self._state == SpryCircuitBreaker.OPEN:
+            raise SpryRuntimeError("CircuitBreaker is OPEN — call rejected", None)
+        try:
+            result = self._call_fn(fn, []) if self._call_fn is not None and callable(fn) else (fn() if callable(fn) else fn)
+            # Success: reset failure count and move to CLOSED
+            self._failures = 0
+            self._state = SpryCircuitBreaker.CLOSED
+            return result
+        except Exception as exc:
+            self._failures += 1
+            if self._failures >= self._threshold:
+                self._state = SpryCircuitBreaker.OPEN
+            raise
+
+    def reset(self) -> None:
+        self._failures = 0
+        self._state = SpryCircuitBreaker.CLOSED
+
+    def open(self) -> None:
+        self._state = SpryCircuitBreaker.OPEN
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def failureCount(self) -> int:
+        return self._failures
+
+    @property
+    def threshold(self) -> int:
+        return self._threshold
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "execute":
+            return self.execute
+        if prop == "reset":
+            return self.reset
+        if prop == "open":
+            return self.open
+        if prop == "state":
+            return self.state
+        if prop == "failureCount":
+            return self.failureCount
+        if prop == "threshold":
+            return self.threshold
+        raise SpryRuntimeError(f"CircuitBreaker has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return f"CircuitBreaker(state={self._state}, failures={self._failures}/{self._threshold})"
+
+
+class _SpryCircuitBreakerNamespace:
+    """CircuitBreaker — constructor namespace.
+
+    ``CircuitBreaker.new(threshold?)``  — create a new circuit breaker.
+    """
+
+    def __init__(self, call_fn: Any = None) -> None:
+        self._call_fn = call_fn
+
+    def new(self, threshold: Any = 3) -> SpryCircuitBreaker:
+        return SpryCircuitBreaker(threshold=int(threshold), call_fn=self._call_fn)
+
+    def __call__(self, threshold: Any = 3) -> SpryCircuitBreaker:
+        return SpryCircuitBreaker(threshold=int(threshold), call_fn=self._call_fn)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop == "new":
+            return self.new
+        raise SpryRuntimeError(f"CircuitBreaker has no property {prop!r}", None)
+
+    def __repr__(self) -> str:
+        return "CircuitBreaker"
 
 
 # ---------------------------------------------------------------------------

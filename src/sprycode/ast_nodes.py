@@ -1057,3 +1057,18 @@ class ComputedFieldDeclaration(Node):
 @dataclass
 class DebuggerStatement(Node):
     """debugger; — breakpoint hint, no-op at runtime unless debug mode is active."""
+
+
+
+@dataclass
+class LoopStatement(Node):
+    """loop { ... } — infinite loop; must be exited with break."""
+    body: "Block | None" = None
+    label: "str | None" = None
+
+
+@dataclass
+class RetryBlock(Node):
+    """retry <N> { ... } — execute body; on exception retry up to N times total."""
+    count: int = 1
+    body: "Block | None" = None

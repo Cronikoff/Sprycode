@@ -49,12 +49,12 @@ task queueDemo {
 
     // Consumer: drain the queue
     loop {
-        if inbox.isEmpty { break }
+        if inbox.isEmpty() { break }
         let item = inbox.dequeue()
         log info "Processing " + item
     }
 
-    log info "Queue empty: " + str(inbox.isEmpty)
+    log info "Queue empty: " + str(inbox.isEmpty())
 }
 
 // ── Channel: typed message passing ───────────────────────────────────────
@@ -71,13 +71,13 @@ task channelDemo {
 
     // Consumer service reads events
     loop {
-        if eventCh.isEmpty { break }
+        if eventCh.isEmpty() { break }
         let event = eventCh.receive()
         log info "Dispatching event: " + event
     }
 
     eventCh.close()
-    log info "Channel closed: " + str(eventCh.isClosed)
+    log info "Channel closed: " + str(eventCh.closed)
 }
 
 // ── CircuitBreaker: microservice resilience ───────────────────────────────
@@ -173,7 +173,7 @@ task fullPipeline {
 
     // Process via circuit breaker, send to channel
     loop {
-        if inbox.isEmpty { break }
+        if inbox.isEmpty() { break }
         let v = inbox.dequeue()
         let result = cb.call(process, v)
         outbox.send(result)
@@ -182,7 +182,7 @@ task fullPipeline {
     // Consume
     let results = []
     loop {
-        if outbox.isEmpty { break }
+        if outbox.isEmpty() { break }
         results.push(outbox.receive())
     }
 

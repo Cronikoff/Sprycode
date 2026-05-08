@@ -140,6 +140,24 @@ let first = items[0]        // 1
 let last = items[4]         // 5
 ```
 
+### Microservice Coordination
+
+```spry
+let q = Queue()
+q.enqueue("job-1")
+let next = q.dequeue()
+
+let ch = Channel()
+ch.send({ id: 1 })
+let msg = ch.receive()
+
+let cb = CircuitBreaker(3, 1000)
+let result = retry((attempt) => cb.execute(() => callService(attempt)), 5)
+
+let throttled = throttle(() => pollHealth(), 500)
+let debounced = debounce(() => refreshDashboard(), 200)
+```
+
 ---
 
 ## Identity

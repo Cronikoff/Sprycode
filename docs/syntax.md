@@ -382,6 +382,15 @@ repeat {
 } until i >= 5
 ```
 
+`loop { ... } until ...` is supported as an alias:
+
+```spry
+var ready = false
+loop {
+    ready = checkStatus()
+} until ready
+```
+
 ## For-In-Dict (iterate over keys)
 
 ```spry

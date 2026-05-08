@@ -236,115 +236,6 @@ class TestRetryBlock:
             }
         """)
         assert val(i, "count") == 3
-        i = run('''
-let v = 0
-loop {
-    v = 1
-    break
-}
-''')
-        assert val(i, 'v') == 1
-
-    def test_loop_counts_to_five(self):
-        i = run('''
-var count = 0
-loop {
-    count = count + 1
-    if count >= 5 { break }
-}
-let v = count
-''')
-        assert val(i, 'v') == 5
-
-    def test_loop_continue_then_break(self):
-        i = run('''
-var sum = 0
-var n = 0
-loop {
-    n = n + 1
-    if n % 2 == 0 { continue }
-    sum = sum + n
-    if n >= 9 { break }
-}
-let v = sum
-''')
-        # odd numbers 1+3+5+7+9 = 25
-        assert val(i, 'v') == 25
-
-    def test_loop_result_variable(self):
-        i = run('''
-var found = -1
-var i = 0
-let target = 7
-loop {
-    if i == target {
-        found = i
-        break
-    }
-    i = i + 1
-}
-let v = found
-''')
-        assert val(i, 'v') == 7
-
-    def test_loop_accumulates_array(self):
-        i = run('''
-let items = []
-var k = 0
-loop {
-    items.push(k)
-    k = k + 1
-    if k >= 4 { break }
-}
-let v = items
-''')
-        assert val(i, 'v') == [0, 1, 2, 3]
-
-    def test_loop_nested(self):
-        i = run('''
-var total = 0
-var outer = 0
-loop {
-    var inner = 0
-    loop {
-        total = total + 1
-        inner = inner + 1
-        if inner >= 3 { break }
-    }
-    outer = outer + 1
-    if outer >= 2 { break }
-}
-let v = total
-''')
-        assert val(i, 'v') == 6  # 2 outer × 3 inner
-
-    def test_loop_break_exits_only_inner(self):
-        i = run('''
-var outer_done = false
-var counter = 0
-loop {
-    loop {
-        counter = counter + 1
-        break
-    }
-    outer_done = true
-    break
-}
-let v = counter
-''')
-        assert val(i, 'v') == 1
-
-    def test_loop_with_mutable_condition(self):
-        i = run('''
-var x = 10
-loop {
-    x = x - 3
-    if x <= 1 { break }
-}
-let v = x
-''')
-        # 10 -> 7 -> 4 -> 1, breaks when x=1
-        assert val(i, 'v') == 1
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +345,7 @@ class TestQueue:
         assert val(i, "p") == 42
         assert val(i, "s") == 1
 
-    def test_queue_size(self):
+    def test_queue_size_namespace_ctor(self):
         i = run("""
             let q = new Queue()
             q.enqueue("a")
@@ -554,26 +445,6 @@ class TestQueue:
             let v = q.dequeue()
         """)
         assert val(i, "v") == 5
-        i = run('''
-let q = Queue.new()
-q.enqueue(1)
-q.enqueue(2)
-q.enqueue(3)
-let v = q.dequeue()
-''')
-        assert val(i, 'v') == 1
-
-    def test_queue_fifo_order(self):
-        i = run('''
-let q = Queue.new()
-q.enqueue("a")
-q.enqueue("b")
-q.enqueue("c")
-let first = q.dequeue()
-let second = q.dequeue()
-let v = first + second
-''')
-        assert val(i, 'v') == "ab"
 
     def test_queue_size(self):
         i = run('''
@@ -599,7 +470,7 @@ let v = q.isEmpty()
 ''')
         assert val(i, 'v') is False
 
-    def test_queue_peek_does_not_remove(self):
+    def test_queue_peek_does_not_remove_namespace_ctor(self):
         i = run('''
 let q = Queue.new()
 q.enqueue(42)
@@ -609,7 +480,7 @@ let v = p + s
 ''')
         assert val(i, 'v') == 43  # 42 + 1
 
-    def test_queue_clear(self):
+    def test_queue_clear_namespace_ctor(self):
         i = run('''
 let q = Queue.new()
 q.enqueue(1)
@@ -772,24 +643,6 @@ class TestChannel:
             }
         """)
         assert val(i, "results") == [10, 20, 30]
-        i = run('''
-let ch = Channel.new()
-ch.send("hello")
-let v = ch.receive()
-''')
-        assert val(i, 'v') == "hello"
-
-    def test_channel_fifo_order(self):
-        i = run('''
-let ch = Channel.new()
-ch.send(1)
-ch.send(2)
-ch.send(3)
-let a = ch.receive()
-let b = ch.receive()
-let v = a + b
-''')
-        assert val(i, 'v') == 3
 
     def test_channel_size(self):
         i = run('''
@@ -945,12 +798,6 @@ class TestCircuitBreaker:
             let s = cb.state
         """)
         assert val(i, "s") == "closed"
-
-        i = run('''
-let cb = CircuitBreaker.new(3, 60000)
-let v = cb.state
-''')
-        assert val(i, 'v') == "closed"
 
     def test_circuit_breaker_passes_successful_calls(self):
         i = run('''

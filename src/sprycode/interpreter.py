@@ -14156,7 +14156,7 @@ class SpryChannel:
             "close": self.close,
             "isEmpty": self.isEmpty,
         }
-        if prop == "size":
+        if prop in ("size", "buffered"):  # buffered is an alias for size
             return self.size
         if prop == "closed":
             return self.closed
@@ -14265,7 +14265,7 @@ class SpryCircuitBreaker:
     def _spry_get_prop(self, prop: str) -> Any:
         if prop == "state":
             return self.state
-        if prop == "failures":
+        if prop in ("failures", "failureCount"):  # support both property names for compatibility
             return self.failures
         if prop in ("call", "reset"):
             return getattr(self, prop)
@@ -14282,12 +14282,21 @@ class _CircuitBreakerNamespace:
     def __init__(self, call_fn: Any = None) -> None:
         self._call_fn = call_fn
 
+    def _resolve_args(self, threshold: Any, reset_timeout_ms: Any) -> tuple:
+        """Support both positional args and an options dict such as { threshold:, timeout: }.
+
+        The dict form also accepts ``reset_timeout_ms`` as an alias for ``timeout``.
+        """
+        if isinstance(threshold, dict):
+            opts = threshold
+            th = opts.get("threshold", 3)
+            ms = opts.get("timeout", opts.get("reset_timeout_ms", 5000))
+            return int(th), int(ms)
+        return int(threshold), int(reset_timeout_ms)
+
     def new(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
-        return SpryCircuitBreaker(
-            threshold=int(threshold),
-            reset_timeout_ms=int(reset_timeout_ms),
-            call_fn=self._call_fn,
-        )
+        th, ms = self._resolve_args(threshold, reset_timeout_ms)
+        return SpryCircuitBreaker(threshold=th, reset_timeout_ms=ms, call_fn=self._call_fn)
 
     def __call__(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
         return self.new(threshold, reset_timeout_ms)

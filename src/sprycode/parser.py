@@ -408,6 +408,7 @@ class Parser:
         if tok.type == TokenType.BREAK:
             self._advance()
             # Optional label: break outer  (only if label is on the same line)
+            # Label can be an identifier or a keyword used as a label (e.g. `loop`)
             label = None
             if (self._current().type in self._LABEL_TOKEN_TYPES and not self._at_end()
                     and self._current().line == tok.line):
@@ -443,6 +444,17 @@ class Parser:
             return self._parse_match()
         if tok.type == TokenType.REPEAT:
             return self._parse_repeat_until()
+        if tok.type == TokenType.LOOP:
+            # `loop: for ...` — "loop" used as a label name
+            if self._peek().type == TokenType.COLON:
+                label_tok = self._advance()   # consume 'loop'
+                self._advance()               # consume ':'
+                body_stmt = self._parse_statement()
+                return LabeledStatement(label=label_tok.value, body=body_stmt,
+                                        line=label_tok.line, column=label_tok.column)
+            return self._parse_loop()
+        if tok.type == TokenType.RETRY and self._peek().type == TokenType.LPAREN:
+            return self._parse_retry_statement()
         if tok.type == TokenType.ASSERT:
             return self._parse_assert()
         if tok.type == TokenType.IMPORT:
@@ -1650,6 +1662,12 @@ class Parser:
             body=body, condition=condition,
             line=tok.line, column=tok.column,
         )
+
+    def _parse_loop(self) -> LoopStatement:
+        """loop { <body> } — infinite loop, broken by `break`."""
+        tok = self._expect(TokenType.LOOP)
+        body = self._parse_block()
+        return LoopStatement(body=body, line=tok.line, column=tok.column)
 
     def _parse_retry_statement(self) -> RetryStatement:
         """retry(<count>) { <body> } — retry block up to n times on exception."""

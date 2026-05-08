@@ -2576,6 +2576,12 @@ class Interpreter:
         if isinstance(node, RepeatUntilStatement):
             return self._exec_repeat_until(node, env)
 
+        if isinstance(node, LoopStatement):
+            return self._exec_loop(node, env)
+
+        if isinstance(node, RetryStatement):
+            return self._exec_retry_statement(node, env)
+
         if isinstance(node, AssertStatement):
             return self._exec_assert(node, env)
 
@@ -5959,7 +5965,7 @@ class Interpreter:
         """Execute a labeled statement, catching break/continue with matching label."""
         body = node.body
         # Propagate label to inner loop node via proper AST field (ForStatement, WhileStatement)
-        if isinstance(body, (ForStatement, ForCStyleStatement, WhileStatement)):
+        if isinstance(body, (ForStatement, ForCStyleStatement, WhileStatement, LoopStatement)):
             body.label = node.label
         try:
             return self._exec(body, env)
@@ -13997,6 +14003,7 @@ class _NavigatorNamespace:
             raise SpryRuntimeError(f"navigator has no property {prop!r}", None)
 
     def __repr__(self) -> str:
+        return "Navigator"
         return "Navigator"
 
 

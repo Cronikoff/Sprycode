@@ -189,6 +189,26 @@ task fullPipeline {
     log info "Pipeline results: " + str(results)
 }
 
+// ── Micromanage structural pathway until solved ───────────────────────────
+task microManageUntilSolved {
+    let backlog = Queue.new([1, 2, 3, 4, 5])
+    var total = 0
+
+    let final = micromanage(
+        fn(attempt) {
+            if backlog.isEmpty() {
+                return total
+            }
+            total = total + backlog.dequeue()
+            return total
+        },
+        fn(lastValue) => backlog.isEmpty(),
+        20
+    )
+
+    log info "Micromanaged total: " + str(final)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -199,4 +219,5 @@ task main {
     throttleDemo()
     debounceDemo()
     fullPipeline()
+    microManageUntilSolved()
 }

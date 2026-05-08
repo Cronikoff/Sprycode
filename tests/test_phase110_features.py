@@ -1083,6 +1083,72 @@ class TestDebounce:
 
 
 class TestMicroServiceIntegration:
+    def test_micromanage_loops_until_queue_is_solved(self):
+        i = run("""
+            let q = Queue.new([1, 2, 3, 4])
+            var total = 0
+            let result = micromanage(
+                fn(attempt) {
+                    if !q.isEmpty() {
+                        total = total + q.dequeue()
+                    }
+                    return total
+                },
+                fn(last) => q.isEmpty(),
+                10
+            )
+        """)
+        assert val(i, "total") == 10
+        assert val(i, "result") == 10
+
+    def test_micromanage_tracks_attempts_in_structural_path(self):
+        i = run("""
+            var attempts = []
+            let result = micromanage(
+                fn(attempt) {
+                    attempts.push(attempt)
+                    return attempt
+                },
+                fn(last, attempt) => attempt >= 3,
+                10
+            )
+        """)
+        assert val(i, "attempts") == [1, 2, 3]
+        assert val(i, "result") == 3
+
+    def test_micromanage_raises_if_not_solved(self):
+        with pytest.raises(SpryRuntimeError):
+            run("""
+                micromanage(
+                    fn(attempt) { return attempt },
+                    fn(last, attempt) => false,
+                    2
+                )
+            """)
+
+    def test_micromanage_with_retry_and_circuit_breaker(self):
+        i = run("""
+            let cb = CircuitBreaker.new({ threshold: 5, timeout: 30000 })
+            var tries = 0
+            var done = false
+            let result = micromanage(
+                fn(attempt) {
+                    retry(3) {
+                        cb.call(fn() {
+                            tries = tries + 1
+                            if tries < 2 { throw "transient" }
+                        })
+                    }
+                    done = true
+                    return tries
+                },
+                fn(last) => done,
+                5
+            )
+        """)
+        assert val(i, "result") == 2
+        assert val(i, "tries") == 2
+
     def test_queue_retry_process(self):
         """Process queue items with retry on failure."""
         i = run("""

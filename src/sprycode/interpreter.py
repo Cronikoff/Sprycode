@@ -1467,6 +1467,19 @@ class Interpreter:
                 raise last_error
             return None
 
+        def _micromanage(step_fn: Any, solved_fn: Any, max_loops: Any = 1000) -> Any:
+            total = max(1, int(max_loops))
+            last_result: Any = SPRY_UNDEFINED
+            for attempt in range(1, total + 1):
+                last_result = self._call_value(step_fn, [attempt, last_result])
+                solved = self._call_value(solved_fn, [last_result, attempt])
+                if self._truthy(solved):
+                    return last_result
+            raise SpryRuntimeError(
+                f"micromanage exceeded max_loops ({total}) without reaching solved state",
+                None,
+            )
+
         def _throttle(fn: Any, delay_ms: Any = 0) -> Any:
             return _SpryThrottle(self._call_value, fn, delay_ms)
 
@@ -1474,6 +1487,7 @@ class Interpreter:
             return _SpryDebounce(self._call_value, fn, delay_ms)
 
         env.define("retry", _retry_call)
+        env.define("micromanage", _micromanage)
         env.define("Queue", _QueueNamespace())
         env.define("Channel", _ChannelNamespace())
         env.define("CircuitBreaker", _CircuitBreakerNamespace(self._call_value))

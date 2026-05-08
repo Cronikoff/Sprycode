@@ -156,6 +156,12 @@ let result = retry((attempt) => cb.execute(() => callService(attempt)), 5)
 
 let throttled = throttle(() => pollHealth(), 500)
 let debounced = debounce(() => refreshDashboard(), 200)
+
+let solved = micromanage(
+    (attempt) => runPipelineStep(attempt),
+    (lastResult) => lastResult.done,
+    100
+)
 ```
 
 ---

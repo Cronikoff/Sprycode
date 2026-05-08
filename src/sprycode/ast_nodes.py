@@ -620,6 +620,20 @@ class WhileStatement(Node):
 
 
 @dataclass
+class LoopStatement(Node):
+    """loop { <body> } — infinite loop, broken by `break`."""
+    body: "Block | None" = None
+    label: "str | None" = None
+
+
+@dataclass
+class RetryStatement(Node):
+    """retry(<n>) { <body> } — retry body up to n times on exception."""
+    count: "Node | None" = None   # expression yielding an integer
+    body: "Block | None" = None
+
+
+@dataclass
 class BreakStatement(Node):
     """break [label]"""
     label: str | None = None
@@ -1057,21 +1071,3 @@ class ComputedFieldDeclaration(Node):
 @dataclass
 class DebuggerStatement(Node):
     """debugger; — breakpoint hint, no-op at runtime unless debug mode is active."""
-
-
-@dataclass
-class LoopStatement(Node):
-    """loop { body } — infinite loop, runs until break."""
-    """loop { <body> } — infinite loop, broken by `break`."""
-    body: "Block | None" = None
-    label: "str | None" = None
-
-
-@dataclass
-class RetryBlockStatement(Node):
-    """retry(n) { body } — retry body up to n times on exception."""
-    max_retries: int = 1
-class RetryStatement(Node):
-    """retry(<n>) { <body> } — retry body up to n times on exception."""
-    count: "Node | None" = None   # expression yielding an integer
-    body: "Block | None" = None

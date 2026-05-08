@@ -1,16 +1,3 @@
-"""Phase 110: Micro-service loop-control and service primitives.
-
-Tests covering:
-  - loop { } — infinite loop runs until break
-  - loop with continue
-  - labeled loop statement
-  - retry(n) { } — retry body up to n times on exception
-  - retry(n) succeeds before exhaustion
-  - Queue — FIFO queue (enqueue, dequeue, peek, size, isEmpty, clear, toArray)
-  - Channel — synchronous message channel (send, receive, tryReceive, close, closed, buffered)
-  - CircuitBreaker — circuit breaker pattern (state, call, reset, failureCount)
-  - throttle(fn, delay) — throttle wrapper
-  - debounce(fn, delay) — debounce wrapper with flush
 """Phase 110: Microservice Primitives.
 
 Tests covering:
@@ -689,7 +676,6 @@ let v = q.size
 
 class TestChannel:
     def test_channel_send_receive(self):
-copilot/continue-implementation-micromanaging-again
         i = run("""
             let ch = new Channel()
             ch.send(99)
@@ -873,7 +859,6 @@ ch.send("y")
 let v = ch.size
 ''')
         assert val(i, 'v') == 2
-main
 
 
 # ---------------------------------------------------------------------------
@@ -883,7 +868,6 @@ main
 
 class TestCircuitBreaker:
     def test_circuit_breaker_starts_closed(self):
-copilot/continue-implementation-micromanaging-again
         i = run("""
             let cb = new CircuitBreaker({ threshold: 3, timeout: 1000 })
             let s = cb.state
@@ -1045,7 +1029,6 @@ let cb = CircuitBreaker.new()
 let v = cb.state
 ''')
         assert val(i, 'v') == "closed"
-main
 
 
 # ---------------------------------------------------------------------------
@@ -1054,7 +1037,6 @@ main
 
 
 class TestThrottle:
-copilot/continue-implementation-micromanaging-again
     def test_throttle_returns_callable(self):
         i = run("""
             var calls = 0
@@ -1150,7 +1132,6 @@ let b = throttled()
 let v = b
 ''')
         assert val(i, 'v') == 1  # suppressed call returns last result
-main
 
 
 # ---------------------------------------------------------------------------
@@ -1159,7 +1140,6 @@ main
 
 
 class TestDebounce:
-copilot/continue-implementation-micromanaging-again
     def test_debounce_returns_callable(self):
         i = run("""
             var calls = 0
@@ -1417,4 +1397,3 @@ let process = pipeline(negate, abs)
 let v = process(-5)
 ''')
         assert val(i, 'v') == 5
-main

@@ -909,7 +909,7 @@ class TestCircuitBreaker:
                 cb.call(fn() => 99)
             """)
 
-    def test_circuit_breaker_reset(self):
+    def test_circuit_breaker_reset_clears_state_and_failure_count(self):
         i = run("""
             let cb = new CircuitBreaker({ threshold: 2, timeout: 30000 })
             try { cb.call(fn() { throw "fail" }) } catch(e) { }

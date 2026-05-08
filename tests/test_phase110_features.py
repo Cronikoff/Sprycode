@@ -11,6 +11,17 @@ Tests covering:
   - CircuitBreaker — circuit breaker pattern (state, call, reset, failureCount)
   - throttle(fn, delay) — throttle wrapper
   - debounce(fn, delay) — debounce wrapper with flush
+"""Phase 110: Microservice Primitives.
+
+Tests covering:
+  - `loop { }` — infinite loop (break-able)
+  - `retry(n) { }` — standalone retry block
+  - Queue — in-memory FIFO queue (enqueue/dequeue/peek/size/isEmpty/clear/toArray)
+  - Channel — sync message channel (send/receive/tryReceive/close/size/closed)
+  - CircuitBreaker — closed/open/half-open fault-tolerance pattern
+  - throttle(fn, ms) — rate-limit function calls
+  - debounce(fn, ms) — debounce function calls
+  - pipeline(...fns) — left-to-right function composition
 """
 
 import pytest
@@ -33,6 +44,7 @@ def val(i: Interpreter, name: str):
 
 # ---------------------------------------------------------------------------
 # loop statement
+# loop { } — infinite loop with break
 # ---------------------------------------------------------------------------
 
 
@@ -237,6 +249,194 @@ class TestRetryBlock:
             }
         """)
         assert val(i, "count") == 3
+        i = run('''
+let v = 0
+loop {
+    v = 1
+    break
+}
+''')
+        assert val(i, 'v') == 1
+
+    def test_loop_counts_to_five(self):
+        i = run('''
+var count = 0
+loop {
+    count = count + 1
+    if count >= 5 { break }
+}
+let v = count
+''')
+        assert val(i, 'v') == 5
+
+    def test_loop_continue_then_break(self):
+        i = run('''
+var sum = 0
+var n = 0
+loop {
+    n = n + 1
+    if n % 2 == 0 { continue }
+    sum = sum + n
+    if n >= 9 { break }
+}
+let v = sum
+''')
+        # odd numbers 1+3+5+7+9 = 25
+        assert val(i, 'v') == 25
+
+    def test_loop_result_variable(self):
+        i = run('''
+var found = -1
+var i = 0
+let target = 7
+loop {
+    if i == target {
+        found = i
+        break
+    }
+    i = i + 1
+}
+let v = found
+''')
+        assert val(i, 'v') == 7
+
+    def test_loop_accumulates_array(self):
+        i = run('''
+let items = []
+var k = 0
+loop {
+    items.push(k)
+    k = k + 1
+    if k >= 4 { break }
+}
+let v = items
+''')
+        assert val(i, 'v') == [0, 1, 2, 3]
+
+    def test_loop_nested(self):
+        i = run('''
+var total = 0
+var outer = 0
+loop {
+    var inner = 0
+    loop {
+        total = total + 1
+        inner = inner + 1
+        if inner >= 3 { break }
+    }
+    outer = outer + 1
+    if outer >= 2 { break }
+}
+let v = total
+''')
+        assert val(i, 'v') == 6  # 2 outer × 3 inner
+
+    def test_loop_break_exits_only_inner(self):
+        i = run('''
+var outer_done = false
+var counter = 0
+loop {
+    loop {
+        counter = counter + 1
+        break
+    }
+    outer_done = true
+    break
+}
+let v = counter
+''')
+        assert val(i, 'v') == 1
+
+    def test_loop_with_mutable_condition(self):
+        i = run('''
+var x = 10
+loop {
+    x = x - 3
+    if x <= 1 { break }
+}
+let v = x
+''')
+        # 10 -> 7 -> 4 -> 1, breaks when x=1
+        assert val(i, 'v') == 1
+
+
+# ---------------------------------------------------------------------------
+# retry(n) { } — retry block
+# ---------------------------------------------------------------------------
+
+
+class TestRetryStatement:
+    def test_retry_succeeds_first_try(self):
+        i = run('''
+var v = 0
+retry(3) {
+    v = 42
+}
+''')
+        assert val(i, 'v') == 42
+
+    def test_retry_fails_and_throws_after_n(self):
+        with pytest.raises(Exception):
+            run('''
+retry(3) {
+    throw new Error("always fails")
+}
+''')
+
+    def test_retry_succeeds_on_second_attempt(self):
+        i = run('''
+var attempts = 0
+var v = 0
+retry(3) {
+    attempts = attempts + 1
+    if attempts < 2 {
+        throw new Error("not yet")
+    }
+    v = attempts
+}
+''')
+        assert val(i, 'v') == 2
+        assert val(i, 'attempts') == 2
+
+    def test_retry_succeeds_on_third_attempt(self):
+        i = run('''
+var t = 0
+retry(3) {
+    t = t + 1
+    if t < 3 { throw new Error("retry") }
+}
+let v = t
+''')
+        assert val(i, 'v') == 3
+
+    def test_retry_with_one_always_fails(self):
+        with pytest.raises(Exception):
+            run('''
+retry(1) {
+    throw new Error("fail")
+}
+''')
+
+    def test_retry_result_is_last_statement(self):
+        i = run('''
+var n = 0
+retry(5) {
+    n = n + 1
+    if n < 4 { throw new Error("x") }
+}
+let v = n
+''')
+        assert val(i, 'v') == 4
+
+    def test_retry_does_not_retry_on_success(self):
+        i = run('''
+var calls = 0
+retry(10) {
+    calls = calls + 1
+}
+let v = calls
+''')
+        assert val(i, 'v') == 1
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +567,119 @@ class TestQueue:
             let v = q.dequeue()
         """)
         assert val(i, "v") == 5
+        i = run('''
+let q = Queue.new()
+q.enqueue(1)
+q.enqueue(2)
+q.enqueue(3)
+let v = q.dequeue()
+''')
+        assert val(i, 'v') == 1
+
+    def test_queue_fifo_order(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue("a")
+q.enqueue("b")
+q.enqueue("c")
+let first = q.dequeue()
+let second = q.dequeue()
+let v = first + second
+''')
+        assert val(i, 'v') == "ab"
+
+    def test_queue_size(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(10)
+q.enqueue(20)
+let v = q.size
+''')
+        assert val(i, 'v') == 2
+
+    def test_queue_is_empty_initially(self):
+        i = run('''
+let q = Queue.new()
+let v = q.isEmpty()
+''')
+        assert val(i, 'v') is True
+
+    def test_queue_not_empty_after_enqueue(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(99)
+let v = q.isEmpty()
+''')
+        assert val(i, 'v') is False
+
+    def test_queue_peek_does_not_remove(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(42)
+let p = q.peek()
+let s = q.size
+let v = p + s
+''')
+        assert val(i, 'v') == 43  # 42 + 1
+
+    def test_queue_clear(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(1)
+q.enqueue(2)
+q.clear()
+let v = q.size
+''')
+        assert val(i, 'v') == 0
+
+    def test_queue_to_array(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(10)
+q.enqueue(20)
+q.enqueue(30)
+let v = q.toArray()
+''')
+        assert val(i, 'v') == [10, 20, 30]
+
+    def test_queue_dequeue_throws_when_empty(self):
+        with pytest.raises(Exception):
+            run('''
+let q = Queue.new()
+q.dequeue()
+''')
+
+    def test_queue_peek_throws_when_empty(self):
+        with pytest.raises(Exception):
+            run('''
+let q = Queue.new()
+q.peek()
+''')
+
+    def test_queue_drain_with_loop(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue(1)
+q.enqueue(2)
+q.enqueue(3)
+var sum = 0
+loop {
+    if q.isEmpty() { break }
+    sum = sum + q.dequeue()
+}
+let v = sum
+''')
+        assert val(i, 'v') == 6
+
+    def test_queue_size_decreases_on_dequeue(self):
+        i = run('''
+let q = Queue.new()
+q.enqueue("x")
+q.enqueue("y")
+q.dequeue()
+let v = q.size
+''')
+        assert val(i, 'v') == 1
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +689,7 @@ class TestQueue:
 
 class TestChannel:
     def test_channel_send_receive(self):
+copilot/continue-implementation-micromanaging-again
         i = run("""
             let ch = new Channel()
             ch.send(99)
@@ -472,6 +786,94 @@ class TestChannel:
             }
         """)
         assert val(i, "results") == [10, 20, 30]
+        i = run('''
+let ch = Channel.new()
+ch.send("hello")
+let v = ch.receive()
+''')
+        assert val(i, 'v') == "hello"
+
+    def test_channel_fifo_order(self):
+        i = run('''
+let ch = Channel.new()
+ch.send(1)
+ch.send(2)
+ch.send(3)
+let a = ch.receive()
+let b = ch.receive()
+let v = a + b
+''')
+        assert val(i, 'v') == 3
+
+    def test_channel_size(self):
+        i = run('''
+let ch = Channel.new()
+ch.send("a")
+ch.send("b")
+let v = ch.size
+''')
+        assert val(i, 'v') == 2
+
+    def test_channel_empty_initially(self):
+        i = run('''
+let ch = Channel.new()
+let v = ch.isEmpty()
+''')
+        assert val(i, 'v') is True
+
+    def test_channel_try_receive_empty(self):
+        i = run('''
+let ch = Channel.new()
+let v = ch.tryReceive()
+let ok = (v === undefined)
+''')
+        assert val(i, 'ok') is True
+
+    def test_channel_close(self):
+        i = run('''
+let ch = Channel.new()
+ch.close()
+let v = ch.closed
+''')
+        assert val(i, 'v') is True
+
+    def test_channel_receive_from_closed_empty_returns_undefined(self):
+        i = run('''
+let ch = Channel.new()
+ch.send(42)
+let a = ch.receive()
+ch.close()
+let b = ch.receive()
+let v = (b === undefined)
+''')
+        assert val(i, 'v') is True
+
+    def test_channel_send_throws_when_closed(self):
+        with pytest.raises(Exception):
+            run('''
+let ch = Channel.new()
+ch.close()
+ch.send("boom")
+''')
+
+    def test_channel_bounded_capacity(self):
+        with pytest.raises(Exception):
+            run('''
+let ch = Channel.new(2)
+ch.send(1)
+ch.send(2)
+ch.send(3)
+''')
+
+    def test_channel_bounded_not_full(self):
+        i = run('''
+let ch = Channel.new(5)
+ch.send("x")
+ch.send("y")
+let v = ch.size
+''')
+        assert val(i, 'v') == 2
+main
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +883,7 @@ class TestChannel:
 
 class TestCircuitBreaker:
     def test_circuit_breaker_starts_closed(self):
+copilot/continue-implementation-micromanaging-again
         i = run("""
             let cb = new CircuitBreaker({ threshold: 3, timeout: 1000 })
             let s = cb.state
@@ -559,6 +962,91 @@ class TestCircuitBreaker:
         """)
         assert val(i, "s") == "closed"
 
+        i = run('''
+let cb = CircuitBreaker.new(3, 60000)
+let v = cb.state
+''')
+        assert val(i, 'v') == "closed"
+
+    def test_circuit_breaker_passes_successful_calls(self):
+        i = run('''
+fn add(x) { return x + 1 }
+let cb = CircuitBreaker.new(3, 60000)
+let v = cb.call(add, 41)
+''')
+        assert val(i, 'v') == 42
+
+    def test_circuit_breaker_tracks_failures(self):
+        i = run('''
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(3, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+let v = cb.failures
+''')
+        assert val(i, 'v') == 2
+
+    def test_circuit_breaker_opens_after_threshold(self):
+        i = run('''
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(3, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+let v = cb.state
+''')
+        assert val(i, 'v') == "open"
+
+    def test_circuit_breaker_rejects_when_open(self):
+        with pytest.raises(Exception):
+            run('''
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(1, 60000)
+try { cb.call(boom) } catch(e) {}
+cb.call(boom)
+''')
+
+    def test_circuit_breaker_reset(self):
+        i = run('''
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(2, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+cb.reset()
+let v = cb.state
+''')
+        assert val(i, 'v') == "closed"
+
+    def test_circuit_breaker_reset_clears_failures(self):
+        i = run('''
+fn boom() { throw new Error("fail") }
+let cb = CircuitBreaker.new(5, 60000)
+try { cb.call(boom) } catch(e) {}
+try { cb.call(boom) } catch(e) {}
+cb.reset()
+let v = cb.failures
+''')
+        assert val(i, 'v') == 0
+
+    def test_circuit_breaker_success_clears_failures(self):
+        i = run('''
+fn boom() { throw new Error("fail") }
+fn ok() { return 1 }
+let cb = CircuitBreaker.new(5, 60000)
+try { cb.call(boom) } catch(e) {}
+cb.call(ok)
+let v = cb.failures
+''')
+        assert val(i, 'v') == 0
+
+    def test_circuit_breaker_default_threshold(self):
+        i = run('''
+let cb = CircuitBreaker.new()
+let v = cb.state
+''')
+        assert val(i, 'v') == "closed"
+main
+
 
 # ---------------------------------------------------------------------------
 # throttle
@@ -566,6 +1054,7 @@ class TestCircuitBreaker:
 
 
 class TestThrottle:
+copilot/continue-implementation-micromanaging-again
     def test_throttle_returns_callable(self):
         i = run("""
             var calls = 0
@@ -606,6 +1095,62 @@ class TestThrottle:
             t()
         """)
         assert val(i, "calls") == 3
+    def test_throttle_calls_fn_first_time(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let throttled = throttle(inc, 1000)
+throttled()
+let v = called
+''')
+        assert val(i, 'v') == 1
+
+    def test_throttle_suppresses_rapid_calls(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let throttled = throttle(inc, 10000)
+throttled()
+throttled()
+throttled()
+let v = called
+''')
+        assert val(i, 'v') == 1
+
+    def test_throttle_zero_interval_always_calls(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let throttled = throttle(inc, 0)
+throttled()
+throttled()
+throttled()
+let v = called
+''')
+        assert val(i, 'v') == 3
+
+    def test_throttle_returns_value(self):
+        i = run('''
+fn id(x) { return x }
+let throttled = throttle(id, 0)
+let v = throttled(42)
+''')
+        assert val(i, 'v') == 42
+
+    def test_throttle_returns_last_value_on_suppressed(self):
+        i = run('''
+var counter = 0
+fn nextVal() {
+    counter = counter + 1
+    return counter
+}
+let throttled = throttle(nextVal, 10000)
+let a = throttled()
+let b = throttled()
+let v = b
+''')
+        assert val(i, 'v') == 1  # suppressed call returns last result
+main
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +1159,7 @@ class TestThrottle:
 
 
 class TestDebounce:
+copilot/continue-implementation-micromanaging-again
     def test_debounce_returns_callable(self):
         i = run("""
             var calls = 0
@@ -694,7 +1240,6 @@ class TestMicroServiceIntegration:
             }
         """)
         assert val(i, "processed") == [1, 2, 3]
-
     def test_channel_loop_producer_consumer(self):
         """Producer sends to channel, consumer reads with loop."""
         i = run("""
@@ -740,3 +1285,136 @@ class TestMicroServiceIntegration:
         """)
         assert val(i, "r1") == "msg1"
         assert val(i, "r2") == "msg2"
+    def test_debounce_zero_delay_calls_immediately(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let debounced = debounce(inc, 0)
+debounced()
+let v = called
+''')
+        assert val(i, 'v') == 1
+
+    def test_debounce_zero_delay_multiple_calls(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let debounced = debounce(inc, 0)
+debounced()
+debounced()
+debounced()
+let v = called
+''')
+        assert val(i, 'v') == 3
+
+    def test_debounce_returns_result(self):
+        i = run('''
+fn double(x) { return x * 2 }
+let debounced = debounce(double, 0)
+let v = debounced(21)
+''')
+        assert val(i, 'v') == 42
+
+    def test_debounce_flush(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let debounced = debounce(inc, 99999)
+debounced()
+debounced.flush()
+let v = called
+''')
+        # With delay > 0, the first call is pending; flush forces it
+        assert val(i, 'v') >= 1
+
+    def test_debounce_cancel_prevents_call(self):
+        i = run('''
+var called = 0
+fn inc() { called = called + 1 }
+let debounced = debounce(inc, 99999)
+debounced()
+debounced.cancel()
+let v = called
+''')
+        # cancel removes pending; zero calls should have occurred
+        assert val(i, 'v') == 0
+
+
+# ---------------------------------------------------------------------------
+# pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestPipeline:
+    def test_pipeline_single_fn(self):
+        i = run('''
+fn double(x) { return x * 2 }
+let process = pipeline(double)
+let v = process(21)
+''')
+        assert val(i, 'v') == 42
+
+    def test_pipeline_two_fns(self):
+        i = run('''
+fn addOne(x) { return x + 1 }
+fn double(x) { return x * 2 }
+let process = pipeline(addOne, double)
+let v = process(4)
+''')
+        assert val(i, 'v') == 10  # (4+1)*2
+
+    def test_pipeline_three_fns(self):
+        i = run('''
+fn addOne(x) { return x + 1 }
+fn double(x) { return x * 2 }
+fn square(x) { return x * x }
+let process = pipeline(addOne, double, square)
+let v = process(2)
+''')
+        assert val(i, 'v') == 36  # ((2+1)*2)^2 = 6^2
+
+    def test_pipeline_string_transforms(self):
+        i = run('''
+fn trim(s) { return s.trim() }
+fn upper(s) { return s.toUpperCase() }
+let process = pipeline(trim, upper)
+let v = process("  hello  ")
+''')
+        assert val(i, 'v') == "HELLO"
+
+    def test_pipeline_can_be_reused(self):
+        i = run('''
+fn inc(x) { return x + 1 }
+let process = pipeline(inc, inc, inc)
+let a = process(0)
+let b = process(10)
+let v = a + b
+''')
+        assert val(i, 'v') == 3 + 13  # 3 + 13
+
+    def test_pipeline_identity(self):
+        i = run('''
+fn id(x) { return x }
+let process = pipeline(id)
+let v = process(99)
+''')
+        assert val(i, 'v') == 99
+
+    def test_pipeline_with_array(self):
+        i = run('''
+fn doubled(arr) { return arr.map(x => x * 2) }
+fn filtered(arr) { return arr.filter(x => x > 4) }
+let process = pipeline(doubled, filtered)
+let v = process([1, 2, 3, 4, 5])
+''')
+        assert val(i, 'v') == [6, 8, 10]
+
+    def test_pipeline_composable(self):
+        i = run('''
+fn negate(x) { return -x }
+fn abs(x) { return Math.abs(x) }
+let process = pipeline(negate, abs)
+let v = process(-5)
+''')
+        assert val(i, 'v') == 5
+main

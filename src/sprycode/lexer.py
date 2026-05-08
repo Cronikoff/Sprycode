@@ -138,6 +138,7 @@ class TokenType(Enum):
     REPEAT = auto()
     UNTIL = auto()
     DO = auto()
+    LOOP = auto()       # `loop { ... }` — infinite loop, exits via break
     FINALLY = auto()
     LOOP = auto()
 

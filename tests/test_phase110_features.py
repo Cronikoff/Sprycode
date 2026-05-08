@@ -160,6 +160,22 @@ loop {
 """)
         assert val(i, "target") == 2
 
+    def test_loop_labeled_break(self):
+        """Outer loop break via label from inner loop."""
+        i = run("""
+let count = 0
+outer: loop {
+  let inner = 0
+  loop {
+    inner = inner + 1
+    count = count + 1
+    if inner >= 3 { break }
+  }
+  if count >= 6 { break outer }
+}
+""")
+        assert val(i, "count") == 6
+
 
 # ---------------------------------------------------------------------------
 # retry block

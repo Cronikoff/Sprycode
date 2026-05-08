@@ -5952,7 +5952,7 @@ class Interpreter:
         """Execute a labeled statement, catching break/continue with matching label."""
         body = node.body
         # Propagate label to inner loop node via proper AST field (ForStatement, WhileStatement)
-        if isinstance(body, (ForStatement, ForCStyleStatement, WhileStatement)):
+        if isinstance(body, (ForStatement, ForCStyleStatement, WhileStatement, LoopStatement)):
             body.label = node.label
         try:
             return self._exec(body, env)

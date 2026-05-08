@@ -1652,7 +1652,7 @@ class Parser:
         """retry [<N>] { <body> } [attempts <N>] [catch <name> { <handler> }]
 
         Accepted forms:
-          retry { ... }                 — 1 attempt (no retry)
+          retry { ... }                 — default 3 attempts
           retry 3 { ... }               — up to 3 attempts
           retry { ... } attempts 3      — same with postfix count
           retry 3 { ... } catch e { }   — with error handler

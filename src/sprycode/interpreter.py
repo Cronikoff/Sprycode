@@ -15573,6 +15573,48 @@ class SpryOrchestrator:
         self._cycle_history = []
         self._total_cycles = 0
 
+    def _build_step_summary(self, step_name: str, step_solved_fn: Any, step_max_loops: Any) -> dict:
+        totals = 0
+        peaks = 0
+        mins: int | None = None
+        cycle_count = 0
+        for cycle_attempts in self._cycle_history:
+            if step_name not in cycle_attempts:
+                continue
+            attempts = cycle_attempts[step_name]
+            totals += attempts
+            cycle_count += 1
+            if attempts > peaks:
+                peaks = attempts
+            if mins is None or attempts < mins:
+                mins = attempts
+        avg: float | None = totals / cycle_count if cycle_count > 0 else None
+        return {
+            "name": step_name,
+            "managed": step_solved_fn is not None,
+            "maxLoops": step_max_loops,
+            "enabled": step_name not in self._disabled,
+            "totalAttempts": totals,
+            "peakAttempts": peaks,
+            "minAttempts": mins if mins is not None else 0,
+            "cycleCounts": cycle_count,
+            "avgAttempts": avg,
+        }
+
+    def getStepSummary(self, name: Any) -> Any:
+        key = str(name)
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_name == key:
+                return self._build_step_summary(step_name, step_solved_fn, step_max_loops)
+        return SPRY_UNDEFINED
+
+    @property
+    def summary(self) -> list:
+        result = []
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            result.append(self._build_step_summary(step_name, step_solved_fn, step_max_loops))
+        return result
+
     def _spry_get_prop(self, prop: str) -> Any:
         _methods: dict = {
             "addStep": self.addStep,
@@ -15596,6 +15638,7 @@ class SpryOrchestrator:
             "runUntilSolved": self.runUntilSolved,
             "runManaged": self.runManaged,
             "resetHistory": self.resetHistory,
+            "getStepSummary": self.getStepSummary,
         }
         if prop in _methods:
             return _methods[prop]
@@ -15619,6 +15662,8 @@ class SpryOrchestrator:
             return self.stepCycleCounts
         if prop == "stepAttemptAverages":
             return self.stepAttemptAverages
+        if prop == "summary":
+            return self.summary
         if prop == "totalCycles":
             return self.totalCycles
         raise SpryRuntimeError(f"Orchestrator has no property {prop!r}", None)

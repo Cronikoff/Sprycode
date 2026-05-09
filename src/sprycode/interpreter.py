@@ -15809,10 +15809,18 @@ class SpryOrchestrator:
             pre_target_state_gain_coverage = (
                 pre_target_state_gain / report_state_gain if report_state_gain != 0 else None
             )
+            target_state_gain_per_cycle = (
+                target_state_gain_sum / report_cycles if report_cycles > 0 else None
+            )
+            pre_target_state_gain_per_cycle = (
+                pre_target_state_gain / report_cycles if report_cycles > 0 else None
+            )
         else:
             pre_target_state_gain = None
             report_state_gain_coverage = None
             pre_target_state_gain_coverage = None
+            target_state_gain_per_cycle = None
+            pre_target_state_gain_per_cycle = None
         return {
             "state": state,
             "targets": targets,
@@ -15832,6 +15840,8 @@ class SpryOrchestrator:
             "preTargetStateGain": pre_target_state_gain,
             "reportStateGainCoverage": report_state_gain_coverage,
             "preTargetStateGainCoverage": pre_target_state_gain_coverage,
+            "targetStateGainPerCycle": target_state_gain_per_cycle,
+            "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
         }
 
     @property

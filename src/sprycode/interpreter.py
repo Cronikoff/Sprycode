@@ -15269,7 +15269,11 @@ class SpryOrchestrator:
             if step_solved_fn is None:
                 current = self._invoke(step_fn, [current, cycle_num, step_name])
                 continue
-            assert step_max_loops is not None
+            if step_max_loops is None:
+                raise SpryRuntimeError(
+                    f"Orchestrator managed step {step_name!r} has no max_loops configured",
+                    None,
+                )
             step_solved = False
             for step_attempt in range(1, step_max_loops + 1):
                 current = self._invoke(step_fn, [current, cycle_num, step_name, step_attempt])

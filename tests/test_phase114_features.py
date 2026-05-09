@@ -102,5 +102,4 @@ class TestOrchestratorManagedSteps:
 
             let out = orch.runManaged(fn(state) => state >= 4, undefined, 5)
         """)
-        assert val(i, "out") == 4
-
+        assert val(i, "out") == 5

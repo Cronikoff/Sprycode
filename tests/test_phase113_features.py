@@ -33,10 +33,10 @@ class TestServiceRegistryManagedLoops:
     def test_registry_run_until_solved_uses_name_and_attempt(self):
         i = run("""
             let reg = ServiceRegistry.new()
-            reg.register("svc", fn(state, attempt, name) => attempt + len(name))
-            let out = reg.runUntilSolved("svc", fn(state, attempt, name) => attempt >= 1, 0, 3)
+            reg.register("svc", fn(state, attempt, name) => state + attempt + len(name))
+            let out = reg.runUntilSolved("svc", fn(state, attempt, name) => attempt >= 2, 0, 3)
         """)
-        assert val(i, "out") == 4
+        assert val(i, "out") == 9
 
     def test_registry_run_until_solved_invalid_max_loops_raises(self):
         with pytest.raises(SpryRuntimeError):

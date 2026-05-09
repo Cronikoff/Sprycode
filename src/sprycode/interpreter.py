@@ -15128,22 +15128,22 @@ class SpryServiceRegistry:
             raise SpryRuntimeError("ServiceRegistry max_loops must be a valid integer", None)
         if max_attempts < 1:
             raise SpryRuntimeError("ServiceRegistry max_loops must be >= 1", None)
-        key = str(name)
-        if key not in self._services:
-            raise SpryRuntimeError(f"ServiceRegistry service {key!r} not found", None)
+        service_name = str(name)
+        if service_name not in self._services:
+            raise SpryRuntimeError(f"ServiceRegistry service {service_name!r} not found", None)
         state = initial_state
         for attempt in range(1, max_attempts + 1):
-            state = self.call(key, state, attempt, key)
+            state = self.call(service_name, state, attempt, service_name)
             if self._call_fn is not None:
-                solved = self._call_fn(solved_fn, [state, attempt, key])
+                solved = self._call_fn(solved_fn, [state, attempt, service_name])
             elif callable(solved_fn):
-                solved = solved_fn(state, attempt, key)
+                solved = solved_fn(state, attempt, service_name)
             else:
                 solved = solved_fn
             if self._truthy_fn(solved):
                 return state
         raise SpryRuntimeError(
-            f"ServiceRegistry service {key!r} exceeded max_loops ({max_attempts}) without reaching solved state",
+            f"ServiceRegistry service {service_name!r} exceeded max_loops ({max_attempts}) without reaching solved state",
             None,
         )
 

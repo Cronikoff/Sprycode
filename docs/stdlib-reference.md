@@ -162,6 +162,33 @@ let solved = micromanage(
     (lastResult) => lastResult.done,
     100
 )
+
+// EventBus — pub/sub for decoupled microservice communication
+let bus = EventBus.new()
+bus.subscribe("order.created", fn(order) { processOrder(order) })
+bus.publish("order.created", { id: 42 })
+let n = bus.subscriberCount("order.created")   // 1
+bus.unsubscribe("order.created", handler)
+bus.clear()                                     // remove all subscribers
+
+// Supervisor — manages and restarts failing services
+let sv = Supervisor.new(3)                       // up to 3 restarts per service
+sv.watch("auth", fn() { authService() })
+sv.watch("data", fn() { dataService() })
+sv.start()
+let rc = sv.restartCount
+let statuses = sv.status                         // { auth: "stopped", data: "failed" }
+
+// WorkerPool — drain a task queue through a worker function
+let pool = WorkerPool.new(fn(item) => item * 2)
+pool.submit(1)
+pool.submit(2)
+pool.submit(3)
+pool.run()                                       // processes all pending items
+let results = pool.results                       // [2, 4, 6]
+let errors  = pool.errors                        // []
+let pending = pool.pending                       // 0
+pool.reset()                                     // clear results + errors + queue
 ```
 
 ---

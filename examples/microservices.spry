@@ -209,6 +209,70 @@ task micromanageUntilSolved {
     log info "Micromanaged total: " + str(final)
 }
 
+// ── EventBus: decoupled pub/sub between microservices ─────────────────────
+task eventBusDemo {
+    let bus = EventBus.new()
+    var processed = []
+
+    // Subscriber service: accumulates items
+    bus.subscribe("order.created", fn(order) {
+        processed.push(order)
+        log debug "Order received: " + str(order)
+    })
+
+    // Producer service: publishes events
+    let orders = ["order:001", "order:002", "order:003"]
+    for o in orders {
+        bus.publish("order.created", o)
+    }
+
+    log info "Processed orders: " + str(processed.length)
+    log info "Subscriber count: " + str(bus.subscriberCount("order.created"))
+}
+
+// ── Supervisor: restart failing services until stable ────────────────────
+task supervisorDemo {
+    let sv = Supervisor.new(3)
+    var attempts = 0
+
+    sv.watch("paymentService", fn() {
+        attempts += 1
+        log debug "Payment service attempt " + str(attempts)
+        if attempts < 3 {
+            throw "payment service unavailable"
+        }
+        log info "Payment service is up"
+    })
+
+    sv.watch("notifyService", fn() {
+        log info "Notify service started"
+    })
+
+    let statusMap = sv.start()
+    log info "Restart count: " + str(sv.restartCount)
+    log info "Service statuses: " + str(statusMap)
+}
+
+// ── WorkerPool: drain a task queue through a worker function ─────────────
+task workerPoolDemo {
+    let pool = WorkerPool.new(fn(item) {
+        return item * item
+    })
+
+    // Submit work items
+    let items = [1, 2, 3, 4, 5]
+    for item in items {
+        pool.submit(item)
+    }
+
+    // Drain the queue until empty (loop until solved)
+    pool.run()
+
+    log info "Pool results: " + str(pool.results)
+    log info "Pool errors: " + str(pool.errors)
+    log info "Pending: " + str(pool.pending)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -220,4 +284,7 @@ task main {
     debounceDemo()
     fullPipeline()
     micromanageUntilSolved()
+    eventBusDemo()
+    supervisorDemo()
+    workerPoolDemo()
 }

@@ -1499,6 +1499,9 @@ class Interpreter:
         env.define("CircuitBreaker", _CircuitBreakerNamespace(self._call_value))
         env.define("throttle", _throttle)
         env.define("debounce", _debounce)
+        env.define("EventBus", _EventBusNamespace(self._call_value))
+        env.define("Supervisor", _SupervisorNamespace(self._call_value))
+        env.define("WorkerPool", _WorkerPoolNamespace(self._call_value))
 
         # Error types
         for _ename in ("Error", "TypeError", "RangeError", "SyntaxError",
@@ -5562,27 +5565,37 @@ class Interpreter:
         return self._eval(body, child)
 
     def _to_py_callable(self, fn: Any, env: Environment) -> Any:
-        """Wrap a SpryCode callable as a Python callable for use in method closures."""
+        """Wrap a SpryCode callable as a Python callable for use in method closures.
+
+        Each wrapper gets a ``_spry_fn`` attribute pointing back to the original
+        SpryCode value so that identity-based lookups (e.g. EventBus.unsubscribe)
+        can match wrappers created from the same underlying function.
+        """
         if isinstance(fn, SpryLambda):
             w = lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
             w._spry_arity = 1  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, SpryMultiLambda):
             w = lambda *args: self._apply_multi_lambda(fn, list(args), env)
             w._spry_arity = len(fn.params)  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, LambdaExpression):
             w = lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
             w._spry_arity = 1  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, MultiParamLambda):
             w = lambda *args: self._apply_multi_lambda(fn, list(args), env)
             w._spry_arity = len(fn.params)  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, SpryFunction):
             arity = len(fn.params)
             w = lambda *args: self._call_function(fn, list(args), fn)
             w._spry_arity = arity  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         return fn
 
@@ -14703,3 +14716,359 @@ def _make_pipeline(call_fn: Any) -> Any:
         return _run
 
     return _pipeline
+
+
+# ---------------------------------------------------------------------------
+# Phase 111 — Structural Microservice Pathway Primitives
+# ---------------------------------------------------------------------------
+
+
+class SpryEventBus:
+    """Publish/subscribe event bus for decoupled microservice communication.
+
+    SpryCode usage::
+        let bus = EventBus.new()
+        bus.subscribe("user.login", fn(data) { ... })
+        bus.publish("user.login", { id: 42 })
+    """
+
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._subscribers: dict[str, list] = {}
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return None
+
+    def subscribe(self, topic: str, fn: Any) -> None:
+        """Register *fn* as a subscriber for *topic*."""
+        topic = str(topic)
+        self._subscribers.setdefault(topic, []).append(fn)
+
+    def unsubscribe(self, topic: str, fn: Any) -> bool:
+        """Remove *fn* from *topic*. Returns True if found and removed.
+
+        Since SpryCode callables are wrapped in new lambda objects on every
+        method call, identity is compared via the ``_spry_fn`` back-reference
+        that ``_to_py_callable`` attaches to each wrapper.
+        """
+        topic = str(topic)
+        bucket = self._subscribers.get(topic, [])
+        fn_orig = getattr(fn, "_spry_fn", fn)
+        for i, sub in enumerate(bucket):
+            sub_orig = getattr(sub, "_spry_fn", sub)
+            if sub_orig is fn_orig or sub is fn:
+                bucket.pop(i)
+                return True
+        return False
+
+    def publish(self, topic: str, *args: Any) -> int:
+        """Dispatch *args* to every subscriber for *topic*.
+
+        Loops over all registered handlers, calling each in order.
+        Returns the number of handlers called.
+        """
+        topic = str(topic)
+        handlers = list(self._subscribers.get(topic, []))
+        for handler in handlers:
+            self._invoke(handler, list(args))
+        return len(handlers)
+
+    def subscriberCount(self, topic: str) -> int:
+        """Return the number of subscribers for *topic*."""
+        return len(self._subscribers.get(str(topic), []))
+
+    @property
+    def topics(self) -> list:
+        """Return all topics that have at least one subscriber."""
+        return [t for t, subs in self._subscribers.items() if subs]
+
+    def clear(self) -> None:
+        """Remove all subscribers for all topics."""
+        self._subscribers.clear()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "subscribe": self.subscribe,
+            "unsubscribe": self.unsubscribe,
+            "publish": self.publish,
+            "subscriberCount": self.subscriberCount,
+            "clear": self.clear,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "topics":
+            return self.topics
+        raise SpryRuntimeError(f"EventBus has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"EventBus.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"EventBus(topics={list(self._subscribers.keys())})"
+
+
+class _EventBusNamespace:
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+
+    def new(self) -> SpryEventBus:
+        return SpryEventBus(self._call_fn)
+
+    def __call__(self) -> SpryEventBus:
+        return self.new()
+
+    def create(self) -> SpryEventBus:
+        return self.new()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"EventBus.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "EventBus"
+
+
+# ---------------------------------------------------------------------------
+
+
+_SUPERVISOR_RUNNING = "running"
+_SUPERVISOR_FAILED = "failed"
+_SUPERVISOR_STOPPED = "stopped"
+
+
+class SprySupervisor:
+    """Supervisor that manages named microservice functions.
+
+    Runs each registered service and, on failure, restarts it up to
+    *max_restarts* times before marking it failed.
+
+    SpryCode usage::
+        let sv = Supervisor.new(3)
+        sv.watch("auth", fn() { authService() })
+        sv.watch("data", fn() { dataService() })
+        sv.start()
+        log info str(sv.restartCount)
+    """
+
+    def __init__(self, call_fn: Any, max_restarts: int = 3) -> None:
+        self._call_fn = call_fn
+        self._max_restarts = max(0, int(max_restarts))
+        self._services: dict[str, Any] = {}          # name → fn
+        self._status: dict[str, str] = {}            # name → status string
+        self._restart_count = 0
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return None
+
+    def watch(self, name: str, fn: Any) -> None:
+        """Register a service function under *name*."""
+        name = str(name)
+        self._services[name] = fn
+        self._status[name] = _SUPERVISOR_STOPPED
+
+    def start(self) -> dict:
+        """Run all watched services.
+
+        For each service, if it raises an exception the supervisor retries up
+        to *max_restarts* times (loop until stable or exhausted).  Only actual
+        restart attempts (not the final give-up failure) increment
+        *restartCount*.  Returns a dict mapping service name → final status.
+        """
+        for name, fn in self._services.items():
+            restarts_left = self._max_restarts
+            while True:
+                try:
+                    self._status[name] = _SUPERVISOR_RUNNING
+                    self._invoke(fn, [])
+                    self._status[name] = _SUPERVISOR_STOPPED
+                    break
+                except Exception:
+                    if restarts_left > 0:
+                        restarts_left -= 1
+                        self._restart_count += 1  # count each actual restart
+                        continue
+                    self._status[name] = _SUPERVISOR_FAILED
+                    break
+        return dict(self._status)
+
+    @property
+    def restartCount(self) -> int:
+        return self._restart_count
+
+    @property
+    def status(self) -> dict:
+        return dict(self._status)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "watch": self.watch,
+            "start": self.start,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "restartCount":
+            return self.restartCount
+        if prop == "status":
+            return self.status
+        raise SpryRuntimeError(f"Supervisor has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"Supervisor.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"Supervisor(services={list(self._services.keys())}, restarts={self._restart_count})"
+
+
+class _SupervisorNamespace:
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+
+    def new(self, max_restarts: Any = 3) -> SprySupervisor:
+        try:
+            mr = int(max_restarts)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Supervisor max_restarts must be a valid integer", None)
+        return SprySupervisor(self._call_fn, mr)
+
+    def __call__(self, max_restarts: Any = 3) -> SprySupervisor:
+        return self.new(max_restarts)
+
+    def create(self, max_restarts: Any = 3) -> SprySupervisor:
+        return self.new(max_restarts)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"Supervisor.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "Supervisor"
+
+
+# ---------------------------------------------------------------------------
+
+
+class SpryWorkerPool:
+    """Worker pool that drains a queue of items through a worker function.
+
+    Items are submitted to an internal queue; calling ``run()`` processes them
+    all (loop until empty), collecting results and errors separately.
+
+    SpryCode usage::
+        let pool = WorkerPool.new(fn(item) => item * 2)
+        pool.submit(1)
+        pool.submit(2)
+        pool.submit(3)
+        pool.run()
+        log info str(pool.results)
+    """
+
+    def __init__(self, call_fn: Any, worker_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._worker_fn = worker_fn
+        self._queue: list = []
+        self._results: list = []
+        self._errors: list = []
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return None
+
+    def submit(self, item: Any) -> int:
+        """Add *item* to the pool's work queue. Returns new queue length."""
+        self._queue.append(item)
+        return len(self._queue)
+
+    def run(self) -> list:
+        """Process every item in the queue (loop until empty).
+
+        Returns the list of successful results.  Failed items are recorded
+        in *errors* as ``{"item": item, "error": str(e)}``.
+        """
+        while self._queue:
+            item = self._queue.pop(0)
+            try:
+                result = self._invoke(self._worker_fn, [item])
+                self._results.append(result)
+            except Exception as exc:
+                self._errors.append({"item": item, "error": str(exc)})
+        return list(self._results)
+
+    def clear(self) -> None:
+        """Discard all pending queue items (does not reset results/errors)."""
+        self._queue.clear()
+
+    def reset(self) -> None:
+        """Clear queue, results, and errors."""
+        self._queue.clear()
+        self._results.clear()
+        self._errors.clear()
+
+    @property
+    def results(self) -> list:
+        return list(self._results)
+
+    @property
+    def errors(self) -> list:
+        return list(self._errors)
+
+    @property
+    def pending(self) -> int:
+        return len(self._queue)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "submit": self.submit,
+            "run": self.run,
+            "clear": self.clear,
+            "reset": self.reset,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "results":
+            return self.results
+        if prop == "errors":
+            return self.errors
+        if prop == "pending":
+            return self.pending
+        raise SpryRuntimeError(f"WorkerPool has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"WorkerPool.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"WorkerPool(pending={len(self._queue)}, results={len(self._results)}, errors={len(self._errors)})"
+
+
+class _WorkerPoolNamespace:
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+
+    def new(self, worker_fn: Any) -> SpryWorkerPool:
+        return SpryWorkerPool(self._call_fn, worker_fn)
+
+    def __call__(self, worker_fn: Any) -> SpryWorkerPool:
+        return self.new(worker_fn)
+
+    def create(self, worker_fn: Any) -> SpryWorkerPool:
+        return self.new(worker_fn)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"WorkerPool.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "WorkerPool"

@@ -114,3 +114,19 @@ class TestPathwayReportStateGainAttribution:
         assert rep["preTargetStateGain"] == 0
         assert rep["reportStateGainCoverage"] is None
 
+    def test_zero_report_gain_with_managed_target_has_none_coverage(self):
+        i = run("""
+            let orch = Orchestrator.new()
+            orch.addManagedStep(
+                "svc",
+                fn(state, cycle, name, attempt) => state,
+                fn(state, cycle, name, attempt) => attempt >= (6 - cycle),
+                10
+            )
+            let rep = orch.runCapabilityPathwayManagedReport(0, 10)
+        """)
+        rep = val(i, "rep")
+        assert rep["reportStateGain"] == 0
+        assert rep["targetStateGainSum"] == 0
+        assert rep["preTargetStateGain"] == 0
+        assert rep["reportStateGainCoverage"] is None

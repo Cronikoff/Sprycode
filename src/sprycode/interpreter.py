@@ -15757,6 +15757,16 @@ class SpryOrchestrator:
                     "mature": stage == "mature",
                 }
             )
+        spry_scores = [t["spryScore"] for t in targets if isinstance(t.get("spryScore"), (int, float))]
+        spry_average_score = (
+            sum(spry_scores) / len(spry_scores) if spry_scores else None
+        )
+        spry_peak_score = max(spry_scores) if spry_scores else None
+        spry_distribution = {"lively": 0, "active": 0, "brisk": 0, "vigorous": 0}
+        for t in targets:
+            meaning = t.get("spryMeaning")
+            if meaning in spry_distribution:
+                spry_distribution[meaning] += 1
         return {
             "state": state,
             "targets": targets,
@@ -15764,6 +15774,9 @@ class SpryOrchestrator:
             "fullyDeveloped": self.capabilityFullyDeveloped,
             "remainingTargets": self.capabilityRemainingTargets,
             "cycles": self._total_cycles - total_cycles_before,
+            "spryAverageScore": spry_average_score,
+            "spryPeakScore": spry_peak_score,
+            "spryDistribution": spry_distribution,
         }
 
     @property

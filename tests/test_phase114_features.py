@@ -45,7 +45,7 @@ class TestOrchestratorManagedSteps:
         assert val(i, "out") == 6
 
     def test_managed_step_not_solved_raises(self):
-        with pytest.raises(SpryRuntimeError):
+        with pytest.raises(SpryRuntimeError, match="never.*max_loops"):
             run("""
                 let orch = Orchestrator.new()
                 orch.addManagedStep(
@@ -58,7 +58,7 @@ class TestOrchestratorManagedSteps:
             """)
 
     def test_managed_step_invalid_max_loops_raises(self):
-        with pytest.raises(SpryRuntimeError):
+        with pytest.raises(SpryRuntimeError, match="max_loops"):
             run("""
                 let orch = Orchestrator.new()
                 orch.addManagedStep("x", fn(state) => state, fn(state) => true, "bad")

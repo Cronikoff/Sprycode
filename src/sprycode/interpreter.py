@@ -15212,6 +15212,8 @@ class SpryOrchestrator:
     def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
         self._call_fn = call_fn
         self._truthy_fn = truthy_fn
+        # Step tuple: (step_name, step_fn, step_solved_fn, step_max_loops).
+        # For non-managed steps, step_solved_fn and step_max_loops are None.
         self._steps: list[tuple[str, Any, Any, int | None]] = []
 
     def _invoke(self, fn: Any, args: list) -> Any:
@@ -15275,9 +15277,9 @@ class SpryOrchestrator:
                     None,
                 )
             step_solved = False
-            for step_attempt in range(1, step_max_loops + 1):
-                current = self._invoke(step_fn, [current, cycle_num, step_name, step_attempt])
-                solved = self._invoke(step_solved_fn, [current, cycle_num, step_name, step_attempt])
+            for step_loop_attempt in range(1, step_max_loops + 1):
+                current = self._invoke(step_fn, [current, cycle_num, step_name, step_loop_attempt])
+                solved = self._invoke(step_solved_fn, [current, cycle_num, step_name, step_loop_attempt])
                 if self._truthy_fn(solved):
                     step_solved = True
                     break

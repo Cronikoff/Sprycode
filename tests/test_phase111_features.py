@@ -370,11 +370,11 @@ class TestWorkerPool:
         """Use loop to submit items then run — loop until solved pattern."""
         i = run("""
             let pool = WorkerPool.new(fn(x) => x * x)
-            var i = 1
+            var counter = 1
             loop {
-                if i > 5 { break }
-                pool.submit(i)
-                i = i + 1
+                if counter > 5 { break }
+                pool.submit(counter)
+                counter = counter + 1
             }
             pool.run()
             let res = pool.results

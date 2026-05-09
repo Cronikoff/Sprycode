@@ -14758,9 +14758,9 @@ class SpryEventBus:
         topic = str(topic)
         bucket = self._subscribers.get(topic, [])
         fn_orig = getattr(fn, "_spry_fn", fn)
-        for i, sub in enumerate(bucket):
-            sub_orig = getattr(sub, "_spry_fn", sub)
-            if sub_orig is fn_orig or sub is fn:
+        for i in range(len(bucket) - 1, -1, -1):
+            sub_orig = getattr(bucket[i], "_spry_fn", bucket[i])
+            if sub_orig is fn_orig or bucket[i] is fn:
                 bucket.pop(i)
                 return True
         return False

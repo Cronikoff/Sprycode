@@ -15664,6 +15664,19 @@ class SpryOrchestrator:
                         "peakAttempts": t_peak,
                     }
                 )
+            target_cycles_count = self._total_cycles - start_cycles
+            target_total_attempts = 0
+            target_peak_cycle_attempts = 0
+            for cycle_attempts in target_history_delta:
+                cycle_total = sum(cycle_attempts.get(sn, 0) for sn in active_managed_names)
+                target_total_attempts += cycle_total
+                if cycle_total > target_peak_cycle_attempts:
+                    target_peak_cycle_attempts = cycle_total
+            target_avg_attempts_per_cycle = (
+                target_total_attempts / target_cycles_count
+                if target_cycles_count > 0
+                else None
+            )
             targets.append(
                 {
                     "name": target,
@@ -15671,12 +15684,15 @@ class SpryOrchestrator:
                     "endStage": self.stepCapabilityStages.get(target),
                     "cycleStart": start_cycles + 1,
                     "cycleEnd": self._total_cycles,
-                    "cycles": self._total_cycles - start_cycles,
+                    "cycles": target_cycles_count,
                     "serviceLoops": target_service_loops,
                     "remainingTargetsAfter": self.capabilityRemainingTargets,
                     "fullyDevelopedAfter": self.capabilityFullyDeveloped,
                     "stateBefore": state_before,
                     "stateAfter": state_after,
+                    "totalAttempts": target_total_attempts,
+                    "peakCycleAttempts": target_peak_cycle_attempts,
+                    "avgAttemptsPerCycle": target_avg_attempts_per_cycle,
                 }
             )
         loop_history_delta = self._cycle_history[cycle_history_before:]

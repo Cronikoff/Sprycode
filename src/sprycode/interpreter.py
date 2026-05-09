@@ -15624,13 +15624,39 @@ class SpryOrchestrator:
                 break
             start_stage = self.stepCapabilityStages.get(target)
             start_cycles = self._total_cycles
+            target_history_before = len(self._cycle_history)
             state = self.runTargetUntilMature(target, state, max_loops_per_target)
+            target_history_delta = self._cycle_history[target_history_before:]
+            target_service_loops: list[dict[str, Any]] = []
+            for step_name in active_managed_names:
+                t_attempts = 0
+                t_cycles = 0
+                t_peak = 0
+                for cycle_attempts in target_history_delta:
+                    if step_name not in cycle_attempts:
+                        continue
+                    a = cycle_attempts[step_name]
+                    t_attempts += a
+                    t_cycles += 1
+                    if a > t_peak:
+                        t_peak = a
+                t_avg = (t_attempts / t_cycles) if t_cycles > 0 else None
+                target_service_loops.append(
+                    {
+                        "name": step_name,
+                        "attempts": t_attempts,
+                        "cycles": t_cycles,
+                        "avgAttempts": t_avg,
+                        "peakAttempts": t_peak,
+                    }
+                )
             targets.append(
                 {
                     "name": target,
                     "startStage": start_stage,
                     "endStage": self.stepCapabilityStages.get(target),
                     "cycles": self._total_cycles - start_cycles,
+                    "serviceLoops": target_service_loops,
                 }
             )
         loop_history_delta = self._cycle_history[cycle_history_before:]

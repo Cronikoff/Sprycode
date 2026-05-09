@@ -271,6 +271,7 @@ let nextDone = orch.runNextCapabilityTarget(initialState, 10) // micro-manage th
 let pathDone = orch.runCapabilityPathwayManaged(initialState, 10) // iterate capability targets in pathway order until mature
 let pathReport = orch.runCapabilityPathwayManagedReport(initialState, 10) // detailed target-by-target pathway micromanagement report
 let svcLoops = pathReport["serviceLoops"]         // [ { name, attempts, cycles, avgAttempts, peakAttempts, stage, mature }, ... ] for active managed services
+let targetSvcLoops = pathReport["targets"][0]["serviceLoops"] // per-target service loop breakdown: [ { name, attempts, cycles, avgAttempts, peakAttempts }, ... ]
 let cycles = orch.totalCycles                   // total completed cycles
 let full = orch.summary                         // [ { name, managed, maxLoops, enabled, totalAttempts, peakAttempts, minAttempts, cycleCounts, avgAttempts, loopUtilization, loopHeadroom, loopPressureRank, loopCapabilityStage, capabilityProgress, capabilityPathRank }, ... ]
 let stepSum = orch.getStepSummary("ingest")     // same shape as summary entry, or undefined if not found

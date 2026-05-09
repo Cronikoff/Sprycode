@@ -15231,9 +15231,9 @@ class SpryOrchestrator:
         if max_attempts < 1:
             raise SpryRuntimeError("Orchestrator max_loops must be >= 1", None)
         state = initial_state
-        for cycle in range(1, max_attempts + 1):
-            state = self.runCycle(state, cycle)
-            solved = self._invoke(solved_fn, [state, cycle])
+        for cycle_num in range(1, max_attempts + 1):
+            state = self.runCycle(state, cycle_num)
+            solved = self._invoke(solved_fn, [state, cycle_num])
             if self._truthy_fn(solved):
                 return state
         raise SpryRuntimeError(

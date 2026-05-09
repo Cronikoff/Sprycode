@@ -15674,6 +15674,43 @@ class SpryOrchestrator:
             "maturity": 1.0 - avg_utilization,
         }
 
+    def _capability_path_ranks(self) -> dict[str, int]:
+        utilization = self.stepLoopUtilization
+        if not utilization:
+            return {}
+        stages = self.stepCapabilityStages
+        positions = {step_name: i for i, (step_name, *_) in enumerate(self._steps)}
+        stage_priority = {"critical": 0, "stretched": 1, "stabilizing": 2, "mature": 3}
+        ordered = sorted(
+            utilization,
+            key=lambda step_name: (
+                stage_priority.get(stages.get(step_name, "mature"), 3),
+                -utilization[step_name],
+                positions.get(step_name, 0),
+            ),
+        )
+        return {step_name: idx + 1 for idx, step_name in enumerate(ordered)}
+
+    @property
+    def capabilityPathway(self) -> list[str]:
+        ranks = self._capability_path_ranks()
+        return sorted(ranks, key=lambda step_name: ranks[step_name])
+
+    @property
+    def nextCapabilityTarget(self) -> Any:
+        stages = self.stepCapabilityStages
+        for step_name in self.capabilityPathway:
+            if stages.get(step_name) != "mature":
+                return step_name
+        return SPRY_UNDEFINED
+
+    @property
+    def capabilityFullyDeveloped(self) -> Any:
+        stages = self.stepCapabilityStages
+        if not stages:
+            return SPRY_UNDEFINED
+        return all(stage == "mature" for stage in stages.values())
+
     def resetHistory(self) -> None:
         self._last_cycle_attempts = {}
         self._cycle_history = []
@@ -15686,6 +15723,7 @@ class SpryOrchestrator:
         step_max_loops: Any,
         pressure_ranks: dict[str, int] | None = None,
         capability_stages: dict[str, str] | None = None,
+        capability_path_ranks: dict[str, int] | None = None,
     ) -> dict:
         totals = 0
         peaks = 0
@@ -15722,12 +15760,14 @@ class SpryOrchestrator:
             "loopPressureRank": (pressure_ranks or {}).get(step_name),
             "loopCapabilityStage": (capability_stages or {}).get(step_name),
             "capabilityProgress": (None if loop_utilization is None else (1.0 - loop_utilization)),
+            "capabilityPathRank": (capability_path_ranks or {}).get(step_name),
         }
 
     def getStepSummary(self, name: Any) -> Any:
         key = str(name)
         pressure_ranks = self._loop_pressure_ranks()
         capability_stages = self.stepCapabilityStages
+        capability_path_ranks = self._capability_path_ranks()
         for step_name, _, step_solved_fn, step_max_loops in self._steps:
             if step_name == key:
                 return self._build_step_summary(
@@ -15736,6 +15776,7 @@ class SpryOrchestrator:
                     step_max_loops,
                     pressure_ranks,
                     capability_stages,
+                    capability_path_ranks,
                 )
         return SPRY_UNDEFINED
 
@@ -15743,6 +15784,7 @@ class SpryOrchestrator:
     def summary(self) -> list:
         pressure_ranks = self._loop_pressure_ranks()
         capability_stages = self.stepCapabilityStages
+        capability_path_ranks = self._capability_path_ranks()
         result = []
         for step_name, _, step_solved_fn, step_max_loops in self._steps:
             result.append(
@@ -15752,6 +15794,7 @@ class SpryOrchestrator:
                     step_max_loops,
                     pressure_ranks,
                     capability_stages,
+                    capability_path_ranks,
                 )
             )
         return result
@@ -15815,6 +15858,12 @@ class SpryOrchestrator:
             return self.stepCapabilityStages
         if prop == "pathwayCapabilityMaturity":
             return self.pathwayCapabilityMaturity
+        if prop == "capabilityPathway":
+            return self.capabilityPathway
+        if prop == "nextCapabilityTarget":
+            return self.nextCapabilityTarget
+        if prop == "capabilityFullyDeveloped":
+            return self.capabilityFullyDeveloped
         if prop == "summary":
             return self.summary
         if prop == "totalCycles":

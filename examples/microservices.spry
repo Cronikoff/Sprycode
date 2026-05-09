@@ -406,6 +406,9 @@ task loopHistoryDemo {
     let lead = orch.primaryBottleneck
     let stages = orch.stepCapabilityStages
     let maturity = orch.pathwayCapabilityMaturity
+    let capPath = orch.capabilityPathway
+    let nextCap = orch.nextCapabilityTarget
+    let fully = orch.capabilityFullyDeveloped
     let total = orch.totalCycles
     let fullSummary = orch.summary
     log info "Stabilize attempts in last cycle: " + str(hist)
@@ -420,6 +423,9 @@ task loopHistoryDemo {
     log info "Primary bottleneck: " + str(lead)
     log info "Step capability stages: " + str(stages)
     log info "Pathway capability maturity: " + str(maturity)
+    log info "Capability pathway: " + str(capPath)
+    log info "Next capability target: " + str(nextCap)
+    log info "Capability fully developed: " + str(fully)
     log info "Total cycles completed: " + str(total)
     log info "Full step summary: " + str(fullSummary)
     orch.resetHistory()

@@ -15657,6 +15657,8 @@ class SpryOrchestrator:
                     "name": target,
                     "startStage": start_stage,
                     "endStage": self.stepCapabilityStages.get(target),
+                    "cycleStart": start_cycles + 1,
+                    "cycleEnd": self._total_cycles,
                     "cycles": self._total_cycles - start_cycles,
                     "serviceLoops": target_service_loops,
                     "remainingTargetsAfter": self.capabilityRemainingTargets,

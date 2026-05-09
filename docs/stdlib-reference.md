@@ -223,6 +223,11 @@ orch.addManagedStep(                             // per-step microservice loop u
     fn(state, cycle, name, attempt) => state >= 3,
     5
 )
+orch.loadRegistryManaged(                        // load all registry services as managed steps
+    reg,
+    fn(state, cycle, name, attempt) => attempt >= 2,
+    5
+)
 let stepNames = orch.stepNames
 let stepCount = orch.stepCount
 ```

@@ -357,6 +357,27 @@ task managedStepDemo {
     log info "Managed step final: " + str(final)
 }
 
+
+// ── orchestrator.loadRegistryManaged loops each registry service step ───────
+task managedRegistryLoadDemo {
+    let registry = ServiceRegistry.new()
+    registry.register("a", fn(state) {
+        if state == undefined { return 1 }
+        return state + 1
+    })
+    registry.register("b", fn(state) => state + 2)
+
+    let orch = Orchestrator.new()
+    orch.loadRegistryManaged(
+        registry,
+        fn(state, cycle, name, attempt) => attempt >= 2,
+        3
+    )
+
+    let final = orch.runManaged(fn(state) => state >= 12, 0, 3)
+    log info "Managed registry load final: " + str(final)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -375,4 +396,5 @@ task main {
     micromanagedOrchestrationDemo()
     nestedManagedLoopDemo()
     managedStepDemo()
+    managedRegistryLoadDemo()
 }

@@ -15261,6 +15261,20 @@ class SpryOrchestrator:
             self.addStep(service_name, registry.get(service_name))
         return len(self._steps)
 
+    def loadRegistryManaged(
+        self,
+        registry: Any,
+        solved_fn: Any,
+        max_loops: Any = 1000,
+    ) -> int:
+        if not isinstance(registry, SpryServiceRegistry):
+            raise SpryRuntimeError("Orchestrator.loadRegistryManaged expects ServiceRegistry", None)
+        loaded = 0
+        for service_name in registry.names:
+            self.addManagedStep(service_name, registry.get(service_name), solved_fn, max_loops)
+            loaded += 1
+        return loaded
+
     def runCycle(self, state: Any = SPRY_UNDEFINED, cycle: Any = 1) -> Any:
         try:
             cycle_num = int(cycle)
@@ -15336,6 +15350,7 @@ class SpryOrchestrator:
             "removeStep": self.removeStep,
             "clearSteps": self.clearSteps,
             "loadRegistry": self.loadRegistry,
+            "loadRegistryManaged": self.loadRegistryManaged,
             "runCycle": self.runCycle,
             "runUntilSolved": self.runUntilSolved,
             "runManaged": self.runManaged,

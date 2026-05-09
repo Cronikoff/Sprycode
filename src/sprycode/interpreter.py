@@ -15285,7 +15285,7 @@ class SpryOrchestrator:
                     break
             if not step_solved:
                 raise SpryRuntimeError(
-                    f"Orchestrator managed step {step_name!r} exceeded max_loops ({step_max_loops}) in cycle {cycle_num}",
+                    f"Orchestrator managed step {step_name!r} never reached solved state within max_loops ({step_max_loops}) in cycle {cycle_num}",
                     None,
                 )
         return current

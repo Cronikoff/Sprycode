@@ -15523,6 +15523,88 @@ class SpryOrchestrator:
             None,
         )
 
+    def _active_managed_step_names(self) -> list[str]:
+        return [
+            step_name
+            for step_name, _, step_solved_fn, _ in self._steps
+            if step_solved_fn is not None and step_name not in self._disabled
+        ]
+
+    def runTargetUntilMature(
+        self,
+        target: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        target_name = str(target)
+        step_info = None
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_name == target_name:
+                step_info = (step_solved_fn, step_max_loops)
+                break
+        if step_info is None:
+            raise SpryRuntimeError(
+                f"Orchestrator capability target {target_name!r} does not exist",
+                None,
+            )
+        step_solved_fn, _ = step_info
+        if step_solved_fn is None:
+            raise SpryRuntimeError(
+                f"Orchestrator capability target {target_name!r} is not managed",
+                None,
+            )
+        if target_name in self._disabled:
+            raise SpryRuntimeError(
+                f"Orchestrator capability target {target_name!r} is disabled",
+                None,
+            )
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator max_loops must be >= 1", None)
+        state = initial_state
+        for cycle_num in range(1, max_attempts + 1):
+            state = self.runCycle(state, cycle_num)
+            self._total_cycles += 1
+            if self.stepCapabilityStages.get(target_name) == "mature":
+                return state
+        raise SpryRuntimeError(
+            f"Orchestrator capability target {target_name!r} did not reach mature stage within max_loops ({max_attempts})",
+            None,
+        )
+
+    def runNextCapabilityTarget(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        state = initial_state
+        target = self.nextCapabilityTarget
+        if target is SPRY_UNDEFINED and self._active_managed_step_names():
+            state = self.runCycle(state, 1)
+            self._total_cycles += 1
+            target = self.nextCapabilityTarget
+        if target is SPRY_UNDEFINED:
+            return state
+        return self.runTargetUntilMature(target, state, max_loops)
+
+    def runCapabilityPathwayManaged(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops_per_target: Any = 1000,
+    ) -> Any:
+        state = initial_state
+        if self.nextCapabilityTarget is SPRY_UNDEFINED and self._active_managed_step_names():
+            state = self.runCycle(state, 1)
+            self._total_cycles += 1
+        while True:
+            target = self.nextCapabilityTarget
+            if target is SPRY_UNDEFINED:
+                return state
+            state = self.runTargetUntilMature(target, state, max_loops_per_target)
+
     @property
     def enabledStepNames(self) -> list[str]:
         return [name for name, *_ in self._steps if name not in self._disabled]
@@ -15849,6 +15931,9 @@ class SpryOrchestrator:
             "runUntilSolved": self.runUntilSolved,
             "runManaged": self.runManaged,
             "runCapabilityUntilDeveloped": self.runCapabilityUntilDeveloped,
+            "runTargetUntilMature": self.runTargetUntilMature,
+            "runNextCapabilityTarget": self.runNextCapabilityTarget,
+            "runCapabilityPathwayManaged": self.runCapabilityPathwayManaged,
             "resetHistory": self.resetHistory,
             "getStepSummary": self.getStepSummary,
         }

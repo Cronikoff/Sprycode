@@ -441,6 +441,35 @@ task loopHistoryDemo {
     let capState = capOrch.runCapabilityUntilDeveloped(0, 10)
     log info "Capability pathway loop-until-developed state: " + str(capState)
     log info "Capability pathway fully developed: " + str(capOrch.capabilityFullyDeveloped)
+
+    let targetOrch = Orchestrator.new()
+    targetOrch.addManagedStep(
+        "targetSvc",
+        fn(state, cycle, name, attempt) => state + 1,
+        fn(state, cycle, name, attempt) => attempt >= (6 - cycle),
+        10
+    )
+    let targetState = targetOrch.runTargetUntilMature("targetSvc", 0, 10)
+    log info "Target-level loop-until-mature state: " + str(targetState)
+
+    let pathOrch = Orchestrator.new()
+    pathOrch.addManagedStep(
+        "svcA",
+        fn(state, cycle, name, attempt) => state + 1,
+        fn(state, cycle, name, attempt) => attempt >= (6 - cycle),
+        10
+    )
+    pathOrch.addManagedStep(
+        "svcB",
+        fn(state, cycle, name, attempt) => state + 1,
+        fn(state, cycle, name, attempt) => attempt >= (5 - cycle),
+        10
+    )
+    let nextState = pathOrch.runNextCapabilityTarget(0, 10)
+    let pathState = pathOrch.runCapabilityPathwayManaged(nextState, 10)
+    log info "Next-target micromanagement state: " + str(nextState)
+    log info "Pathway-managed micromanagement state: " + str(pathState)
+    log info "Pathway-managed fully developed: " + str(pathOrch.capabilityFullyDeveloped)
     orch.resetHistory()
 }
 

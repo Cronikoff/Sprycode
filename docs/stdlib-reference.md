@@ -259,8 +259,10 @@ let util = orch.stepLoopUtilization             // managed steps: avgAttempts/ma
 let room = orch.stepLoopHeadroom                // managed steps: maxLoops-avgAttempts
 let path = orch.stepPressurePath                // managed steps ordered by loop pressure (high -> low)
 let lead = orch.primaryBottleneck               // first step in path, or undefined when no managed history
+let stages = orch.stepCapabilityStages          // managed steps mapped to capability stage: critical/stretched/stabilizing/mature
+let maturity = orch.pathwayCapabilityMaturity   // { managedSteps, critical, stretched, stabilizing, mature, avgUtilization, maturity }
 let cycles = orch.totalCycles                   // total completed cycles
-let full = orch.summary                         // [ { name, managed, maxLoops, enabled, totalAttempts, peakAttempts, minAttempts, cycleCounts, avgAttempts, loopUtilization, loopHeadroom, loopPressureRank }, ... ]
+let full = orch.summary                         // [ { name, managed, maxLoops, enabled, totalAttempts, peakAttempts, minAttempts, cycleCounts, avgAttempts, loopUtilization, loopHeadroom, loopPressureRank, loopCapabilityStage, capabilityProgress }, ... ]
 let stepSum = orch.getStepSummary("ingest")     // same shape as summary entry, or undefined if not found
 orch.resetHistory()                             // reset attempts + timeline + aggregates + cycle counter
 ```

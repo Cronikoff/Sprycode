@@ -15605,6 +15605,16 @@ class SpryOrchestrator:
         )
         return {step_name: idx + 1 for idx, step_name in enumerate(ordered)}
 
+    @staticmethod
+    def _capability_stage(utilization: float) -> str:
+        if utilization >= 0.9:
+            return "critical"
+        if utilization >= 0.7:
+            return "stretched"
+        if utilization >= 0.4:
+            return "stabilizing"
+        return "mature"
+
     @property
     def stepPressurePath(self) -> list[str]:
         ranks = self._loop_pressure_ranks()
@@ -15617,6 +15627,53 @@ class SpryOrchestrator:
             return SPRY_UNDEFINED
         return path[0]
 
+    @property
+    def stepCapabilityStages(self) -> dict[str, str]:
+        utilization = self.stepLoopUtilization
+        return {
+            step_name: self._capability_stage(step_utilization)
+            for step_name, step_utilization in utilization.items()
+        }
+
+    @property
+    def pathwayCapabilityMaturity(self) -> dict[str, Any]:
+        utilization = self.stepLoopUtilization
+        stages = self.stepCapabilityStages
+        managed_count = len(stages)
+        if managed_count == 0:
+            return {
+                "managedSteps": 0,
+                "critical": 0,
+                "stretched": 0,
+                "stabilizing": 0,
+                "mature": 0,
+                "avgUtilization": None,
+                "maturity": None,
+            }
+        critical = 0
+        stretched = 0
+        stabilizing = 0
+        mature = 0
+        for stage in stages.values():
+            if stage == "critical":
+                critical += 1
+            elif stage == "stretched":
+                stretched += 1
+            elif stage == "stabilizing":
+                stabilizing += 1
+            else:
+                mature += 1
+        avg_utilization = sum(utilization.values()) / managed_count
+        return {
+            "managedSteps": managed_count,
+            "critical": critical,
+            "stretched": stretched,
+            "stabilizing": stabilizing,
+            "mature": mature,
+            "avgUtilization": avg_utilization,
+            "maturity": 1.0 - avg_utilization,
+        }
+
     def resetHistory(self) -> None:
         self._last_cycle_attempts = {}
         self._cycle_history = []
@@ -15628,6 +15685,7 @@ class SpryOrchestrator:
         step_solved_fn: Any,
         step_max_loops: Any,
         pressure_ranks: dict[str, int] | None = None,
+        capability_stages: dict[str, str] | None = None,
     ) -> dict:
         totals = 0
         peaks = 0
@@ -15662,11 +15720,14 @@ class SpryOrchestrator:
             "loopUtilization": loop_utilization,
             "loopHeadroom": loop_headroom,
             "loopPressureRank": (pressure_ranks or {}).get(step_name),
+            "loopCapabilityStage": (capability_stages or {}).get(step_name),
+            "capabilityProgress": (None if loop_utilization is None else (1.0 - loop_utilization)),
         }
 
     def getStepSummary(self, name: Any) -> Any:
         key = str(name)
         pressure_ranks = self._loop_pressure_ranks()
+        capability_stages = self.stepCapabilityStages
         for step_name, _, step_solved_fn, step_max_loops in self._steps:
             if step_name == key:
                 return self._build_step_summary(
@@ -15674,12 +15735,14 @@ class SpryOrchestrator:
                     step_solved_fn,
                     step_max_loops,
                     pressure_ranks,
+                    capability_stages,
                 )
         return SPRY_UNDEFINED
 
     @property
     def summary(self) -> list:
         pressure_ranks = self._loop_pressure_ranks()
+        capability_stages = self.stepCapabilityStages
         result = []
         for step_name, _, step_solved_fn, step_max_loops in self._steps:
             result.append(
@@ -15688,6 +15751,7 @@ class SpryOrchestrator:
                     step_solved_fn,
                     step_max_loops,
                     pressure_ranks,
+                    capability_stages,
                 )
             )
         return result
@@ -15747,6 +15811,10 @@ class SpryOrchestrator:
             return self.stepPressurePath
         if prop == "primaryBottleneck":
             return self.primaryBottleneck
+        if prop == "stepCapabilityStages":
+            return self.stepCapabilityStages
+        if prop == "pathwayCapabilityMaturity":
+            return self.pathwayCapabilityMaturity
         if prop == "summary":
             return self.summary
         if prop == "totalCycles":

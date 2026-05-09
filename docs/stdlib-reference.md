@@ -238,6 +238,12 @@ orch.disableStep("shape")                        // skip a step without removing
 orch.enableStep("shape")                         // re-enable a previously disabled step
 let isEnabled = orch.isStepEnabled("shape")      // true / false
 let cfg = orch.getStepConfig("shape")            // { name, managed, maxLoops, enabled }
+// Step priority / ordering
+let idx = orch.getStepIndex("shape")             // 0-based index, -1 if not found
+orch.moveStepFirst("shape")                      // move to position 0 (highest priority)
+orch.moveStepLast("shape")                       // move to last position (lowest priority)
+orch.moveStepBefore("shape", "emit")             // move shape immediately before emit
+orch.moveStepAfter("shape", "ingest")            // move shape immediately after ingest
 let stepNames = orch.stepNames
 let stepCount = orch.stepCount
 let enabledNames = orch.enabledStepNames         // names of only enabled steps

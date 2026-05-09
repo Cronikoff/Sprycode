@@ -15333,6 +15333,81 @@ class SpryOrchestrator:
         self._steps.clear()
         self._disabled.clear()
 
+    def getStepIndex(self, name: Any) -> int:
+        """Return the 0-based index of the first step with the given name, or -1 if absent."""
+        key = str(name)
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key:
+                return i
+        return -1
+
+    def moveStepFirst(self, name: Any) -> bool:
+        """Move the step to position 0.  Returns True on success, False if not found."""
+        key = str(name)
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key:
+                self._steps.insert(0, self._steps.pop(i))
+                return True
+        return False
+
+    def moveStepLast(self, name: Any) -> bool:
+        """Move the step to the last position.  Returns True on success, False if not found."""
+        key = str(name)
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key:
+                self._steps.append(self._steps.pop(i))
+                return True
+        return False
+
+    def moveStepBefore(self, name: Any, target: Any) -> bool:
+        """Move *name* immediately before *target*.
+
+        Returns True if both steps exist and the move was performed.
+        If *name* is already immediately before *target*, returns True without
+        modification.  Returns False if either step is not found.
+        """
+        key = str(name)
+        anchor = str(target)
+        src_idx = dst_idx = -1
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key and src_idx == -1:
+                src_idx = i
+            if step_name == anchor and dst_idx == -1:
+                dst_idx = i
+        if src_idx == -1 or dst_idx == -1:
+            return False
+        entry = self._steps.pop(src_idx)
+        # Recompute anchor index after removal.
+        dst_idx = next(
+            i for i, (sn, *_) in enumerate(self._steps) if sn == anchor
+        )
+        self._steps.insert(dst_idx, entry)
+        return True
+
+    def moveStepAfter(self, name: Any, target: Any) -> bool:
+        """Move *name* immediately after *target*.
+
+        Returns True if both steps exist and the move was performed.
+        Returns False if either step is not found.
+        """
+        key = str(name)
+        anchor = str(target)
+        src_idx = dst_idx = -1
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key and src_idx == -1:
+                src_idx = i
+            if step_name == anchor and dst_idx == -1:
+                dst_idx = i
+        if src_idx == -1 or dst_idx == -1:
+            return False
+        entry = self._steps.pop(src_idx)
+        # Recompute anchor index after removal.
+        dst_idx = next(
+            i for i, (sn, *_) in enumerate(self._steps) if sn == anchor
+        )
+        self._steps.insert(dst_idx + 1, entry)
+        return True
+
     def loadRegistry(self, registry: Any) -> int:
         if not isinstance(registry, SpryServiceRegistry):
             raise SpryRuntimeError("Orchestrator.loadRegistry expects ServiceRegistry", None)
@@ -15461,6 +15536,11 @@ class SpryOrchestrator:
             "enableStep": self.enableStep,
             "isStepEnabled": self.isStepEnabled,
             "getStepConfig": self.getStepConfig,
+            "getStepIndex": self.getStepIndex,
+            "moveStepFirst": self.moveStepFirst,
+            "moveStepLast": self.moveStepLast,
+            "moveStepBefore": self.moveStepBefore,
+            "moveStepAfter": self.moveStepAfter,
             "removeStep": self.removeStep,
             "clearSteps": self.clearSteps,
             "loadRegistry": self.loadRegistry,

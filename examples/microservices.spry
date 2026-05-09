@@ -451,6 +451,38 @@ task stepEnableDisableDemo {
     log info "step count (total/enabled): " + str(orch.stepCount) + "/" + str(orch.enabledStepCount)
 }
 
+// ── orchestrator step priority / ordering ─────────────────────────────────
+task stepPriorityDemo {
+    let orch = Orchestrator.new()
+    orch.addStep("ingest",    fn(state) => state + 1)
+    orch.addStep("transform", fn(state) => state * 10)
+    orch.addStep("emit",      fn(state) => state - 2)
+
+    // Inspect current order.
+    log info "Initial order: " + str(orch.stepNames)
+    log info "transform index: " + str(orch.getStepIndex("transform"))
+
+    // Move emit to run first (highest priority).
+    orch.moveStepFirst("emit")
+    log info "After moveStepFirst(emit): " + str(orch.stepNames)
+
+    // Move ingest to run last.
+    orch.moveStepLast("ingest")
+    log info "After moveStepLast(ingest): " + str(orch.stepNames)
+
+    // Put transform immediately before emit (currently last).
+    orch.moveStepBefore("transform", "ingest")
+    log info "After moveStepBefore(transform, ingest): " + str(orch.stepNames)
+
+    // Move emit immediately after transform.
+    orch.moveStepAfter("emit", "transform")
+    log info "After moveStepAfter(emit, transform): " + str(orch.stepNames)
+
+    // Run convergence loop with reordered pipeline.
+    let out = orch.runManaged(fn(state) => state >= 50, 1, 20)
+    log info "Convergence result: " + str(out)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -473,4 +505,5 @@ task main {
     loopHistoryDemo()
     stepReconfigureDemo()
     stepEnableDisableDemo()
+    stepPriorityDemo()
 }

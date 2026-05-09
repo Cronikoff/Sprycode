@@ -15547,6 +15547,27 @@ class SpryOrchestrator:
                     peaks[step_name] = attempts
         return peaks
 
+    @property
+    def stepCycleCounts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for cycle_attempts in self._cycle_history:
+            for step_name in cycle_attempts:
+                counts[step_name] = counts.get(step_name, 0) + 1
+        return counts
+
+    @property
+    def stepAttemptAverages(self) -> dict[str, float]:
+        totals: dict[str, int] = {}
+        counts: dict[str, int] = {}
+        for cycle_attempts in self._cycle_history:
+            for step_name, attempts in cycle_attempts.items():
+                totals[step_name] = totals.get(step_name, 0) + attempts
+                counts[step_name] = counts.get(step_name, 0) + 1
+        avgs: dict[str, float] = {}
+        for step_name, total in totals.items():
+            avgs[step_name] = total / counts[step_name]
+        return avgs
+
     def resetHistory(self) -> None:
         self._last_cycle_attempts = {}
         self._cycle_history = []
@@ -15594,6 +15615,10 @@ class SpryOrchestrator:
             return self.stepAttemptTotals
         if prop == "stepAttemptPeaks":
             return self.stepAttemptPeaks
+        if prop == "stepCycleCounts":
+            return self.stepCycleCounts
+        if prop == "stepAttemptAverages":
+            return self.stepAttemptAverages
         if prop == "totalCycles":
             return self.totalCycles
         raise SpryRuntimeError(f"Orchestrator has no property {prop!r}", None)

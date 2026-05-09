@@ -15796,6 +15796,19 @@ class SpryOrchestrator:
             report_state_gain = None
             report_state_gain_per_cycle = None
             report_state_gain_per_attempt = None
+        target_state_gain_sum = sum(
+            t.get("stateGain", 0)
+            for t in targets
+            if isinstance(t.get("stateGain"), (int, float))
+        )
+        if isinstance(report_state_gain, (int, float)):
+            pre_target_state_gain = report_state_gain - target_state_gain_sum
+            report_state_gain_coverage = (
+                target_state_gain_sum / report_state_gain if report_state_gain != 0 else None
+            )
+        else:
+            pre_target_state_gain = None
+            report_state_gain_coverage = None
         return {
             "state": state,
             "targets": targets,
@@ -15811,6 +15824,9 @@ class SpryOrchestrator:
             "reportStateGain": report_state_gain,
             "reportStateGainPerCycle": report_state_gain_per_cycle,
             "reportStateGainPerAttempt": report_state_gain_per_attempt,
+            "targetStateGainSum": target_state_gain_sum,
+            "preTargetStateGain": pre_target_state_gain,
+            "reportStateGainCoverage": report_state_gain_coverage,
         }
 
     @property

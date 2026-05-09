@@ -15782,18 +15782,35 @@ class SpryOrchestrator:
                 "vigorous": 0.0,
             }
         spry_summary_meaning = spry_meaning_for(spry_average_score)
+        report_cycles = self._total_cycles - total_cycles_before
+        report_total_attempts = sum(t["totalAttempts"] for t in targets)
+        if isinstance(state, (int, float)) and isinstance(initial_state, (int, float)):
+            report_state_gain: Any = state - initial_state
+            report_state_gain_per_cycle = (
+                report_state_gain / report_cycles if report_cycles > 0 else None
+            )
+            report_state_gain_per_attempt = (
+                report_state_gain / report_total_attempts if report_total_attempts > 0 else None
+            )
+        else:
+            report_state_gain = None
+            report_state_gain_per_cycle = None
+            report_state_gain_per_attempt = None
         return {
             "state": state,
             "targets": targets,
             "serviceLoops": service_loops,
             "fullyDeveloped": self.capabilityFullyDeveloped,
             "remainingTargets": self.capabilityRemainingTargets,
-            "cycles": self._total_cycles - total_cycles_before,
+            "cycles": report_cycles,
             "spryAverageScore": spry_average_score,
             "spryPeakScore": spry_peak_score,
             "spryDistribution": spry_distribution,
             "spryDistributionRatios": spry_distribution_ratios,
             "sprySummaryMeaning": spry_summary_meaning,
+            "reportStateGain": report_state_gain,
+            "reportStateGainPerCycle": report_state_gain_per_cycle,
+            "reportStateGainPerAttempt": report_state_gain_per_attempt,
         }
 
     @property

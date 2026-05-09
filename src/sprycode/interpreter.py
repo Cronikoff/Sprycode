@@ -15568,6 +15568,32 @@ class SpryOrchestrator:
             avgs[step_name] = total / counts[step_name]
         return avgs
 
+    @property
+    def stepLoopUtilization(self) -> dict[str, float]:
+        avgs = self.stepAttemptAverages
+        utilization: dict[str, float] = {}
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_solved_fn is None or step_max_loops is None:
+                continue
+            avg = avgs.get(step_name)
+            if avg is None:
+                continue
+            utilization[step_name] = avg / float(step_max_loops)
+        return utilization
+
+    @property
+    def stepLoopHeadroom(self) -> dict[str, float]:
+        avgs = self.stepAttemptAverages
+        headroom: dict[str, float] = {}
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_solved_fn is None or step_max_loops is None:
+                continue
+            avg = avgs.get(step_name)
+            if avg is None:
+                continue
+            headroom[step_name] = float(step_max_loops) - avg
+        return headroom
+
     def resetHistory(self) -> None:
         self._last_cycle_attempts = {}
         self._cycle_history = []
@@ -15589,6 +15615,11 @@ class SpryOrchestrator:
             if mins is None or attempts < mins:
                 mins = attempts
         avg: float | None = totals / cycle_count if cycle_count > 0 else None
+        loop_utilization: float | None = None
+        loop_headroom: float | None = None
+        if step_solved_fn is not None and step_max_loops is not None and avg is not None:
+            loop_utilization = avg / float(step_max_loops)
+            loop_headroom = float(step_max_loops) - avg
         return {
             "name": step_name,
             "managed": step_solved_fn is not None,
@@ -15599,6 +15630,8 @@ class SpryOrchestrator:
             "minAttempts": mins if mins is not None else 0,
             "cycleCounts": cycle_count,
             "avgAttempts": avg,
+            "loopUtilization": loop_utilization,
+            "loopHeadroom": loop_headroom,
         }
 
     def getStepSummary(self, name: Any) -> Any:
@@ -15662,6 +15695,10 @@ class SpryOrchestrator:
             return self.stepCycleCounts
         if prop == "stepAttemptAverages":
             return self.stepAttemptAverages
+        if prop == "stepLoopUtilization":
+            return self.stepLoopUtilization
+        if prop == "stepLoopHeadroom":
+            return self.stepLoopHeadroom
         if prop == "summary":
             return self.summary
         if prop == "totalCycles":

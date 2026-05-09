@@ -255,8 +255,10 @@ let totals = orch.stepAttemptTotals             // { "ingest": 6, "shape": 3, ..
 let peaks = orch.stepAttemptPeaks               // { "ingest": 3, "shape": 1, ... }
 let counts = orch.stepCycleCounts               // { "ingest": 3, "shape": 3, ... }
 let avgs = orch.stepAttemptAverages             // { "ingest": 2.0, "shape": 1.0, ... }
+let util = orch.stepLoopUtilization             // managed steps: avgAttempts/maxLoops
+let room = orch.stepLoopHeadroom                // managed steps: maxLoops-avgAttempts
 let cycles = orch.totalCycles                   // total completed cycles
-let full = orch.summary                         // [ { name, managed, maxLoops, enabled, totalAttempts, peakAttempts, minAttempts, cycleCounts, avgAttempts }, ... ]
+let full = orch.summary                         // [ { name, managed, maxLoops, enabled, totalAttempts, peakAttempts, minAttempts, cycleCounts, avgAttempts, loopUtilization, loopHeadroom }, ... ]
 let stepSum = orch.getStepSummary("ingest")     // same shape as summary entry, or undefined if not found
 orch.resetHistory()                             // reset attempts + timeline + aggregates + cycle counter
 ```

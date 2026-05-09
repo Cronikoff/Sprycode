@@ -400,6 +400,8 @@ task loopHistoryDemo {
     let peaks = orch.stepAttemptPeaks
     let counts = orch.stepCycleCounts
     let avgs = orch.stepAttemptAverages
+    let util = orch.stepLoopUtilization
+    let room = orch.stepLoopHeadroom
     let total = orch.totalCycles
     let fullSummary = orch.summary
     log info "Stabilize attempts in last cycle: " + str(hist)
@@ -408,6 +410,8 @@ task loopHistoryDemo {
     log info "Step-attempt peaks: " + str(peaks)
     log info "Step cycle counts: " + str(counts)
     log info "Step attempt averages: " + str(avgs)
+    log info "Step loop utilization: " + str(util)
+    log info "Step loop headroom: " + str(room)
     log info "Total cycles completed: " + str(total)
     log info "Full step summary: " + str(fullSummary)
     orch.resetHistory()

@@ -223,6 +223,12 @@ orch.addManagedStep(                             // per-step microservice loop u
     fn(state, cycle, name, attempt) => state >= 3,
     5
 )
+orch.setManagedStep(                             // promote/update one existing step as managed
+    "shape",
+    fn(state, cycle, name, attempt) => attempt >= 2,
+    5
+)
+orch.setUnmanagedStep("shape")                   // revert one step back to single-pass behavior
 orch.loadRegistryManaged(                        // load all registry services as managed steps
     reg,
     fn(state, cycle, name, attempt) => attempt >= 2,

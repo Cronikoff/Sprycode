@@ -401,6 +401,27 @@ task loopHistoryDemo {
     orch.resetHistory()
 }
 
+// ── orchestrator step-level loop micromanagement ───────────────────────────
+task stepReconfigureDemo {
+    let orch = Orchestrator.new()
+    orch.addStep("svc", fn(state) {
+        if state == undefined { return 1 }
+        return state + 1
+    })
+
+    // Promote existing step to managed mode.
+    orch.setManagedStep("svc", fn(state, cycle, name, attempt) => attempt >= 2, 5)
+    let managedOut = orch.runCycle(0, 1)
+    log info "Managed step output: " + str(managedOut)
+    log info "Managed attempts: " + str(orch.lastCycleAttempts)
+
+    // Revert to single-pass (unmanaged) mode.
+    orch.setUnmanagedStep("svc")
+    let unmanagedOut = orch.runCycle(0, 2)
+    log info "Unmanaged step output: " + str(unmanagedOut)
+    log info "Unmanaged attempts: " + str(orch.lastCycleAttempts)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -421,4 +442,5 @@ task main {
     managedStepDemo()
     managedRegistryLoadDemo()
     loopHistoryDemo()
+    stepReconfigureDemo()
 }

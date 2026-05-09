@@ -15247,6 +15247,30 @@ class SpryOrchestrator:
         self._steps.append((str(name), fn, solved_fn, max_attempts))
         return len(self._steps)
 
+    def setManagedStep(self, name: Any, solved_fn: Any, max_loops: Any = 1000) -> bool:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be >= 1", None)
+        key = str(name)
+        for i in range(len(self._steps) - 1, -1, -1):
+            step_name, step_fn, _, _ = self._steps[i]
+            if step_name == key:
+                self._steps[i] = (step_name, step_fn, solved_fn, max_attempts)
+                return True
+        return False
+
+    def setUnmanagedStep(self, name: Any) -> bool:
+        key = str(name)
+        for i in range(len(self._steps) - 1, -1, -1):
+            step_name, step_fn, _, _ = self._steps[i]
+            if step_name == key:
+                self._steps[i] = (step_name, step_fn, None, None)
+                return True
+        return False
+
     def removeStep(self, name: Any) -> bool:
         key = str(name)
         for i in range(len(self._steps) - 1, -1, -1):
@@ -15370,6 +15394,8 @@ class SpryOrchestrator:
         _methods: dict = {
             "addStep": self.addStep,
             "addManagedStep": self.addManagedStep,
+            "setManagedStep": self.setManagedStep,
+            "setUnmanagedStep": self.setUnmanagedStep,
             "removeStep": self.removeStep,
             "clearSteps": self.clearSteps,
             "loadRegistry": self.loadRegistry,

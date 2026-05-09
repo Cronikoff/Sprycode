@@ -15677,6 +15677,17 @@ class SpryOrchestrator:
                 if target_cycles_count > 0
                 else None
             )
+            state_gain = state_after - state_before if isinstance(state_after, (int, float)) and isinstance(state_before, (int, float)) else None
+            state_gain_per_cycle = (
+                state_gain / target_cycles_count
+                if state_gain is not None and target_cycles_count > 0
+                else None
+            )
+            state_gain_per_attempt = (
+                state_gain / target_total_attempts
+                if state_gain is not None and target_total_attempts > 0
+                else None
+            )
             targets.append(
                 {
                     "name": target,
@@ -15693,6 +15704,9 @@ class SpryOrchestrator:
                     "totalAttempts": target_total_attempts,
                     "peakCycleAttempts": target_peak_cycle_attempts,
                     "avgAttemptsPerCycle": target_avg_attempts_per_cycle,
+                    "stateGain": state_gain,
+                    "stateGainPerCycle": state_gain_per_cycle,
+                    "stateGainPerAttempt": state_gain_per_attempt,
                 }
             )
         loop_history_delta = self._cycle_history[cycle_history_before:]

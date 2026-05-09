@@ -15769,6 +15769,18 @@ class SpryOrchestrator:
             meaning = t.get("spryMeaning")
             if meaning in spry_distribution:
                 spry_distribution[meaning] += 1
+        target_count = len(targets)
+        if target_count > 0:
+            spry_distribution_ratios = {
+                band: count / target_count for band, count in spry_distribution.items()
+            }
+        else:
+            spry_distribution_ratios = {
+                "lively": 0.0,
+                "active": 0.0,
+                "brisk": 0.0,
+                "vigorous": 0.0,
+            }
         spry_summary_meaning = spry_meaning_for(spry_average_score)
         return {
             "state": state,
@@ -15780,6 +15792,7 @@ class SpryOrchestrator:
             "spryAverageScore": spry_average_score,
             "spryPeakScore": spry_peak_score,
             "spryDistribution": spry_distribution,
+            "spryDistributionRatios": spry_distribution_ratios,
             "sprySummaryMeaning": spry_summary_meaning,
         }
 

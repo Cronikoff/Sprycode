@@ -15622,6 +15622,17 @@ class SpryOrchestrator:
         initial_state: Any = SPRY_UNDEFINED,
         max_loops_per_target: Any = 1000,
     ) -> dict[str, Any]:
+        def spry_meaning_for(score: Any) -> Any:
+            if score is None:
+                return None
+            if score >= 5:
+                return "vigorous"
+            if score >= 3:
+                return "brisk"
+            if score >= 1:
+                return "active"
+            return "lively"
+
         state = initial_state
         total_cycles_before = self._total_cycles
         cycle_history_before = len(self._cycle_history)
@@ -15696,16 +15707,7 @@ class SpryOrchestrator:
                 if state_gain_per_cycle is not None and state_gain_per_attempt is not None
                 else None
             )
-            if spry_score is None:
-                spry_meaning = None
-            elif spry_score >= 5:
-                spry_meaning = "vigorous"
-            elif spry_score >= 3:
-                spry_meaning = "brisk"
-            elif spry_score >= 1:
-                spry_meaning = "active"
-            else:
-                spry_meaning = "lively"
+            spry_meaning = spry_meaning_for(spry_score)
             targets.append(
                 {
                     "name": target,
@@ -15767,16 +15769,7 @@ class SpryOrchestrator:
             meaning = t.get("spryMeaning")
             if meaning in spry_distribution:
                 spry_distribution[meaning] += 1
-        if spry_average_score is None:
-            spry_summary_meaning = None
-        elif spry_average_score >= 5:
-            spry_summary_meaning = "vigorous"
-        elif spry_average_score >= 3:
-            spry_summary_meaning = "brisk"
-        elif spry_average_score >= 1:
-            spry_summary_meaning = "active"
-        else:
-            spry_summary_meaning = "lively"
+        spry_summary_meaning = spry_meaning_for(spry_average_score)
         return {
             "state": state,
             "targets": targets,

@@ -15605,6 +15605,40 @@ class SpryOrchestrator:
                 return state
             state = self.runTargetUntilMature(target, state, max_loops_per_target)
 
+    def runCapabilityPathwayManagedReport(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops_per_target: Any = 1000,
+    ) -> dict[str, Any]:
+        state = initial_state
+        total_cycles_before = self._total_cycles
+        targets: list[dict[str, Any]] = []
+        if self.nextCapabilityTarget is SPRY_UNDEFINED and self._active_managed_step_names():
+            state = self.runCycle(state, 1)
+            self._total_cycles += 1
+        while True:
+            target = self.nextCapabilityTarget
+            if target is SPRY_UNDEFINED:
+                break
+            start_stage = self.stepCapabilityStages.get(target)
+            start_cycles = self._total_cycles
+            state = self.runTargetUntilMature(target, state, max_loops_per_target)
+            targets.append(
+                {
+                    "name": target,
+                    "startStage": start_stage,
+                    "endStage": self.stepCapabilityStages.get(target),
+                    "cycles": self._total_cycles - start_cycles,
+                }
+            )
+        return {
+            "state": state,
+            "targets": targets,
+            "fullyDeveloped": self.capabilityFullyDeveloped,
+            "remainingTargets": self.capabilityRemainingTargets,
+            "cycles": self._total_cycles - total_cycles_before,
+        }
+
     @property
     def enabledStepNames(self) -> list[str]:
         return [name for name, *_ in self._steps if name not in self._disabled]
@@ -15934,6 +15968,7 @@ class SpryOrchestrator:
             "runTargetUntilMature": self.runTargetUntilMature,
             "runNextCapabilityTarget": self.runNextCapabilityTarget,
             "runCapabilityPathwayManaged": self.runCapabilityPathwayManaged,
+            "runCapabilityPathwayManagedReport": self.runCapabilityPathwayManagedReport,
             "resetHistory": self.resetHistory,
             "getStepSummary": self.getStepSummary,
         }

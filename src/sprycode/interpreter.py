@@ -15594,12 +15594,41 @@ class SpryOrchestrator:
             headroom[step_name] = float(step_max_loops) - avg
         return headroom
 
+    def _loop_pressure_ranks(self) -> dict[str, int]:
+        utilization = self.stepLoopUtilization
+        if not utilization:
+            return {}
+        positions = {step_name: i for i, (step_name, *_) in enumerate(self._steps)}
+        ordered = sorted(
+            utilization,
+            key=lambda step_name: (-utilization[step_name], positions.get(step_name, 0)),
+        )
+        return {step_name: idx + 1 for idx, step_name in enumerate(ordered)}
+
+    @property
+    def stepPressurePath(self) -> list[str]:
+        ranks = self._loop_pressure_ranks()
+        return sorted(ranks, key=lambda step_name: ranks[step_name])
+
+    @property
+    def primaryBottleneck(self) -> Any:
+        path = self.stepPressurePath
+        if not path:
+            return SPRY_UNDEFINED
+        return path[0]
+
     def resetHistory(self) -> None:
         self._last_cycle_attempts = {}
         self._cycle_history = []
         self._total_cycles = 0
 
-    def _build_step_summary(self, step_name: str, step_solved_fn: Any, step_max_loops: Any) -> dict:
+    def _build_step_summary(
+        self,
+        step_name: str,
+        step_solved_fn: Any,
+        step_max_loops: Any,
+        pressure_ranks: dict[str, int] | None = None,
+    ) -> dict:
         totals = 0
         peaks = 0
         mins: int | None = None
@@ -15632,20 +15661,35 @@ class SpryOrchestrator:
             "avgAttempts": avg,
             "loopUtilization": loop_utilization,
             "loopHeadroom": loop_headroom,
+            "loopPressureRank": (pressure_ranks or {}).get(step_name),
         }
 
     def getStepSummary(self, name: Any) -> Any:
         key = str(name)
+        pressure_ranks = self._loop_pressure_ranks()
         for step_name, _, step_solved_fn, step_max_loops in self._steps:
             if step_name == key:
-                return self._build_step_summary(step_name, step_solved_fn, step_max_loops)
+                return self._build_step_summary(
+                    step_name,
+                    step_solved_fn,
+                    step_max_loops,
+                    pressure_ranks,
+                )
         return SPRY_UNDEFINED
 
     @property
     def summary(self) -> list:
+        pressure_ranks = self._loop_pressure_ranks()
         result = []
         for step_name, _, step_solved_fn, step_max_loops in self._steps:
-            result.append(self._build_step_summary(step_name, step_solved_fn, step_max_loops))
+            result.append(
+                self._build_step_summary(
+                    step_name,
+                    step_solved_fn,
+                    step_max_loops,
+                    pressure_ranks,
+                )
+            )
         return result
 
     def _spry_get_prop(self, prop: str) -> Any:
@@ -15699,6 +15743,10 @@ class SpryOrchestrator:
             return self.stepLoopUtilization
         if prop == "stepLoopHeadroom":
             return self.stepLoopHeadroom
+        if prop == "stepPressurePath":
+            return self.stepPressurePath
+        if prop == "primaryBottleneck":
+            return self.primaryBottleneck
         if prop == "summary":
             return self.summary
         if prop == "totalCycles":

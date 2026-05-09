@@ -23,11 +23,11 @@ class TestOrchestratorStepReconfiguration:
         i = run("""
             let orch = Orchestrator.new()
             orch.addStep("svc", fn(state) => state + 1)
-            let ok = orch.setManagedStep("svc", fn(state, cycle, name, attempt) => attempt >= 2, 5)
+            let setManagedResult = orch.setManagedStep("svc", fn(state, cycle, name, attempt) => attempt >= 2, 5)
             let out = orch.runCycle(0, 1)
             let attempts = orch.lastCycleAttempts
         """)
-        assert val(i, "ok") is True
+        assert val(i, "setManagedResult") is True
         assert val(i, "out") == 2
         assert val(i, "attempts")["svc"] == 2
 
@@ -49,9 +49,9 @@ class TestOrchestratorStepReconfiguration:
     def test_set_managed_step_returns_false_when_missing(self):
         i = run("""
             let orch = Orchestrator.new()
-            let ok = orch.setManagedStep("missing", fn(state) => true, 3)
+            let setManagedResult = orch.setManagedStep("missing", fn(state) => true, 3)
         """)
-        assert val(i, "ok") is False
+        assert val(i, "setManagedResult") is False
 
     def test_set_unmanaged_step_reverts_managed_loop_to_single_run(self):
         i = run("""
@@ -62,20 +62,20 @@ class TestOrchestratorStepReconfiguration:
                 fn(state, cycle, name, attempt) => attempt >= 3,
                 5
             )
-            let ok = orch.setUnmanagedStep("svc")
+            let setUnmanagedResult = orch.setUnmanagedStep("svc")
             let out = orch.runCycle(0, 1)
             let attempts = orch.lastCycleAttempts
         """)
-        assert val(i, "ok") is True
+        assert val(i, "setUnmanagedResult") is True
         assert val(i, "out") == 1
         assert val(i, "attempts")["svc"] == 1
 
     def test_set_unmanaged_step_returns_false_when_missing(self):
         i = run("""
             let orch = Orchestrator.new()
-            let ok = orch.setUnmanagedStep("missing")
+            let setUnmanagedResult = orch.setUnmanagedStep("missing")
         """)
-        assert val(i, "ok") is False
+        assert val(i, "setUnmanagedResult") is False
 
     def test_set_managed_step_invalid_max_loops_raises(self):
         with pytest.raises(SpryRuntimeError, match="max_loops"):
@@ -91,10 +91,10 @@ class TestOrchestratorStepReconfiguration:
             reg.register("ingest", fn(state) => state + 1)
             let orch = Orchestrator.new()
             orch.loadRegistry(reg)
-            let ok = orch.setManagedStep("ingest", fn(state, cycle, name, attempt) => attempt >= 2, 5)
+            let setManagedResult = orch.setManagedStep("ingest", fn(state, cycle, name, attempt) => attempt >= 2, 5)
             let out = orch.runCycle(0, 1)
             let attempts = orch.lastCycleAttempts
         """)
-        assert val(i, "ok") is True
+        assert val(i, "setManagedResult") is True
         assert val(i, "out") == 2
         assert val(i, "attempts")["ingest"] == 2

@@ -15216,7 +15216,11 @@ class SpryOrchestrator:
         # For non-managed steps, step_solved_fn and step_max_loops are None.
         self._steps: list[tuple[str, Any, Any, int | None]] = []
         # Disabled step names: steps that exist but are skipped by runCycle.
-        self._disabled: set[str] = set()
+        # Lifecycle invariant — _disabled is kept consistent by:
+        #   addStep / addManagedStep: always discard the name so that re-adding a
+        #     previously disabled step automatically re-enables it.
+        #   removeStep / clearSteps: discard the name to prevent stale entries.
+        self._disabled: set[str] = set()  # names present here are skipped in runCycle
         # History tracking: attempt counts per step for the last cycle, and
         # the total number of completed cycles across runUntilSolved/runManaged.
         self._last_cycle_attempts: dict[str, int] = {}
@@ -15277,31 +15281,32 @@ class SpryOrchestrator:
                 return True
         return False
 
+    def _step_exists(self, key: str) -> bool:
+        """Return True if a step with the given name is registered.
+
+        Note: this reflects registration status only, independent of whether
+        the step is currently enabled or disabled.  Use isStepEnabled() to
+        check both existence and enabled state simultaneously.
+        """
+        return any(step_name == key for step_name, *_ in self._steps)
+
     def disableStep(self, name: Any) -> bool:
         key = str(name)
-        for step_name, *_ in self._steps:
-            if step_name == key:
-                self._disabled.add(key)
-                return True
+        if self._step_exists(key):
+            self._disabled.add(key)
+            return True
         return False
 
     def enableStep(self, name: Any) -> bool:
         key = str(name)
-        if key in self._disabled:
-            self._disabled.discard(key)
-            return True
-        # Also return True if the step exists and was already enabled.
-        for step_name, *_ in self._steps:
-            if step_name == key:
-                return True
-        return False
+        if not self._step_exists(key):
+            return False
+        self._disabled.discard(key)
+        return True
 
     def isStepEnabled(self, name: Any) -> bool:
         key = str(name)
-        for step_name, *_ in self._steps:
-            if step_name == key:
-                return key not in self._disabled
-        return False
+        return self._step_exists(key) and key not in self._disabled
 
     def getStepConfig(self, name: Any) -> Any:
         key = str(name)

@@ -1502,7 +1502,7 @@ class Interpreter:
         env.define("EventBus", _EventBusNamespace(self._call_value))
         env.define("Supervisor", _SupervisorNamespace(self._call_value))
         env.define("WorkerPool", _WorkerPoolNamespace(self._call_value))
-        env.define("ServiceRegistry", _ServiceRegistryNamespace(self._call_value))
+        env.define("ServiceRegistry", _ServiceRegistryNamespace(self._call_value, self._truthy))
         env.define("Orchestrator", _OrchestratorNamespace(self._call_value, self._truthy))
 
         # Error types
@@ -15082,8 +15082,9 @@ class _WorkerPoolNamespace:
 class SpryServiceRegistry:
     """Service registry for naming and resolving microservice functions."""
 
-    def __init__(self, call_fn: Any) -> None:
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
         self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
         self._services: dict[str, Any] = {}
 
     def register(self, name: Any, service: Any) -> bool:
@@ -15114,6 +15115,38 @@ class SpryServiceRegistry:
             return service(*args)
         return service
 
+    def runUntilSolved(
+        self,
+        name: Any,
+        solved_fn: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("ServiceRegistry max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("ServiceRegistry max_loops must be >= 1", None)
+        key = str(name)
+        if key not in self._services:
+            raise SpryRuntimeError(f"ServiceRegistry service {key!r} not found", None)
+        state = initial_state
+        for attempt in range(1, max_attempts + 1):
+            state = self.call(key, state, attempt, key)
+            if self._call_fn is not None:
+                solved = self._call_fn(solved_fn, [state, attempt, key])
+            elif callable(solved_fn):
+                solved = solved_fn(state, attempt, key)
+            else:
+                solved = solved_fn
+            if self._truthy_fn(solved):
+                return state
+        raise SpryRuntimeError(
+            f"ServiceRegistry service {key!r} exceeded max_loops ({max_attempts}) without reaching solved state",
+            None,
+        )
+
     @property
     def names(self) -> list[str]:
         return list(self._services.keys())
@@ -15132,6 +15165,7 @@ class SpryServiceRegistry:
             "has": self.has,
             "get": self.get,
             "call": self.call,
+            "runUntilSolved": self.runUntilSolved,
             "clear": self.clear,
         }
         if prop in _methods:
@@ -15150,11 +15184,12 @@ class SpryServiceRegistry:
 
 
 class _ServiceRegistryNamespace:
-    def __init__(self, call_fn: Any) -> None:
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
         self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
 
     def new(self) -> SpryServiceRegistry:
-        return SpryServiceRegistry(self._call_fn)
+        return SpryServiceRegistry(self._call_fn, self._truthy_fn)
 
     def __call__(self) -> SpryServiceRegistry:
         return self.new()
@@ -15241,6 +15276,14 @@ class SpryOrchestrator:
             None,
         )
 
+    def runManaged(
+        self,
+        solved_fn: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        return self.runUntilSolved(solved_fn, initial_state, max_loops)
+
     @property
     def stepNames(self) -> list[str]:
         return [name for name, _ in self._steps]
@@ -15257,6 +15300,7 @@ class SpryOrchestrator:
             "loadRegistry": self.loadRegistry,
             "runCycle": self.runCycle,
             "runUntilSolved": self.runUntilSolved,
+            "runManaged": self.runManaged,
         }
         if prop in _methods:
             return _methods[prop]

@@ -321,6 +321,24 @@ task micromanagedOrchestrationDemo {
     log info "Micromanaged orchestration final: " + str(final)
 }
 
+// ── registry.runUntilSolved + orchestrator.runManaged nested pathway ───────
+task nestedManagedLoopDemo {
+    let registry = ServiceRegistry.new()
+    registry.register("refine", fn(state) {
+        if state == undefined { return 1 }
+        return state + 1
+    })
+
+    let orch = Orchestrator.new()
+    orch.addStep("innerRefineLoop", fn(state, cycle) {
+        return registry.runUntilSolved("refine", fn(inner) => inner >= 2, state, 5)
+    })
+    orch.addStep("finalize", fn(state) => state + 1)
+
+    let final = orch.runManaged(fn(state) => state >= 5, undefined, 5)
+    log info "Nested managed loop final: " + str(final)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -337,4 +355,5 @@ task main {
     workerPoolDemo()
     orchestratorDemo()
     micromanagedOrchestrationDemo()
+    nestedManagedLoopDemo()
 }

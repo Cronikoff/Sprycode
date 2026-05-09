@@ -197,12 +197,23 @@ reg.register("shape", fn(state) => state * 2)
 let svcNames = reg.names
 let count = reg.size
 let out = reg.call("ingest", 41, 1)              // 42
+let converged = reg.runUntilSolved(
+    "ingest",
+    fn(state, attempt, name) => state >= 10,
+    0,
+    100
+)
 
 // Orchestrator — loop service steps by cycle until solved
 let orch = Orchestrator.new()
 orch.loadRegistry(reg)                           // adds all registered services as steps
 let final = orch.runUntilSolved(
     fn(state, cycle) => state >= 10,
+    0,
+    100
+)
+let finalManaged = orch.runManaged(              // alias for managed structural pathway loops
+    fn(state, cycle) => state >= 20,
     0,
     100
 )

@@ -1502,6 +1502,8 @@ class Interpreter:
         env.define("EventBus", _EventBusNamespace(self._call_value))
         env.define("Supervisor", _SupervisorNamespace(self._call_value))
         env.define("WorkerPool", _WorkerPoolNamespace(self._call_value))
+        env.define("ServiceRegistry", _ServiceRegistryNamespace(self._call_value))
+        env.define("Orchestrator", _OrchestratorNamespace(self._call_value, self._truthy))
 
         # Error types
         for _ename in ("Error", "TypeError", "RangeError", "SyntaxError",
@@ -15072,3 +15074,223 @@ class _WorkerPoolNamespace:
 
     def __repr__(self) -> str:
         return "WorkerPool"
+
+
+# ---------------------------------------------------------------------------
+
+
+class SpryServiceRegistry:
+    """Service registry for naming and resolving microservice functions."""
+
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._services: dict[str, Any] = {}
+
+    def register(self, name: Any, service: Any) -> bool:
+        self._services[str(name)] = service
+        return True
+
+    def unregister(self, name: Any) -> bool:
+        key = str(name)
+        if key not in self._services:
+            return False
+        del self._services[key]
+        return True
+
+    def has(self, name: Any) -> bool:
+        return str(name) in self._services
+
+    def get(self, name: Any) -> Any:
+        return self._services.get(str(name), SPRY_UNDEFINED)
+
+    def call(self, name: Any, *args: Any) -> Any:
+        key = str(name)
+        if key not in self._services:
+            raise SpryRuntimeError(f"ServiceRegistry service {key!r} not found", None)
+        service = self._services[key]
+        if self._call_fn is not None:
+            return self._call_fn(service, list(args))
+        if callable(service):
+            return service(*args)
+        return service
+
+    @property
+    def names(self) -> list[str]:
+        return list(self._services.keys())
+
+    @property
+    def size(self) -> int:
+        return len(self._services)
+
+    def clear(self) -> None:
+        self._services.clear()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "register": self.register,
+            "unregister": self.unregister,
+            "has": self.has,
+            "get": self.get,
+            "call": self.call,
+            "clear": self.clear,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "names":
+            return self.names
+        if prop == "size":
+            return self.size
+        raise SpryRuntimeError(f"ServiceRegistry has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"ServiceRegistry.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"ServiceRegistry(size={len(self._services)})"
+
+
+class _ServiceRegistryNamespace:
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+
+    def new(self) -> SpryServiceRegistry:
+        return SpryServiceRegistry(self._call_fn)
+
+    def __call__(self) -> SpryServiceRegistry:
+        return self.new()
+
+    def create(self) -> SpryServiceRegistry:
+        return self.new()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"ServiceRegistry.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "ServiceRegistry"
+
+
+class SpryOrchestrator:
+    """Loop microservice steps by cycle until solved."""
+
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
+        self._steps: list[tuple[str, Any]] = []
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return fn
+
+    def addStep(self, name: Any, fn: Any) -> int:
+        self._steps.append((str(name), fn))
+        return len(self._steps)
+
+    def removeStep(self, name: Any) -> bool:
+        key = str(name)
+        for i in range(len(self._steps) - 1, -1, -1):
+            if self._steps[i][0] == key:
+                self._steps.pop(i)
+                return True
+        return False
+
+    def clearSteps(self) -> None:
+        self._steps.clear()
+
+    def loadRegistry(self, registry: Any) -> int:
+        if not isinstance(registry, SpryServiceRegistry):
+            raise SpryRuntimeError("Orchestrator.loadRegistry expects ServiceRegistry", None)
+        for service_name in registry.names:
+            self.addStep(service_name, registry.get(service_name))
+        return len(self._steps)
+
+    def runCycle(self, state: Any = SPRY_UNDEFINED, cycle: Any = 1) -> Any:
+        try:
+            cycle_num = int(cycle)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator cycle must be a valid integer", None)
+        current = state
+        for step_name, step_fn in self._steps:
+            current = self._invoke(step_fn, [current, cycle_num, step_name])
+        return current
+
+    def runUntilSolved(
+        self,
+        solved_fn: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator max_loops must be >= 1", None)
+        state = initial_state
+        for cycle in range(1, max_attempts + 1):
+            state = self.runCycle(state, cycle)
+            solved = self._invoke(solved_fn, [state, cycle])
+            if self._truthy_fn(solved):
+                return state
+        raise SpryRuntimeError(
+            f"Orchestrator exceeded max_loops ({max_attempts}) without reaching solved state",
+            None,
+        )
+
+    @property
+    def stepNames(self) -> list[str]:
+        return [name for name, _ in self._steps]
+
+    @property
+    def stepCount(self) -> int:
+        return len(self._steps)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "addStep": self.addStep,
+            "removeStep": self.removeStep,
+            "clearSteps": self.clearSteps,
+            "loadRegistry": self.loadRegistry,
+            "runCycle": self.runCycle,
+            "runUntilSolved": self.runUntilSolved,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "stepNames":
+            return self.stepNames
+        if prop == "stepCount":
+            return self.stepCount
+        raise SpryRuntimeError(f"Orchestrator has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"Orchestrator.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"Orchestrator(steps={len(self._steps)})"
+
+
+class _OrchestratorNamespace:
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
+
+    def new(self) -> SpryOrchestrator:
+        return SpryOrchestrator(self._call_fn, self._truthy_fn)
+
+    def __call__(self) -> SpryOrchestrator:
+        return self.new()
+
+    def create(self) -> SpryOrchestrator:
+        return self.new()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"Orchestrator.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "Orchestrator"

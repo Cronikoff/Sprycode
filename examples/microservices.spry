@@ -273,6 +273,54 @@ task workerPoolDemo {
     log info "Pending: " + str(pool.pending)
 }
 
+// ── ServiceRegistry + Orchestrator: structural loop pathway ───────────────
+task orchestratorDemo {
+    let registry = ServiceRegistry.new()
+    registry.register("ingest", fn(state, cycle) {
+        var base = state
+        if base == undefined { base = 0 }
+        return base + 2
+    })
+    registry.register("shape", fn(state) {
+        return state - 1
+    })
+
+    let orch = Orchestrator.new()
+    orch.loadRegistry(registry)
+
+    let solved = orch.runUntilSolved(
+        fn(state, cycle) => state >= 7,
+        undefined,
+        10
+    )
+    log info "Orchestrated solved value: " + str(solved)
+}
+
+// ── micromanage + orchestrator working together ───────────────────────────
+task micromanagedOrchestrationDemo {
+    let registry = ServiceRegistry.new()
+    registry.register("fetch", fn(state, cycle) {
+        var base = state
+        if base == undefined { base = 1 }
+        return base + cycle
+    })
+    registry.register("stabilize", fn(state) => state * 1)
+
+    let orch = Orchestrator.new()
+    orch.loadRegistry(registry)
+    var current = undefined
+
+    let final = micromanage(
+        fn(attempt) {
+            current = orch.runCycle(current, attempt)
+            return current
+        },
+        fn(last, attempt) => last >= 6,
+        10
+    )
+    log info "Micromanaged orchestration final: " + str(final)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -287,4 +335,6 @@ task main {
     eventBusDemo()
     supervisorDemo()
     workerPoolDemo()
+    orchestratorDemo()
+    micromanagedOrchestrationDemo()
 }

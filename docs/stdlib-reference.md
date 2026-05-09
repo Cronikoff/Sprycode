@@ -189,6 +189,25 @@ let results = pool.results                       // [2, 4, 6]
 let errors  = pool.errors                        // []
 let pending = pool.pending                       // 0
 pool.reset()                                     // clear results + errors + queue
+
+// ServiceRegistry — register and resolve named services
+let reg = ServiceRegistry.new()
+reg.register("ingest", fn(state, cycle) => state + 1)
+reg.register("shape", fn(state) => state * 2)
+let svcNames = reg.names
+let count = reg.size
+let out = reg.call("ingest", 41, 1)              // 42
+
+// Orchestrator — loop service steps by cycle until solved
+let orch = Orchestrator.new()
+orch.loadRegistry(reg)                           // adds all registered services as steps
+let final = orch.runUntilSolved(
+    fn(state, cycle) => state >= 10,
+    0,
+    100
+)
+let stepNames = orch.stepNames
+let stepCount = orch.stepCount
 ```
 
 ---

@@ -15783,7 +15783,7 @@ class SpryOrchestrator:
             }
         spry_summary_meaning = spry_meaning_for(spry_average_score)
         report_cycles = self._total_cycles - total_cycles_before
-        report_total_attempts = sum(t["totalAttempts"] for t in targets)
+        report_total_attempts = sum(t.get("totalAttempts", 0) for t in targets)
         if isinstance(state, (int, float)) and isinstance(initial_state, (int, float)):
             report_state_gain: Any = state - initial_state
             report_state_gain_per_cycle = (

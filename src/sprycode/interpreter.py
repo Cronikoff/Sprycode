@@ -15688,6 +15688,23 @@ class SpryOrchestrator:
                 if state_gain is not None and target_total_attempts > 0
                 else None
             )
+            spry_score = (
+                state_gain_per_cycle * state_gain_per_attempt
+                if state_gain_per_cycle is not None and state_gain_per_attempt is not None
+                else None
+            )
+            if spry_score is None:
+                spry_meaning = None
+            elif spry_score >= 5:
+                spry_meaning = "vigorous"
+            elif spry_score >= 3:
+                spry_meaning = "brisk"
+            elif spry_score >= 1:
+                spry_meaning = "active"
+            elif spry_score > 0:
+                spry_meaning = "lively"
+            else:
+                spry_meaning = "dormant"
             targets.append(
                 {
                     "name": target,
@@ -15707,6 +15724,8 @@ class SpryOrchestrator:
                     "stateGain": state_gain,
                     "stateGainPerCycle": state_gain_per_cycle,
                     "stateGainPerAttempt": state_gain_per_attempt,
+                    "spryScore": spry_score,
+                    "spryMeaning": spry_meaning,
                 }
             )
         loop_history_delta = self._cycle_history[cycle_history_before:]

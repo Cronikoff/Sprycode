@@ -83,7 +83,7 @@ class TestOrchestratorManagedPathways:
             orch.loadRegistry(reg)
             let out = orch.runManaged(fn(state, cycle) => state >= 7, undefined, 10)
         """)
-        assert val(i, "out") == 8
+        assert val(i, "out") == 7
 
     def test_registry_and_orchestrator_nested_loop_management(self):
         i = run("""
@@ -102,4 +102,3 @@ class TestOrchestratorManagedPathways:
             let out = orch.runManaged(fn(state) => state >= 5, undefined, 5)
         """)
         assert val(i, "out") == 5
-

@@ -422,6 +422,35 @@ task stepReconfigureDemo {
     log info "Unmanaged attempts: " + str(orch.lastCycleAttempts)
 }
 
+// ── orchestrator step enable/disable control ───────────────────────────────
+task stepEnableDisableDemo {
+    let orch = Orchestrator.new()
+    orch.addStep("fetch", fn(state) => state + 10)
+    orch.addStep("transform", fn(state) => state + 1)
+    orch.addStep("emit", fn(state) => state * 2)
+
+    // Inspect step configuration before any change.
+    let fetchCfg = orch.getStepConfig("fetch")
+    log info "fetch config: " + str(fetchCfg)
+    log info "enabled step count: " + str(orch.enabledStepCount)
+
+    // Disable the heavyweight fetch service for a lightweight test cycle.
+    orch.disableStep("fetch")
+    orch.disableStep("emit")
+    let lightOut = orch.runCycle(0, 1)
+    log info "Light cycle (transform only): " + str(lightOut)
+    log info "enabled names: " + str(orch.enabledStepNames)
+
+    // Re-enable all steps for full pipeline.
+    orch.enableStep("fetch")
+    orch.enableStep("emit")
+    let fullOut = orch.runCycle(0, 2)
+    log info "Full pipeline output: " + str(fullOut)
+
+    log info "fetch enabled: " + str(orch.isStepEnabled("fetch"))
+    log info "step count (total/enabled): " + str(orch.stepCount) + "/" + str(orch.enabledStepCount)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -443,4 +472,5 @@ task main {
     managedRegistryLoadDemo()
     loopHistoryDemo()
     stepReconfigureDemo()
+    stepEnableDisableDemo()
 }

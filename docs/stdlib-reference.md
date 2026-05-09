@@ -234,8 +234,14 @@ orch.loadRegistryManaged(                        // load all registry services a
     fn(state, cycle, name, attempt) => attempt >= 2,
     5
 )
+orch.disableStep("shape")                        // skip a step without removing it
+orch.enableStep("shape")                         // re-enable a previously disabled step
+let isEnabled = orch.isStepEnabled("shape")      // true / false
+let cfg = orch.getStepConfig("shape")            // { name, managed, maxLoops, enabled }
 let stepNames = orch.stepNames
 let stepCount = orch.stepCount
+let enabledNames = orch.enabledStepNames         // names of only enabled steps
+let enabledCount = orch.enabledStepCount         // number of enabled steps
 // After runManaged or runCycle, inspect loop convergence history
 let attempts = orch.lastCycleAttempts           // { "ingest": 2, "shape": 1, ... }
 let cycles = orch.totalCycles                   // total completed cycles

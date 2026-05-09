@@ -15215,6 +15215,8 @@ class SpryOrchestrator:
         # Step tuple: (step_name, step_fn, step_solved_fn, step_max_loops).
         # For non-managed steps, step_solved_fn and step_max_loops are None.
         self._steps: list[tuple[str, Any, Any, int | None]] = []
+        # Disabled step names: steps that exist but are skipped by runCycle.
+        self._disabled: set[str] = set()
         # History tracking: attempt counts per step for the last cycle, and
         # the total number of completed cycles across runUntilSolved/runManaged.
         self._last_cycle_attempts: dict[str, int] = {}
@@ -15228,7 +15230,9 @@ class SpryOrchestrator:
         return fn
 
     def addStep(self, name: Any, fn: Any) -> int:
-        self._steps.append((str(name), fn, None, None))
+        key = str(name)
+        self._disabled.discard(key)
+        self._steps.append((key, fn, None, None))
         return len(self._steps)
 
     def addManagedStep(
@@ -15244,7 +15248,9 @@ class SpryOrchestrator:
             raise SpryRuntimeError("Orchestrator managed step max_loops must be a valid integer", None)
         if max_attempts < 1:
             raise SpryRuntimeError("Orchestrator managed step max_loops must be >= 1", None)
-        self._steps.append((str(name), fn, solved_fn, max_attempts))
+        key = str(name)
+        self._disabled.discard(key)
+        self._steps.append((key, fn, solved_fn, max_attempts))
         return len(self._steps)
 
     def setManagedStep(self, name: Any, solved_fn: Any, max_loops: Any = 1000) -> bool:
@@ -15271,16 +15277,56 @@ class SpryOrchestrator:
                 return True
         return False
 
+    def disableStep(self, name: Any) -> bool:
+        key = str(name)
+        for step_name, *_ in self._steps:
+            if step_name == key:
+                self._disabled.add(key)
+                return True
+        return False
+
+    def enableStep(self, name: Any) -> bool:
+        key = str(name)
+        if key in self._disabled:
+            self._disabled.discard(key)
+            return True
+        # Also return True if the step exists and was already enabled.
+        for step_name, *_ in self._steps:
+            if step_name == key:
+                return True
+        return False
+
+    def isStepEnabled(self, name: Any) -> bool:
+        key = str(name)
+        for step_name, *_ in self._steps:
+            if step_name == key:
+                return key not in self._disabled
+        return False
+
+    def getStepConfig(self, name: Any) -> Any:
+        key = str(name)
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_name == key:
+                return {
+                    "name": step_name,
+                    "managed": step_solved_fn is not None,
+                    "maxLoops": step_max_loops,
+                    "enabled": step_name not in self._disabled,
+                }
+        return SPRY_UNDEFINED
+
     def removeStep(self, name: Any) -> bool:
         key = str(name)
         for i in range(len(self._steps) - 1, -1, -1):
             if self._steps[i][0] == key:
                 self._steps.pop(i)
+                self._disabled.discard(key)
                 return True
         return False
 
     def clearSteps(self) -> None:
         self._steps.clear()
+        self._disabled.clear()
 
     def loadRegistry(self, registry: Any) -> int:
         if not isinstance(registry, SpryServiceRegistry):
@@ -15311,6 +15357,8 @@ class SpryOrchestrator:
         current = state
         cycle_attempts: dict[str, int] = {}
         for step_name, step_fn, step_solved_fn, step_max_loops in self._steps:
+            if step_name in self._disabled:
+                continue
             if step_solved_fn is None:
                 current = self._invoke(step_fn, [current, cycle_num, step_name])
                 cycle_attempts[step_name] = 1
@@ -15371,6 +15419,14 @@ class SpryOrchestrator:
         return self.runUntilSolved(solved_fn, initial_state, max_loops)
 
     @property
+    def enabledStepNames(self) -> list[str]:
+        return [name for name, *_ in self._steps if name not in self._disabled]
+
+    @property
+    def enabledStepCount(self) -> int:
+        return sum(1 for name, *_ in self._steps if name not in self._disabled)
+
+    @property
     def stepNames(self) -> list[str]:
         return [name for name, *_ in self._steps]
 
@@ -15396,6 +15452,10 @@ class SpryOrchestrator:
             "addManagedStep": self.addManagedStep,
             "setManagedStep": self.setManagedStep,
             "setUnmanagedStep": self.setUnmanagedStep,
+            "disableStep": self.disableStep,
+            "enableStep": self.enableStep,
+            "isStepEnabled": self.isStepEnabled,
+            "getStepConfig": self.getStepConfig,
             "removeStep": self.removeStep,
             "clearSteps": self.clearSteps,
             "loadRegistry": self.loadRegistry,
@@ -15411,6 +15471,10 @@ class SpryOrchestrator:
             return self.stepNames
         if prop == "stepCount":
             return self.stepCount
+        if prop == "enabledStepNames":
+            return self.enabledStepNames
+        if prop == "enabledStepCount":
+            return self.enabledStepCount
         if prop == "lastCycleAttempts":
             return self.lastCycleAttempts
         if prop == "totalCycles":

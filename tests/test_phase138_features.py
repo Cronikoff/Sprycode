@@ -57,7 +57,7 @@ class TestPathwayReportSprySemantics:
         assert abs(t["spryScore"] - (60 / 11)) < 1e-9
         assert t["spryMeaning"] == "vigorous"
 
-    def test_spry_score_formula(self):
+    def test_spry_score_is_product_of_gain_metrics(self):
         i = run("""
             let orch = Orchestrator.new()
             orch.addManagedStep(

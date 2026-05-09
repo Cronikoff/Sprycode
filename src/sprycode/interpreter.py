@@ -15688,6 +15688,9 @@ class SpryOrchestrator:
                 if state_gain is not None and target_total_attempts > 0
                 else None
             )
+            # Compute score as the product of state gain per cycle and state gain
+            # per attempt, rewarding targets that improve state quickly and with
+            # higher gain per attempt.
             spry_score = (
                 state_gain_per_cycle * state_gain_per_attempt
                 if state_gain_per_cycle is not None and state_gain_per_attempt is not None
@@ -15701,10 +15704,8 @@ class SpryOrchestrator:
                 spry_meaning = "brisk"
             elif spry_score >= 1:
                 spry_meaning = "active"
-            elif spry_score > 0:
-                spry_meaning = "lively"
             else:
-                spry_meaning = "dormant"
+                spry_meaning = "lively"
             targets.append(
                 {
                     "name": target,

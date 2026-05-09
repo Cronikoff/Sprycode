@@ -15212,7 +15212,7 @@ class SpryOrchestrator:
     def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
         self._call_fn = call_fn
         self._truthy_fn = truthy_fn
-        self._steps: list[tuple[str, Any]] = []
+        self._steps: list[tuple[str, Any, Any, int | None]] = []
 
     def _invoke(self, fn: Any, args: list) -> Any:
         if self._call_fn is not None:
@@ -15222,7 +15222,23 @@ class SpryOrchestrator:
         return fn
 
     def addStep(self, name: Any, fn: Any) -> int:
-        self._steps.append((str(name), fn))
+        self._steps.append((str(name), fn, None, None))
+        return len(self._steps)
+
+    def addManagedStep(
+        self,
+        name: Any,
+        fn: Any,
+        solved_fn: Any,
+        max_loops: Any = 1000,
+    ) -> int:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be >= 1", None)
+        self._steps.append((str(name), fn, solved_fn, max_attempts))
         return len(self._steps)
 
     def removeStep(self, name: Any) -> bool:
@@ -15249,8 +15265,23 @@ class SpryOrchestrator:
         except (TypeError, ValueError):
             raise SpryRuntimeError("Orchestrator cycle must be a valid integer", None)
         current = state
-        for step_name, step_fn in self._steps:
-            current = self._invoke(step_fn, [current, cycle_num, step_name])
+        for step_name, step_fn, step_solved_fn, step_max_loops in self._steps:
+            if step_solved_fn is None:
+                current = self._invoke(step_fn, [current, cycle_num, step_name])
+                continue
+            assert step_max_loops is not None
+            step_solved = False
+            for step_attempt in range(1, step_max_loops + 1):
+                current = self._invoke(step_fn, [current, cycle_num, step_name, step_attempt])
+                solved = self._invoke(step_solved_fn, [current, cycle_num, step_name, step_attempt])
+                if self._truthy_fn(solved):
+                    step_solved = True
+                    break
+            if not step_solved:
+                raise SpryRuntimeError(
+                    f"Orchestrator managed step {step_name!r} exceeded max_loops ({step_max_loops}) in cycle {cycle_num}",
+                    None,
+                )
         return current
 
     def runUntilSolved(
@@ -15286,7 +15317,7 @@ class SpryOrchestrator:
 
     @property
     def stepNames(self) -> list[str]:
-        return [name for name, _ in self._steps]
+        return [name for name, *_ in self._steps]
 
     @property
     def stepCount(self) -> int:
@@ -15295,6 +15326,7 @@ class SpryOrchestrator:
     def _spry_get_prop(self, prop: str) -> Any:
         _methods: dict = {
             "addStep": self.addStep,
+            "addManagedStep": self.addManagedStep,
             "removeStep": self.removeStep,
             "clearSteps": self.clearSteps,
             "loadRegistry": self.loadRegistry,

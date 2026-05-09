@@ -339,6 +339,24 @@ task nestedManagedLoopDemo {
     log info "Nested managed loop final: " + str(final)
 }
 
+// ── orchestrator.addManagedStep loops each microservice step until solved ──
+task managedStepDemo {
+    let orch = Orchestrator.new()
+    orch.addManagedStep(
+        "stabilize",
+        fn(state, cycle, name, attempt) {
+            if state == undefined { return attempt }
+            return state + attempt
+        },
+        fn(state, cycle, name, attempt) => state >= 6,
+        5
+    )
+    orch.addStep("finalize", fn(state) => state + 1)
+
+    let final = orch.runManaged(fn(state) => state >= 9, undefined, 5)
+    log info "Managed step final: " + str(final)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -356,4 +374,5 @@ task main {
     orchestratorDemo()
     micromanagedOrchestrationDemo()
     nestedManagedLoopDemo()
+    managedStepDemo()
 }

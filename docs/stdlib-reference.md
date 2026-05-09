@@ -217,6 +217,12 @@ let finalManaged = orch.runManaged(              // alias for managed structural
     0,
     100
 )
+orch.addManagedStep(                             // per-step microservice loop until solved
+    "stabilize",
+    fn(state, cycle, name, attempt) => state + 1,
+    fn(state, cycle, name, attempt) => state >= 3,
+    5
+)
 let stepNames = orch.stepNames
 let stepCount = orch.stepCount
 ```

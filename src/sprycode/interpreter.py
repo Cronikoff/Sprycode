@@ -15767,6 +15767,16 @@ class SpryOrchestrator:
             meaning = t.get("spryMeaning")
             if meaning in spry_distribution:
                 spry_distribution[meaning] += 1
+        if spry_average_score is None:
+            spry_summary_meaning = None
+        elif spry_average_score >= 5:
+            spry_summary_meaning = "vigorous"
+        elif spry_average_score >= 3:
+            spry_summary_meaning = "brisk"
+        elif spry_average_score >= 1:
+            spry_summary_meaning = "active"
+        else:
+            spry_summary_meaning = "lively"
         return {
             "state": state,
             "targets": targets,
@@ -15777,6 +15787,7 @@ class SpryOrchestrator:
             "spryAverageScore": spry_average_score,
             "spryPeakScore": spry_peak_score,
             "spryDistribution": spry_distribution,
+            "sprySummaryMeaning": spry_summary_meaning,
         }
 
     @property

@@ -15688,9 +15688,9 @@ class SpryOrchestrator:
                 if state_gain is not None and target_total_attempts > 0
                 else None
             )
-            # Compute score as the product of state gain per cycle and state gain
-            # per attempt, rewarding targets that improve state quickly and with
-            # higher gain per attempt.
+            # Compute spry score as (state gain per cycle) × (state gain per
+            # attempt), rewarding targets that improve state quickly and
+            # efficiently.
             spry_score = (
                 state_gain_per_cycle * state_gain_per_attempt
                 if state_gain_per_cycle is not None and state_gain_per_attempt is not None

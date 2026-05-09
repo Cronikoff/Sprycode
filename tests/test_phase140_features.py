@@ -88,4 +88,3 @@ class TestPathwayReportSprySummaryMeaning:
             let m = rep["sprySummaryMeaning"]
         """)
         assert val(i, "m") is None
-

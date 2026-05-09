@@ -15657,6 +15657,8 @@ class SpryOrchestrator:
                     "endStage": self.stepCapabilityStages.get(target),
                     "cycles": self._total_cycles - start_cycles,
                     "serviceLoops": target_service_loops,
+                    "remainingTargetsAfter": self.capabilityRemainingTargets,
+                    "fullyDevelopedAfter": self.capabilityFullyDeveloped,
                 }
             )
         loop_history_delta = self._cycle_history[cycle_history_before:]

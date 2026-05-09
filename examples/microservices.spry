@@ -470,11 +470,15 @@ task loopHistoryDemo {
     let pathReport = pathOrch.runCapabilityPathwayManagedReport(0, 10)
     let serviceLoops = pathReport["serviceLoops"]
     let targetServiceLoops = pathReport["targets"][0]["serviceLoops"]
+    let targetStateBefore = pathReport["targets"][0]["stateBefore"]
+    let targetStateAfter = pathReport["targets"][0]["stateAfter"]
     log info "Next-target micromanagement state: " + str(nextState)
     log info "Pathway-managed micromanagement state: " + str(pathState)
     log info "Pathway-managed micromanagement report: " + str(pathReport)
     log info "Pathway-managed service loop accounting: " + str(serviceLoops)
     log info "Per-target service loop accounting: " + str(targetServiceLoops)
+    log info "Per-target state before: " + str(targetStateBefore)
+    log info "Per-target state after: " + str(targetStateAfter)
     log info "Pathway-managed fully developed: " + str(pathOrch.capabilityFullyDeveloped)
     orch.resetHistory()
 }

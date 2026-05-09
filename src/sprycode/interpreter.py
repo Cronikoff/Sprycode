@@ -15625,7 +15625,9 @@ class SpryOrchestrator:
             start_stage = self.stepCapabilityStages.get(target)
             start_cycles = self._total_cycles
             target_history_before = len(self._cycle_history)
+            state_before = state
             state = self.runTargetUntilMature(target, state, max_loops_per_target)
+            state_after = state
             target_history_delta = self._cycle_history[target_history_before:]
             target_service_loops: list[dict[str, Any]] = []
             for step_name in active_managed_names:
@@ -15659,6 +15661,8 @@ class SpryOrchestrator:
                     "serviceLoops": target_service_loops,
                     "remainingTargetsAfter": self.capabilityRemainingTargets,
                     "fullyDevelopedAfter": self.capabilityFullyDeveloped,
+                    "stateBefore": state_before,
+                    "stateAfter": state_after,
                 }
             )
         loop_history_delta = self._cycle_history[cycle_history_before:]

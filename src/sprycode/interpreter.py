@@ -15612,8 +15612,10 @@ class SpryOrchestrator:
     ) -> dict[str, Any]:
         state = initial_state
         total_cycles_before = self._total_cycles
+        cycle_history_before = len(self._cycle_history)
+        active_managed_names = self._active_managed_step_names()
         targets: list[dict[str, Any]] = []
-        if self.nextCapabilityTarget is SPRY_UNDEFINED and self._active_managed_step_names():
+        if self.nextCapabilityTarget is SPRY_UNDEFINED and active_managed_names:
             state = self.runCycle(state, 1)
             self._total_cycles += 1
         while True:
@@ -15631,9 +15633,38 @@ class SpryOrchestrator:
                     "cycles": self._total_cycles - start_cycles,
                 }
             )
+        loop_history_delta = self._cycle_history[cycle_history_before:]
+        service_loops: list[dict[str, Any]] = []
+        capability_stages = self.stepCapabilityStages
+        for step_name in active_managed_names:
+            attempts_total = 0
+            cycle_count = 0
+            peak_attempts = 0
+            for cycle_attempts in loop_history_delta:
+                if step_name not in cycle_attempts:
+                    continue
+                attempts = cycle_attempts[step_name]
+                attempts_total += attempts
+                cycle_count += 1
+                if attempts > peak_attempts:
+                    peak_attempts = attempts
+            avg_attempts = (attempts_total / cycle_count) if cycle_count > 0 else None
+            stage = capability_stages.get(step_name)
+            service_loops.append(
+                {
+                    "name": step_name,
+                    "attempts": attempts_total,
+                    "cycles": cycle_count,
+                    "avgAttempts": avg_attempts,
+                    "peakAttempts": peak_attempts,
+                    "stage": stage,
+                    "mature": stage == "mature",
+                }
+            )
         return {
             "state": state,
             "targets": targets,
+            "serviceLoops": service_loops,
             "fullyDeveloped": self.capabilityFullyDeveloped,
             "remainingTargets": self.capabilityRemainingTargets,
             "cycles": self._total_cycles - total_cycles_before,

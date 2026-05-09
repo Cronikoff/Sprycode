@@ -15215,6 +15215,10 @@ class SpryOrchestrator:
         # Step tuple: (step_name, step_fn, step_solved_fn, step_max_loops).
         # For non-managed steps, step_solved_fn and step_max_loops are None.
         self._steps: list[tuple[str, Any, Any, int | None]] = []
+        # History tracking: attempt counts per step for the last cycle, and
+        # the total number of completed cycles across runUntilSolved/runManaged.
+        self._last_cycle_attempts: dict[str, int] = {}
+        self._total_cycles: int = 0
 
     def _invoke(self, fn: Any, args: list) -> Any:
         if self._call_fn is not None:
@@ -15281,9 +15285,11 @@ class SpryOrchestrator:
         except (TypeError, ValueError):
             raise SpryRuntimeError("Orchestrator cycle must be a valid integer", None)
         current = state
+        cycle_attempts: dict[str, int] = {}
         for step_name, step_fn, step_solved_fn, step_max_loops in self._steps:
             if step_solved_fn is None:
                 current = self._invoke(step_fn, [current, cycle_num, step_name])
+                cycle_attempts[step_name] = 1
                 continue
             if step_max_loops is None:
                 raise SpryRuntimeError(
@@ -15296,12 +15302,16 @@ class SpryOrchestrator:
                 solved = self._invoke(step_solved_fn, [current, cycle_num, step_name, step_loop_attempt])
                 if self._truthy_fn(solved):
                     step_solved = True
+                    cycle_attempts[step_name] = step_loop_attempt
                     break
             if not step_solved:
+                cycle_attempts[step_name] = step_max_loops
+                self._last_cycle_attempts = cycle_attempts
                 raise SpryRuntimeError(
                     f"Orchestrator managed step {step_name!r} never reached solved state within max_loops ({step_max_loops}) in cycle {cycle_num}",
                     None,
                 )
+        self._last_cycle_attempts = cycle_attempts
         return current
 
     def runUntilSolved(
@@ -15319,6 +15329,7 @@ class SpryOrchestrator:
         state = initial_state
         for cycle_num in range(1, max_attempts + 1):
             state = self.runCycle(state, cycle_num)
+            self._total_cycles += 1
             solved = self._invoke(solved_fn, [state, cycle_num])
             if self._truthy_fn(solved):
                 return state
@@ -15343,6 +15354,18 @@ class SpryOrchestrator:
     def stepCount(self) -> int:
         return len(self._steps)
 
+    @property
+    def lastCycleAttempts(self) -> dict:
+        return dict(self._last_cycle_attempts)
+
+    @property
+    def totalCycles(self) -> int:
+        return self._total_cycles
+
+    def resetHistory(self) -> None:
+        self._last_cycle_attempts = {}
+        self._total_cycles = 0
+
     def _spry_get_prop(self, prop: str) -> Any:
         _methods: dict = {
             "addStep": self.addStep,
@@ -15354,6 +15377,7 @@ class SpryOrchestrator:
             "runCycle": self.runCycle,
             "runUntilSolved": self.runUntilSolved,
             "runManaged": self.runManaged,
+            "resetHistory": self.resetHistory,
         }
         if prop in _methods:
             return _methods[prop]
@@ -15361,6 +15385,10 @@ class SpryOrchestrator:
             return self.stepNames
         if prop == "stepCount":
             return self.stepCount
+        if prop == "lastCycleAttempts":
+            return self.lastCycleAttempts
+        if prop == "totalCycles":
+            return self.totalCycles
         raise SpryRuntimeError(f"Orchestrator has no property {prop!r}", None)
 
     def _spry_set_prop(self, prop: str, value: Any) -> None:

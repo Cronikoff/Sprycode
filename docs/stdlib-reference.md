@@ -230,6 +230,10 @@ orch.loadRegistryManaged(                        // load all registry services a
 )
 let stepNames = orch.stepNames
 let stepCount = orch.stepCount
+// After runManaged or runCycle, inspect loop convergence history
+let attempts = orch.lastCycleAttempts           // { "ingest": 2, "shape": 1, ... }
+let cycles = orch.totalCycles                   // total completed cycles
+orch.resetHistory()                             // reset attempts + cycle counter
 ```
 
 ---

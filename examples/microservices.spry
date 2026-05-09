@@ -378,6 +378,29 @@ task managedRegistryLoadDemo {
     log info "Managed registry load final: " + str(final)
 }
 
+
+// ── orchestrator loop-history: introspect managed micro-loop convergence ────
+task loopHistoryDemo {
+    let orch = Orchestrator.new()
+    orch.addStep("base", fn(state) => state + 1)
+    orch.addManagedStep(
+        "stabilize",
+        fn(state, cycle, name, attempt) {
+            if state == undefined { return attempt }
+            return state + attempt
+        },
+        fn(state, cycle, name, attempt) => state >= 6,
+        5
+    )
+
+    orch.runManaged(fn(state) => state >= 9, undefined, 5)
+    let hist = orch.lastCycleAttempts
+    let total = orch.totalCycles
+    log info "Stabilize attempts in last cycle: " + str(hist)
+    log info "Total cycles completed: " + str(total)
+    orch.resetHistory()
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 task main {
     pollUntilReady()
@@ -397,4 +420,5 @@ task main {
     nestedManagedLoopDemo()
     managedStepDemo()
     managedRegistryLoadDemo()
+    loopHistoryDemo()
 }

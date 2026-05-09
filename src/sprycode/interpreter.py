@@ -15221,9 +15221,10 @@ class SpryOrchestrator:
         #     previously disabled step automatically re-enables it.
         #   removeStep / clearSteps: discard the name to prevent stale entries.
         self._disabled: set[str] = set()  # names present here are skipped in runCycle
-        # History tracking: attempt counts per step for the last cycle, and
-        # the total number of completed cycles across runUntilSolved/runManaged.
+        # History tracking: attempt counts per step for the last cycle,
+        # a full per-cycle attempt timeline, and total completed cycles.
         self._last_cycle_attempts: dict[str, int] = {}
+        self._cycle_history: list[dict[str, int]] = []
         self._total_cycles: int = 0
 
     def _invoke(self, fn: Any, args: list) -> Any:
@@ -15459,11 +15460,13 @@ class SpryOrchestrator:
             if not step_solved:
                 cycle_attempts[step_name] = step_max_loops
                 self._last_cycle_attempts = cycle_attempts
+                self._cycle_history.append(dict(cycle_attempts))
                 raise SpryRuntimeError(
                     f"Orchestrator managed step {step_name!r} never reached solved state within max_loops ({step_max_loops}) in cycle {cycle_num}",
                     None,
                 )
         self._last_cycle_attempts = cycle_attempts
+        self._cycle_history.append(dict(cycle_attempts))
         return current
 
     def runUntilSolved(
@@ -15522,8 +15525,13 @@ class SpryOrchestrator:
     def totalCycles(self) -> int:
         return self._total_cycles
 
+    @property
+    def cycleHistory(self) -> list[dict[str, int]]:
+        return [dict(cycle_attempts) for cycle_attempts in self._cycle_history]
+
     def resetHistory(self) -> None:
         self._last_cycle_attempts = {}
+        self._cycle_history = []
         self._total_cycles = 0
 
     def _spry_get_prop(self, prop: str) -> Any:
@@ -15562,6 +15570,8 @@ class SpryOrchestrator:
             return self.enabledStepCount
         if prop == "lastCycleAttempts":
             return self.lastCycleAttempts
+        if prop == "cycleHistory":
+            return self.cycleHistory
         if prop == "totalCycles":
             return self.totalCycles
         raise SpryRuntimeError(f"Orchestrator has no property {prop!r}", None)

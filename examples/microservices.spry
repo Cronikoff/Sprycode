@@ -395,8 +395,10 @@ task loopHistoryDemo {
 
     orch.runManaged(fn(state) => state >= 9, undefined, 5)
     let hist = orch.lastCycleAttempts
+    let timeline = orch.cycleHistory
     let total = orch.totalCycles
     log info "Stabilize attempts in last cycle: " + str(hist)
+    log info "Cycle timeline: " + str(timeline)
     log info "Total cycles completed: " + str(total)
     orch.resetHistory()
 }

@@ -250,8 +250,9 @@ let enabledNames = orch.enabledStepNames         // names of only enabled steps
 let enabledCount = orch.enabledStepCount         // number of enabled steps
 // After runManaged or runCycle, inspect loop convergence history
 let attempts = orch.lastCycleAttempts           // { "ingest": 2, "shape": 1, ... }
+let history = orch.cycleHistory                 // [ { ...cycle1... }, { ...cycle2... }, ... ]
 let cycles = orch.totalCycles                   // total completed cycles
-orch.resetHistory()                             // reset attempts + cycle counter
+orch.resetHistory()                             // reset attempts + timeline + cycle counter
 ```
 
 ---

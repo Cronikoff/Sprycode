@@ -14977,7 +14977,7 @@ class SpryWorkerPool:
     def __init__(self, call_fn: Any, worker_fn: Any) -> None:
         self._call_fn = call_fn
         self._worker_fn = worker_fn
-        self._queue: list = []
+        self._queue: collections.deque = collections.deque()
         self._results: list = []
         self._errors: list = []
 
@@ -15000,7 +15000,7 @@ class SpryWorkerPool:
         in *errors* as ``{"item": item, "error": str(e)}``.
         """
         while self._queue:
-            item = self._queue.pop(0)
+            item = self._queue.popleft()
             try:
                 result = self._invoke(self._worker_fn, [item])
                 self._results.append(result)
@@ -15369,6 +15369,8 @@ class SpryOrchestrator:
         """
         key = str(name)
         anchor = str(target)
+        if key == anchor:
+            return self._step_exists(key)
         src_idx = dst_idx = -1
         for i, (step_name, *_) in enumerate(self._steps):
             if step_name == key and src_idx == -1:
@@ -15379,9 +15381,13 @@ class SpryOrchestrator:
             return False
         entry = self._steps.pop(src_idx)
         # Recompute anchor index after removal.
-        dst_idx = next(
-            i for i, (sn, *_) in enumerate(self._steps) if sn == anchor
-        )
+        dst_idx = -1
+        for i, (sn, *_) in enumerate(self._steps):
+            if sn == anchor:
+                dst_idx = i
+                break
+        if dst_idx == -1:
+            return False
         self._steps.insert(dst_idx, entry)
         return True
 
@@ -15393,6 +15399,8 @@ class SpryOrchestrator:
         """
         key = str(name)
         anchor = str(target)
+        if key == anchor:
+            return self._step_exists(key)
         src_idx = dst_idx = -1
         for i, (step_name, *_) in enumerate(self._steps):
             if step_name == key and src_idx == -1:
@@ -15403,9 +15411,13 @@ class SpryOrchestrator:
             return False
         entry = self._steps.pop(src_idx)
         # Recompute anchor index after removal.
-        dst_idx = next(
-            i for i, (sn, *_) in enumerate(self._steps) if sn == anchor
-        )
+        dst_idx = -1
+        for i, (sn, *_) in enumerate(self._steps):
+            if sn == anchor:
+                dst_idx = i
+                break
+        if dst_idx == -1:
+            return False
         self._steps.insert(dst_idx + 1, entry)
         return True
 

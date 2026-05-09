@@ -175,6 +175,17 @@ class TestOrchestratorMoveStepBefore:
         """)
         assert val(i, "result") is False
 
+    def test_move_step_before_same_name_target_is_noop(self):
+        i = run("""
+            let orch = Orchestrator.new()
+            orch.addStep("a", fn(state) => state)
+            orch.addStep("b", fn(state) => state)
+            let result = orch.moveStepBefore("a", "a")
+            let names = orch.stepNames
+        """)
+        assert val(i, "result") is True
+        assert val(i, "names") == ["a", "b"]
+
 
 class TestOrchestratorMoveStepAfter:
     def test_move_step_after_target(self):
@@ -225,6 +236,17 @@ class TestOrchestratorMoveStepAfter:
             let result = orch.moveStepAfter("a", "ghost")
         """)
         assert val(i, "result") is False
+
+    def test_move_step_after_same_name_target_is_noop(self):
+        i = run("""
+            let orch = Orchestrator.new()
+            orch.addStep("a", fn(state) => state)
+            orch.addStep("b", fn(state) => state)
+            let result = orch.moveStepAfter("a", "a")
+            let names = orch.stepNames
+        """)
+        assert val(i, "result") is True
+        assert val(i, "names") == ["a", "b"]
 
 
 class TestOrchestratorOrderingIntegration:

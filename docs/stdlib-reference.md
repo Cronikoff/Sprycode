@@ -152,14 +152,14 @@ ch.send({ id: 1 })
 let msg = ch.receive()
 
 let cb = CircuitBreaker(3, 1000)
-let result = retry((attempt) => cb.execute(() => callService(attempt)), 5)
+let result = retry(fn(attempt) => cb.execute(fn() => callService(attempt)), 5)
 
-let throttled = throttle(() => pollHealth(), 500)
-let debounced = debounce(() => refreshDashboard(), 200)
+let throttled = throttle(fn() => pollHealth(), 500)
+let debounced = debounce(fn() => refreshDashboard(), 200)
 
 let solved = micromanage(
-    (attempt) => runPipelineStep(attempt),
-    (lastResult) => lastResult.done,
+    fn(attempt) => runPipelineStep(attempt),
+    fn(lastResult) => lastResult.done,
     100
 )
 

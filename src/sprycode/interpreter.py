@@ -15501,6 +15501,28 @@ class SpryOrchestrator:
     ) -> Any:
         return self.runUntilSolved(solved_fn, initial_state, max_loops)
 
+    def runCapabilityUntilDeveloped(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator max_loops must be >= 1", None)
+        state = initial_state
+        for cycle_num in range(1, max_attempts + 1):
+            state = self.runCycle(state, cycle_num)
+            self._total_cycles += 1
+            if self.capabilityFullyDeveloped is True:
+                return state
+        raise SpryRuntimeError(
+            f"Orchestrator exceeded max_loops ({max_attempts}) without fully developing capability pathway",
+            None,
+        )
+
     @property
     def enabledStepNames(self) -> list[str]:
         return [name for name, *_ in self._steps if name not in self._disabled]
@@ -15711,6 +15733,11 @@ class SpryOrchestrator:
             return SPRY_UNDEFINED
         return all(stage == "mature" for stage in stages.values())
 
+    @property
+    def capabilityRemainingTargets(self) -> list[str]:
+        stages = self.stepCapabilityStages
+        return [step_name for step_name in self.capabilityPathway if stages.get(step_name) != "mature"]
+
     def resetHistory(self) -> None:
         self._last_cycle_attempts = {}
         self._cycle_history = []
@@ -15821,6 +15848,7 @@ class SpryOrchestrator:
             "runCycle": self.runCycle,
             "runUntilSolved": self.runUntilSolved,
             "runManaged": self.runManaged,
+            "runCapabilityUntilDeveloped": self.runCapabilityUntilDeveloped,
             "resetHistory": self.resetHistory,
             "getStepSummary": self.getStepSummary,
         }
@@ -15864,6 +15892,8 @@ class SpryOrchestrator:
             return self.nextCapabilityTarget
         if prop == "capabilityFullyDeveloped":
             return self.capabilityFullyDeveloped
+        if prop == "capabilityRemainingTargets":
+            return self.capabilityRemainingTargets
         if prop == "summary":
             return self.summary
         if prop == "totalCycles":

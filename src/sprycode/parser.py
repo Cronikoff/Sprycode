@@ -1641,10 +1641,18 @@ class Parser:
             line=tok.line, column=tok.column,
         )
 
-    def _parse_loop(self) -> LoopStatement:
-        """loop { <body> } — infinite loop, broken by `break`."""
+    def _parse_loop(self) -> Node:
+        """Parse `loop { ... }` or the documented `loop { ... } until cond` alias."""
         tok = self._expect(TokenType.LOOP)
         body = self._parse_block()
+        if self._match(TokenType.UNTIL):
+            condition = self._parse_value_expression()
+            return RepeatUntilStatement(
+                body=body,
+                condition=condition,
+                line=tok.line,
+                column=tok.column,
+            )
         return LoopStatement(body=body, line=tok.line, column=tok.column)
 
     def _parse_repeat_until(self) -> RepeatUntilStatement:

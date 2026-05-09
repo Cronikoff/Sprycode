@@ -1467,6 +1467,25 @@ class Interpreter:
                 raise last_error
             return None
 
+        def _micromanage(step_fn: Any, solved_fn: Any, max_loops: Any = 1000) -> Any:
+            """Loop microservice steps until solved_fn returns truthy or max_loops is reached."""
+            try:
+                max_attempts = int(max_loops)
+            except (TypeError, ValueError):
+                raise SpryRuntimeError("micromanage max_loops must be a valid integer", None)
+            if max_attempts < 1:
+                raise SpryRuntimeError("micromanage max_loops must be >= 1", None)
+            last_result: Any = SPRY_UNDEFINED
+            for attempt in range(1, max_attempts + 1):
+                last_result = self._call_value(step_fn, [attempt])
+                solved = self._call_value(solved_fn, [last_result, attempt])
+                if self._truthy(solved):
+                    return last_result
+            raise SpryRuntimeError(
+                f"micromanage exceeded max_loops ({max_attempts}) without reaching solved state",
+                None,
+            )
+
         def _throttle(fn: Any, delay_ms: Any = 0) -> Any:
             return _SpryThrottle(self._call_value, fn, delay_ms)
 
@@ -1474,11 +1493,17 @@ class Interpreter:
             return _SpryDebounce(self._call_value, fn, delay_ms)
 
         env.define("retry", _retry_call)
+        env.define("micromanage", _micromanage)
         env.define("Queue", _QueueNamespace())
         env.define("Channel", _ChannelNamespace())
         env.define("CircuitBreaker", _CircuitBreakerNamespace(self._call_value))
         env.define("throttle", _throttle)
         env.define("debounce", _debounce)
+        env.define("EventBus", _EventBusNamespace(self._call_value))
+        env.define("Supervisor", _SupervisorNamespace(self._call_value))
+        env.define("WorkerPool", _WorkerPoolNamespace(self._call_value))
+        env.define("ServiceRegistry", _ServiceRegistryNamespace(self._call_value, self._truthy))
+        env.define("Orchestrator", _OrchestratorNamespace(self._call_value, self._truthy))
 
         # Error types
         for _ename in ("Error", "TypeError", "RangeError", "SyntaxError",
@@ -5542,27 +5567,37 @@ class Interpreter:
         return self._eval(body, child)
 
     def _to_py_callable(self, fn: Any, env: Environment) -> Any:
-        """Wrap a SpryCode callable as a Python callable for use in method closures."""
+        """Wrap a SpryCode callable as a Python callable for use in method closures.
+
+        Each wrapper gets a ``_spry_fn`` attribute pointing back to the original
+        SpryCode value so that identity-based lookups (e.g. EventBus.unsubscribe)
+        can match wrappers created from the same underlying function.
+        """
         if isinstance(fn, SpryLambda):
             w = lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
             w._spry_arity = 1  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, SpryMultiLambda):
             w = lambda *args: self._apply_multi_lambda(fn, list(args), env)
             w._spry_arity = len(fn.params)  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, LambdaExpression):
             w = lambda *args: self._apply_lambda(fn, args[0] if args else None, env)
             w._spry_arity = 1  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, MultiParamLambda):
             w = lambda *args: self._apply_multi_lambda(fn, list(args), env)
             w._spry_arity = len(fn.params)  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         if isinstance(fn, SpryFunction):
             arity = len(fn.params)
             w = lambda *args: self._call_function(fn, list(args), fn)
             w._spry_arity = arity  # type: ignore[attr-defined]
+            w._spry_fn = fn  # type: ignore[attr-defined]
             return w
         return fn
 
@@ -14289,6 +14324,9 @@ class SpryQueue:
     def toArray(self) -> list:
         return list(self._data)
 
+    def toList(self) -> list:
+        return self.toArray()
+
     # --- SpryCode property access ---
 
     def _spry_get_prop(self, prop: str) -> Any:
@@ -14298,6 +14336,7 @@ class SpryQueue:
             "peek": self.peek,
             "isEmpty": self.isEmpty,
             "clear": self.clear,
+            "toList": self.toList,
             "toArray": self.toArray,
         }
         if prop == "size":
@@ -14317,15 +14356,25 @@ class _QueueNamespace:
     def __init__(self, call_fn: Any = None) -> None:
         self._call_fn = call_fn
 
-    def new(self, *_args: Any) -> SpryQueue:
-        return SpryQueue()
+    def new(self, items: Any = None) -> SpryQueue:
+        q = SpryQueue()
+        if items is None:
+            return q
+        if not isinstance(items, list):
+            raise SpryRuntimeError("Queue expects a list of initial items", None)
+        for item in items:
+            q.enqueue(item)
+        return q
 
-    def __call__(self, *_args: Any) -> SpryQueue:
-        return SpryQueue()
+    def __call__(self, items: Any = None) -> SpryQueue:
+        return self.new(items)
+
+    def create(self, items: Any = None) -> SpryQueue:
+        return self.new(items)
 
     def _spry_get_prop(self, prop: str) -> Any:
-        if prop == "new":
-            return self.new
+        if prop in ("new", "create"):
+            return getattr(self, prop)
         raise SpryRuntimeError(f"Queue.{prop} not found", None)
 
     def __repr__(self) -> str:
@@ -14375,6 +14424,10 @@ class SpryChannel:
         self._closed = True
 
     @property
+    def isClosed(self) -> bool:
+        return self.closed
+
+    @property
     def closed(self) -> bool:
         return self._closed
 
@@ -14395,7 +14448,7 @@ class SpryChannel:
         }
         if prop in ("size", "buffered"):  # buffered is an alias for size
             return self.size
-        if prop == "closed":
+        if prop in ("closed", "isClosed"):
             return self.closed
         if prop in _methods:
             return _methods[prop]
@@ -14418,9 +14471,12 @@ class _ChannelNamespace:
     def __call__(self, capacity: Any = 0) -> SpryChannel:
         return SpryChannel(int(capacity) if capacity else 0)
 
+    def create(self, capacity: Any = 0) -> SpryChannel:
+        return self(capacity)
+
     def _spry_get_prop(self, prop: str) -> Any:
-        if prop == "new":
-            return self.new
+        if prop in ("new", "create"):
+            return getattr(self, prop)
         raise SpryRuntimeError(f"Channel.{prop} not found", None)
 
     def __repr__(self) -> str:
@@ -14487,6 +14543,9 @@ class SpryCircuitBreaker:
                 self._opened_at = time.monotonic()
             raise exc
 
+    def execute(self, fn: Any, *args: Any) -> Any:
+        return self.call(fn, *args)
+
     def reset(self) -> None:
         self._failures = 0
         self._state = _CB_CLOSED
@@ -14504,7 +14563,7 @@ class SpryCircuitBreaker:
             return self.state
         if prop in ("failures", "failureCount"):  # support both property names for compatibility
             return self.failures
-        if prop in ("call", "reset"):
+        if prop in ("call", "execute", "reset"):
             return getattr(self, prop)
         raise SpryRuntimeError(f"CircuitBreaker has no property {prop!r}", None)
 
@@ -14538,9 +14597,12 @@ class _CircuitBreakerNamespace:
     def __call__(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
         return self.new(threshold, reset_timeout_ms)
 
+    def create(self, threshold: Any = 3, reset_timeout_ms: Any = 5000) -> SpryCircuitBreaker:
+        return self.new(threshold, reset_timeout_ms)
+
     def _spry_get_prop(self, prop: str) -> Any:
-        if prop == "new":
-            return self.new
+        if prop in ("new", "create"):
+            return getattr(self, prop)
         raise SpryRuntimeError(f"CircuitBreaker.{prop} not found", None)
 
     def __repr__(self) -> str:
@@ -14656,3 +14718,1410 @@ def _make_pipeline(call_fn: Any) -> Any:
         return _run
 
     return _pipeline
+
+
+# ---------------------------------------------------------------------------
+# Phase 111 — Structural Microservice Pathway Primitives
+# ---------------------------------------------------------------------------
+
+
+class SpryEventBus:
+    """Publish/subscribe event bus for decoupled microservice communication.
+
+    SpryCode usage::
+        let bus = EventBus.new()
+        bus.subscribe("user.login", fn(data) { ... })
+        bus.publish("user.login", { id: 42 })
+    """
+
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._subscribers: dict[str, list] = {}
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return None
+
+    def subscribe(self, topic: str, fn: Any) -> None:
+        """Register *fn* as a subscriber for *topic*."""
+        topic = str(topic)
+        self._subscribers.setdefault(topic, []).append(fn)
+
+    def unsubscribe(self, topic: str, fn: Any) -> bool:
+        """Remove *fn* from *topic*. Returns True if found and removed.
+
+        Since SpryCode callables are wrapped in new lambda objects on every
+        method call, identity is compared via the ``_spry_fn`` back-reference
+        that ``_to_py_callable`` attaches to each wrapper.
+        """
+        topic = str(topic)
+        bucket = self._subscribers.get(topic, [])
+        fn_orig = getattr(fn, "_spry_fn", fn)
+        for i in range(len(bucket) - 1, -1, -1):
+            sub_orig = getattr(bucket[i], "_spry_fn", bucket[i])
+            if sub_orig is fn_orig or bucket[i] is fn:
+                bucket.pop(i)
+                return True
+        return False
+
+    def publish(self, topic: str, *args: Any) -> int:
+        """Dispatch *args* to every subscriber for *topic*.
+
+        Loops over all registered handlers, calling each in order.
+        Returns the number of handlers called.
+        """
+        topic = str(topic)
+        handlers = list(self._subscribers.get(topic, []))
+        for handler in handlers:
+            self._invoke(handler, list(args))
+        return len(handlers)
+
+    def subscriberCount(self, topic: str) -> int:
+        """Return the number of subscribers for *topic*."""
+        return len(self._subscribers.get(str(topic), []))
+
+    @property
+    def topics(self) -> list:
+        """Return all topics that have at least one subscriber."""
+        return [t for t, subs in self._subscribers.items() if subs]
+
+    def clear(self) -> None:
+        """Remove all subscribers for all topics."""
+        self._subscribers.clear()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "subscribe": self.subscribe,
+            "unsubscribe": self.unsubscribe,
+            "publish": self.publish,
+            "subscriberCount": self.subscriberCount,
+            "clear": self.clear,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "topics":
+            return self.topics
+        raise SpryRuntimeError(f"EventBus has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"EventBus.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"EventBus(topics={list(self._subscribers.keys())})"
+
+
+class _EventBusNamespace:
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+
+    def new(self) -> SpryEventBus:
+        return SpryEventBus(self._call_fn)
+
+    def __call__(self) -> SpryEventBus:
+        return self.new()
+
+    def create(self) -> SpryEventBus:
+        return self.new()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"EventBus.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "EventBus"
+
+
+# ---------------------------------------------------------------------------
+
+
+_SUPERVISOR_RUNNING = "running"
+_SUPERVISOR_FAILED = "failed"
+_SUPERVISOR_STOPPED = "stopped"
+
+
+class SprySupervisor:
+    """Supervisor that manages named microservice functions.
+
+    Runs each registered service and, on failure, restarts it up to
+    *max_restarts* times before marking it failed.
+
+    SpryCode usage::
+        let sv = Supervisor.new(3)
+        sv.watch("auth", fn() { authService() })
+        sv.watch("data", fn() { dataService() })
+        sv.start()
+        log info str(sv.restartCount)
+    """
+
+    def __init__(self, call_fn: Any, max_restarts: int = 3) -> None:
+        self._call_fn = call_fn
+        self._max_restarts = max(0, int(max_restarts))
+        self._services: dict[str, Any] = {}          # name → fn
+        self._status: dict[str, str] = {}            # name → status string
+        self._restart_count = 0
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return None
+
+    def watch(self, name: str, fn: Any) -> None:
+        """Register a service function under *name*."""
+        name = str(name)
+        self._services[name] = fn
+        self._status[name] = _SUPERVISOR_STOPPED
+
+    def start(self) -> dict:
+        """Run all watched services.
+
+        For each service, if it raises an exception the supervisor retries up
+        to *max_restarts* times (loop until stable or exhausted).  Only actual
+        restart attempts (not the final give-up failure) increment
+        *restartCount*.  Returns a dict mapping service name → final status.
+        """
+        for name, fn in self._services.items():
+            restarts_left = self._max_restarts
+            while True:
+                try:
+                    self._status[name] = _SUPERVISOR_RUNNING
+                    self._invoke(fn, [])
+                    self._status[name] = _SUPERVISOR_STOPPED
+                    break
+                except Exception:
+                    if restarts_left > 0:
+                        restarts_left -= 1
+                        self._restart_count += 1  # count each actual restart
+                        continue
+                    self._status[name] = _SUPERVISOR_FAILED
+                    break
+        return dict(self._status)
+
+    @property
+    def restartCount(self) -> int:
+        return self._restart_count
+
+    @property
+    def status(self) -> dict:
+        return dict(self._status)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "watch": self.watch,
+            "start": self.start,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "restartCount":
+            return self.restartCount
+        if prop == "status":
+            return self.status
+        raise SpryRuntimeError(f"Supervisor has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"Supervisor.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"Supervisor(services={list(self._services.keys())}, restarts={self._restart_count})"
+
+
+class _SupervisorNamespace:
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+
+    def new(self, max_restarts: Any = 3) -> SprySupervisor:
+        try:
+            mr = int(max_restarts)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Supervisor max_restarts must be a valid integer", None)
+        return SprySupervisor(self._call_fn, mr)
+
+    def __call__(self, max_restarts: Any = 3) -> SprySupervisor:
+        return self.new(max_restarts)
+
+    def create(self, max_restarts: Any = 3) -> SprySupervisor:
+        return self.new(max_restarts)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"Supervisor.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "Supervisor"
+
+
+# ---------------------------------------------------------------------------
+
+
+class SpryWorkerPool:
+    """Worker pool that drains a queue of items through a worker function.
+
+    Items are submitted to an internal queue; calling ``run()`` processes them
+    all (loop until empty), collecting results and errors separately.
+
+    SpryCode usage::
+        let pool = WorkerPool.new(fn(item) => item * 2)
+        pool.submit(1)
+        pool.submit(2)
+        pool.submit(3)
+        pool.run()
+        log info str(pool.results)
+    """
+
+    def __init__(self, call_fn: Any, worker_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._worker_fn = worker_fn
+        self._queue: collections.deque = collections.deque()
+        self._results: list = []
+        self._errors: list = []
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return None
+
+    def submit(self, item: Any) -> int:
+        """Add *item* to the pool's work queue. Returns new queue length."""
+        self._queue.append(item)
+        return len(self._queue)
+
+    def run(self) -> list:
+        """Process every item in the queue (loop until empty).
+
+        Returns the list of successful results.  Failed items are recorded
+        in *errors* as ``{"item": item, "error": str(e)}``.
+        """
+        while self._queue:
+            item = self._queue.popleft()
+            try:
+                result = self._invoke(self._worker_fn, [item])
+                self._results.append(result)
+            except Exception as exc:
+                self._errors.append({"item": item, "error": str(exc)})
+        return list(self._results)
+
+    def clear(self) -> None:
+        """Discard all pending queue items (does not reset results/errors)."""
+        self._queue.clear()
+
+    def reset(self) -> None:
+        """Clear queue, results, and errors."""
+        self._queue.clear()
+        self._results.clear()
+        self._errors.clear()
+
+    @property
+    def results(self) -> list:
+        return list(self._results)
+
+    @property
+    def errors(self) -> list:
+        return list(self._errors)
+
+    @property
+    def pending(self) -> int:
+        return len(self._queue)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "submit": self.submit,
+            "run": self.run,
+            "clear": self.clear,
+            "reset": self.reset,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "results":
+            return self.results
+        if prop == "errors":
+            return self.errors
+        if prop == "pending":
+            return self.pending
+        raise SpryRuntimeError(f"WorkerPool has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"WorkerPool.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"WorkerPool(pending={len(self._queue)}, results={len(self._results)}, errors={len(self._errors)})"
+
+
+class _WorkerPoolNamespace:
+    def __init__(self, call_fn: Any) -> None:
+        self._call_fn = call_fn
+
+    def new(self, worker_fn: Any) -> SpryWorkerPool:
+        return SpryWorkerPool(self._call_fn, worker_fn)
+
+    def __call__(self, worker_fn: Any) -> SpryWorkerPool:
+        return self.new(worker_fn)
+
+    def create(self, worker_fn: Any) -> SpryWorkerPool:
+        return self.new(worker_fn)
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"WorkerPool.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "WorkerPool"
+
+
+# ---------------------------------------------------------------------------
+
+
+class SpryServiceRegistry:
+    """Service registry for naming and resolving microservice functions."""
+
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
+        self._services: dict[str, Any] = {}
+
+    def register(self, name: Any, service: Any) -> bool:
+        self._services[str(name)] = service
+        return True
+
+    def unregister(self, name: Any) -> bool:
+        key = str(name)
+        if key not in self._services:
+            return False
+        del self._services[key]
+        return True
+
+    def has(self, name: Any) -> bool:
+        return str(name) in self._services
+
+    def get(self, name: Any) -> Any:
+        return self._services.get(str(name), SPRY_UNDEFINED)
+
+    def call(self, name: Any, *args: Any) -> Any:
+        key = str(name)
+        if key not in self._services:
+            raise SpryRuntimeError(f"ServiceRegistry service {key!r} not found", None)
+        service = self._services[key]
+        if self._call_fn is not None:
+            return self._call_fn(service, list(args))
+        if callable(service):
+            return service(*args)
+        return service
+
+    def runUntilSolved(
+        self,
+        name: Any,
+        solved_fn: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("ServiceRegistry max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("ServiceRegistry max_loops must be >= 1", None)
+        service_name = str(name)
+        if service_name not in self._services:
+            raise SpryRuntimeError(f"ServiceRegistry service {service_name!r} not found", None)
+        state = initial_state
+        for attempt in range(1, max_attempts + 1):
+            state = self.call(service_name, state, attempt, service_name)
+            if self._call_fn is not None:
+                solved = self._call_fn(solved_fn, [state, attempt, service_name])
+            elif callable(solved_fn):
+                solved = solved_fn(state, attempt, service_name)
+            else:
+                solved = solved_fn
+            if self._truthy_fn(solved):
+                return state
+        raise SpryRuntimeError(
+            f"ServiceRegistry service {service_name!r} exceeded max_loops ({max_attempts}) without reaching solved state",
+            None,
+        )
+
+    @property
+    def names(self) -> list[str]:
+        return list(self._services.keys())
+
+    @property
+    def size(self) -> int:
+        return len(self._services)
+
+    def clear(self) -> None:
+        self._services.clear()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "register": self.register,
+            "unregister": self.unregister,
+            "has": self.has,
+            "get": self.get,
+            "call": self.call,
+            "runUntilSolved": self.runUntilSolved,
+            "clear": self.clear,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "names":
+            return self.names
+        if prop == "size":
+            return self.size
+        raise SpryRuntimeError(f"ServiceRegistry has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"ServiceRegistry.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"ServiceRegistry(size={len(self._services)})"
+
+
+class _ServiceRegistryNamespace:
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
+
+    def new(self) -> SpryServiceRegistry:
+        return SpryServiceRegistry(self._call_fn, self._truthy_fn)
+
+    def __call__(self) -> SpryServiceRegistry:
+        return self.new()
+
+    def create(self) -> SpryServiceRegistry:
+        return self.new()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"ServiceRegistry.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "ServiceRegistry"
+
+
+class SpryOrchestrator:
+    """Loop microservice steps by cycle until solved."""
+
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
+        # Step tuple: (step_name, step_fn, step_solved_fn, step_max_loops).
+        # For non-managed steps, step_solved_fn and step_max_loops are None.
+        self._steps: list[tuple[str, Any, Any, int | None]] = []
+        # Disabled step names: steps that exist but are skipped by runCycle.
+        # Lifecycle invariant — _disabled is kept consistent by:
+        #   addStep / addManagedStep: always discard the name so that re-adding a
+        #     previously disabled step automatically re-enables it.
+        #   removeStep / clearSteps: discard the name to prevent stale entries.
+        self._disabled: set[str] = set()  # names present here are skipped in runCycle
+        # History tracking: attempt counts per step for the last cycle,
+        # a full per-cycle attempt timeline, and total completed cycles.
+        self._last_cycle_attempts: dict[str, int] = {}
+        self._cycle_history: list[dict[str, int]] = []
+        self._total_cycles: int = 0
+
+    def _invoke(self, fn: Any, args: list) -> Any:
+        if self._call_fn is not None:
+            return self._call_fn(fn, args)
+        if callable(fn):
+            return fn(*args)
+        return fn
+
+    def addStep(self, name: Any, fn: Any) -> int:
+        key = str(name)
+        self._disabled.discard(key)
+        self._steps.append((key, fn, None, None))
+        return len(self._steps)
+
+    def addManagedStep(
+        self,
+        name: Any,
+        fn: Any,
+        solved_fn: Any,
+        max_loops: Any = 1000,
+    ) -> int:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be >= 1", None)
+        key = str(name)
+        self._disabled.discard(key)
+        self._steps.append((key, fn, solved_fn, max_attempts))
+        return len(self._steps)
+
+    def setManagedStep(self, name: Any, solved_fn: Any, max_loops: Any = 1000) -> bool:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator managed step max_loops must be >= 1", None)
+        key = str(name)
+        for i in range(len(self._steps) - 1, -1, -1):
+            step_name, step_fn, _, _ = self._steps[i]
+            if step_name == key:
+                self._steps[i] = (step_name, step_fn, solved_fn, max_attempts)
+                return True
+        return False
+
+    def setUnmanagedStep(self, name: Any) -> bool:
+        key = str(name)
+        for i in range(len(self._steps) - 1, -1, -1):
+            step_name, step_fn, _, _ = self._steps[i]
+            if step_name == key:
+                self._steps[i] = (step_name, step_fn, None, None)
+                return True
+        return False
+
+    def _step_exists(self, key: str) -> bool:
+        """Return True if a step with the given name is registered.
+
+        Note: this reflects registration status only, independent of whether
+        the step is currently enabled or disabled.  Use isStepEnabled() to
+        check both existence and enabled state simultaneously.
+        """
+        return any(step_name == key for step_name, *_ in self._steps)
+
+    def disableStep(self, name: Any) -> bool:
+        key = str(name)
+        if self._step_exists(key):
+            self._disabled.add(key)
+            return True
+        return False
+
+    def enableStep(self, name: Any) -> bool:
+        key = str(name)
+        if not self._step_exists(key):
+            return False
+        self._disabled.discard(key)
+        return True
+
+    def isStepEnabled(self, name: Any) -> bool:
+        key = str(name)
+        return self._step_exists(key) and key not in self._disabled
+
+    def getStepConfig(self, name: Any) -> Any:
+        key = str(name)
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_name == key:
+                return {
+                    "name": step_name,
+                    "managed": step_solved_fn is not None,
+                    "maxLoops": step_max_loops,
+                    "enabled": step_name not in self._disabled,
+                }
+        return SPRY_UNDEFINED
+
+    def removeStep(self, name: Any) -> bool:
+        key = str(name)
+        for i in range(len(self._steps) - 1, -1, -1):
+            if self._steps[i][0] == key:
+                self._steps.pop(i)
+                self._disabled.discard(key)
+                return True
+        return False
+
+    def clearSteps(self) -> None:
+        self._steps.clear()
+        self._disabled.clear()
+
+    def getStepIndex(self, name: Any) -> int:
+        """Return the 0-based index of the first step with the given name, or -1 if absent."""
+        key = str(name)
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key:
+                return i
+        return -1
+
+    def moveStepFirst(self, name: Any) -> bool:
+        """Move the step to position 0.  Returns True on success, False if not found."""
+        key = str(name)
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key:
+                self._steps.insert(0, self._steps.pop(i))
+                return True
+        return False
+
+    def moveStepLast(self, name: Any) -> bool:
+        """Move the step to the last position.  Returns True on success, False if not found."""
+        key = str(name)
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key:
+                self._steps.append(self._steps.pop(i))
+                return True
+        return False
+
+    def moveStepBefore(self, name: Any, target: Any) -> bool:
+        """Move *name* immediately before *target*.
+
+        Returns True if both steps exist and the move was performed.
+        If *name* is already immediately before *target*, returns True without
+        modification.  Returns False if either step is not found.
+        """
+        key = str(name)
+        anchor = str(target)
+        if key == anchor:
+            return self._step_exists(key)
+        src_idx = dst_idx = -1
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key and src_idx == -1:
+                src_idx = i
+            if step_name == anchor and dst_idx == -1:
+                dst_idx = i
+        if src_idx == -1 or dst_idx == -1:
+            return False
+        entry = self._steps.pop(src_idx)
+        # Recompute anchor index after removal.
+        dst_idx = -1
+        for i, (sn, *_) in enumerate(self._steps):
+            if sn == anchor:
+                dst_idx = i
+                break
+        if dst_idx == -1:
+            return False
+        self._steps.insert(dst_idx, entry)
+        return True
+
+    def moveStepAfter(self, name: Any, target: Any) -> bool:
+        """Move *name* immediately after *target*.
+
+        Returns True if both steps exist and the move was performed.
+        Returns False if either step is not found.
+        """
+        key = str(name)
+        anchor = str(target)
+        if key == anchor:
+            return self._step_exists(key)
+        src_idx = dst_idx = -1
+        for i, (step_name, *_) in enumerate(self._steps):
+            if step_name == key and src_idx == -1:
+                src_idx = i
+            if step_name == anchor and dst_idx == -1:
+                dst_idx = i
+        if src_idx == -1 or dst_idx == -1:
+            return False
+        entry = self._steps.pop(src_idx)
+        # Recompute anchor index after removal.
+        dst_idx = -1
+        for i, (sn, *_) in enumerate(self._steps):
+            if sn == anchor:
+                dst_idx = i
+                break
+        if dst_idx == -1:
+            return False
+        self._steps.insert(dst_idx + 1, entry)
+        return True
+
+    def loadRegistry(self, registry: Any) -> int:
+        if not isinstance(registry, SpryServiceRegistry):
+            raise SpryRuntimeError("Orchestrator.loadRegistry expects ServiceRegistry", None)
+        for service_name in registry.names:
+            self.addStep(service_name, registry.get(service_name))
+        return len(self._steps)
+
+    def loadRegistryManaged(
+        self,
+        registry: Any,
+        solved_fn: Any,
+        max_loops: Any = 1000,
+    ) -> int:
+        if not isinstance(registry, SpryServiceRegistry):
+            raise SpryRuntimeError("Orchestrator.loadRegistryManaged expects ServiceRegistry", None)
+        loaded = 0
+        for service_name in registry.names:
+            self.addManagedStep(service_name, registry.get(service_name), solved_fn, max_loops)
+            loaded += 1
+        return loaded
+
+    def runCycle(self, state: Any = SPRY_UNDEFINED, cycle: Any = 1) -> Any:
+        try:
+            cycle_num = int(cycle)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator cycle must be a valid integer", None)
+        current = state
+        cycle_attempts: dict[str, int] = {}
+        for step_name, step_fn, step_solved_fn, step_max_loops in self._steps:
+            if step_name in self._disabled:
+                continue
+            if step_solved_fn is None:
+                current = self._invoke(step_fn, [current, cycle_num, step_name])
+                cycle_attempts[step_name] = 1
+                continue
+            if step_max_loops is None:
+                raise SpryRuntimeError(
+                    f"Orchestrator managed step {step_name!r} has no max_loops configured",
+                    None,
+                )
+            step_solved = False
+            for step_loop_attempt in range(1, step_max_loops + 1):
+                current = self._invoke(step_fn, [current, cycle_num, step_name, step_loop_attempt])
+                solved = self._invoke(step_solved_fn, [current, cycle_num, step_name, step_loop_attempt])
+                if self._truthy_fn(solved):
+                    step_solved = True
+                    cycle_attempts[step_name] = step_loop_attempt
+                    break
+            if not step_solved:
+                cycle_attempts[step_name] = step_max_loops
+                self._last_cycle_attempts = cycle_attempts
+                self._cycle_history.append(dict(cycle_attempts))
+                raise SpryRuntimeError(
+                    f"Orchestrator managed step {step_name!r} never reached solved state within max_loops ({step_max_loops}) in cycle {cycle_num}",
+                    None,
+                )
+        self._last_cycle_attempts = cycle_attempts
+        self._cycle_history.append(dict(cycle_attempts))
+        return current
+
+    def runUntilSolved(
+        self,
+        solved_fn: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator max_loops must be >= 1", None)
+        state = initial_state
+        for cycle_num in range(1, max_attempts + 1):
+            state = self.runCycle(state, cycle_num)
+            self._total_cycles += 1
+            solved = self._invoke(solved_fn, [state, cycle_num])
+            if self._truthy_fn(solved):
+                return state
+        raise SpryRuntimeError(
+            f"Orchestrator exceeded max_loops ({max_attempts}) without reaching solved state",
+            None,
+        )
+
+    def runManaged(
+        self,
+        solved_fn: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        return self.runUntilSolved(solved_fn, initial_state, max_loops)
+
+    def runCapabilityUntilDeveloped(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator max_loops must be >= 1", None)
+        state = initial_state
+        for cycle_num in range(1, max_attempts + 1):
+            state = self.runCycle(state, cycle_num)
+            self._total_cycles += 1
+            if self.capabilityFullyDeveloped is True:
+                return state
+        raise SpryRuntimeError(
+            f"Orchestrator exceeded max_loops ({max_attempts}) without fully developing capability pathway",
+            None,
+        )
+
+    def _active_managed_step_names(self) -> list[str]:
+        return [
+            step_name
+            for step_name, _, step_solved_fn, _ in self._steps
+            if step_solved_fn is not None and step_name not in self._disabled
+        ]
+
+    def runTargetUntilMature(
+        self,
+        target: Any,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        target_name = str(target)
+        step_info = None
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_name == target_name:
+                step_info = (step_solved_fn, step_max_loops)
+                break
+        if step_info is None:
+            raise SpryRuntimeError(
+                f"Orchestrator capability target {target_name!r} does not exist",
+                None,
+            )
+        step_solved_fn, _ = step_info
+        if step_solved_fn is None:
+            raise SpryRuntimeError(
+                f"Orchestrator capability target {target_name!r} is not managed",
+                None,
+            )
+        if target_name in self._disabled:
+            raise SpryRuntimeError(
+                f"Orchestrator capability target {target_name!r} is disabled",
+                None,
+            )
+        try:
+            max_attempts = int(max_loops)
+        except (TypeError, ValueError):
+            raise SpryRuntimeError("Orchestrator max_loops must be a valid integer", None)
+        if max_attempts < 1:
+            raise SpryRuntimeError("Orchestrator max_loops must be >= 1", None)
+        state = initial_state
+        for cycle_num in range(1, max_attempts + 1):
+            state = self.runCycle(state, cycle_num)
+            self._total_cycles += 1
+            if self.stepCapabilityStages.get(target_name) == "mature":
+                return state
+        raise SpryRuntimeError(
+            f"Orchestrator capability target {target_name!r} did not reach mature stage within max_loops ({max_attempts})",
+            None,
+        )
+
+    def runNextCapabilityTarget(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops: Any = 1000,
+    ) -> Any:
+        state = initial_state
+        target = self.nextCapabilityTarget
+        if target is SPRY_UNDEFINED and self._active_managed_step_names():
+            state = self.runCycle(state, 1)
+            self._total_cycles += 1
+            target = self.nextCapabilityTarget
+        if target is SPRY_UNDEFINED:
+            return state
+        return self.runTargetUntilMature(target, state, max_loops)
+
+    def runCapabilityPathwayManaged(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops_per_target: Any = 1000,
+    ) -> Any:
+        state = initial_state
+        if self.nextCapabilityTarget is SPRY_UNDEFINED and self._active_managed_step_names():
+            state = self.runCycle(state, 1)
+            self._total_cycles += 1
+        while True:
+            target = self.nextCapabilityTarget
+            if target is SPRY_UNDEFINED:
+                return state
+            state = self.runTargetUntilMature(target, state, max_loops_per_target)
+
+    def runCapabilityPathwayManagedReport(
+        self,
+        initial_state: Any = SPRY_UNDEFINED,
+        max_loops_per_target: Any = 1000,
+    ) -> dict[str, Any]:
+        state = initial_state
+        total_cycles_before = self._total_cycles
+        cycle_history_before = len(self._cycle_history)
+        active_managed_names = self._active_managed_step_names()
+        targets: list[dict[str, Any]] = []
+        if self.nextCapabilityTarget is SPRY_UNDEFINED and active_managed_names:
+            state = self.runCycle(state, 1)
+            self._total_cycles += 1
+        while True:
+            target = self.nextCapabilityTarget
+            if target is SPRY_UNDEFINED:
+                break
+            start_stage = self.stepCapabilityStages.get(target)
+            start_cycles = self._total_cycles
+            target_history_before = len(self._cycle_history)
+            state_before = state
+            state = self.runTargetUntilMature(target, state, max_loops_per_target)
+            state_after = state
+            target_history_delta = self._cycle_history[target_history_before:]
+            target_service_loops: list[dict[str, Any]] = []
+            for step_name in active_managed_names:
+                t_attempts = 0
+                t_cycles = 0
+                t_peak = 0
+                for cycle_attempts in target_history_delta:
+                    if step_name not in cycle_attempts:
+                        continue
+                    a = cycle_attempts[step_name]
+                    t_attempts += a
+                    t_cycles += 1
+                    if a > t_peak:
+                        t_peak = a
+                t_avg = (t_attempts / t_cycles) if t_cycles > 0 else None
+                target_service_loops.append(
+                    {
+                        "name": step_name,
+                        "attempts": t_attempts,
+                        "cycles": t_cycles,
+                        "avgAttempts": t_avg,
+                        "peakAttempts": t_peak,
+                    }
+                )
+            targets.append(
+                {
+                    "name": target,
+                    "startStage": start_stage,
+                    "endStage": self.stepCapabilityStages.get(target),
+                    "cycleStart": start_cycles + 1,
+                    "cycleEnd": self._total_cycles,
+                    "cycles": self._total_cycles - start_cycles,
+                    "serviceLoops": target_service_loops,
+                    "remainingTargetsAfter": self.capabilityRemainingTargets,
+                    "fullyDevelopedAfter": self.capabilityFullyDeveloped,
+                    "stateBefore": state_before,
+                    "stateAfter": state_after,
+                }
+            )
+        loop_history_delta = self._cycle_history[cycle_history_before:]
+        service_loops: list[dict[str, Any]] = []
+        capability_stages = self.stepCapabilityStages
+        for step_name in active_managed_names:
+            attempts_total = 0
+            cycle_count = 0
+            peak_attempts = 0
+            for cycle_attempts in loop_history_delta:
+                if step_name not in cycle_attempts:
+                    continue
+                attempts = cycle_attempts[step_name]
+                attempts_total += attempts
+                cycle_count += 1
+                if attempts > peak_attempts:
+                    peak_attempts = attempts
+            avg_attempts = (attempts_total / cycle_count) if cycle_count > 0 else None
+            stage = capability_stages.get(step_name)
+            service_loops.append(
+                {
+                    "name": step_name,
+                    "attempts": attempts_total,
+                    "cycles": cycle_count,
+                    "avgAttempts": avg_attempts,
+                    "peakAttempts": peak_attempts,
+                    "stage": stage,
+                    "mature": stage == "mature",
+                }
+            )
+        return {
+            "state": state,
+            "targets": targets,
+            "serviceLoops": service_loops,
+            "fullyDeveloped": self.capabilityFullyDeveloped,
+            "remainingTargets": self.capabilityRemainingTargets,
+            "cycles": self._total_cycles - total_cycles_before,
+        }
+
+    @property
+    def enabledStepNames(self) -> list[str]:
+        return [name for name, *_ in self._steps if name not in self._disabled]
+
+    @property
+    def enabledStepCount(self) -> int:
+        return sum(1 for name, *_ in self._steps if name not in self._disabled)
+
+    @property
+    def stepNames(self) -> list[str]:
+        return [name for name, *_ in self._steps]
+
+    @property
+    def stepCount(self) -> int:
+        return len(self._steps)
+
+    @property
+    def lastCycleAttempts(self) -> dict:
+        return dict(self._last_cycle_attempts)
+
+    @property
+    def totalCycles(self) -> int:
+        return self._total_cycles
+
+    @property
+    def cycleHistory(self) -> list[dict[str, int]]:
+        return [dict(cycle_attempts) for cycle_attempts in self._cycle_history]
+
+    @property
+    def stepAttemptTotals(self) -> dict[str, int]:
+        totals: dict[str, int] = {}
+        for cycle_attempts in self._cycle_history:
+            for step_name, attempts in cycle_attempts.items():
+                totals[step_name] = totals.get(step_name, 0) + attempts
+        return totals
+
+    @property
+    def stepAttemptPeaks(self) -> dict[str, int]:
+        peaks: dict[str, int] = {}
+        for cycle_attempts in self._cycle_history:
+            for step_name, attempts in cycle_attempts.items():
+                prev = peaks.get(step_name, 0)
+                if attempts > prev:
+                    peaks[step_name] = attempts
+        return peaks
+
+    @property
+    def stepCycleCounts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for cycle_attempts in self._cycle_history:
+            for step_name in cycle_attempts:
+                counts[step_name] = counts.get(step_name, 0) + 1
+        return counts
+
+    @property
+    def stepAttemptAverages(self) -> dict[str, float]:
+        totals: dict[str, int] = {}
+        counts: dict[str, int] = {}
+        for cycle_attempts in self._cycle_history:
+            for step_name, attempts in cycle_attempts.items():
+                totals[step_name] = totals.get(step_name, 0) + attempts
+                counts[step_name] = counts.get(step_name, 0) + 1
+        avgs: dict[str, float] = {}
+        for step_name, total in totals.items():
+            avgs[step_name] = total / counts[step_name]
+        return avgs
+
+    @property
+    def stepLoopUtilization(self) -> dict[str, float]:
+        avgs = self.stepAttemptAverages
+        utilization: dict[str, float] = {}
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_solved_fn is None or step_max_loops is None:
+                continue
+            avg = avgs.get(step_name)
+            if avg is None:
+                continue
+            utilization[step_name] = avg / float(step_max_loops)
+        return utilization
+
+    @property
+    def stepLoopHeadroom(self) -> dict[str, float]:
+        avgs = self.stepAttemptAverages
+        headroom: dict[str, float] = {}
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_solved_fn is None or step_max_loops is None:
+                continue
+            avg = avgs.get(step_name)
+            if avg is None:
+                continue
+            headroom[step_name] = float(step_max_loops) - avg
+        return headroom
+
+    def _loop_pressure_ranks(self) -> dict[str, int]:
+        utilization = self.stepLoopUtilization
+        if not utilization:
+            return {}
+        positions = {step_name: i for i, (step_name, *_) in enumerate(self._steps)}
+        ordered = sorted(
+            utilization,
+            key=lambda step_name: (-utilization[step_name], positions.get(step_name, 0)),
+        )
+        return {step_name: idx + 1 for idx, step_name in enumerate(ordered)}
+
+    @staticmethod
+    def _capability_stage(utilization: float) -> str:
+        if utilization >= 0.9:
+            return "critical"
+        if utilization >= 0.7:
+            return "stretched"
+        if utilization >= 0.4:
+            return "stabilizing"
+        return "mature"
+
+    @property
+    def stepPressurePath(self) -> list[str]:
+        ranks = self._loop_pressure_ranks()
+        return sorted(ranks, key=lambda step_name: ranks[step_name])
+
+    @property
+    def primaryBottleneck(self) -> Any:
+        path = self.stepPressurePath
+        if not path:
+            return SPRY_UNDEFINED
+        return path[0]
+
+    @property
+    def stepCapabilityStages(self) -> dict[str, str]:
+        utilization = self.stepLoopUtilization
+        return {
+            step_name: self._capability_stage(step_utilization)
+            for step_name, step_utilization in utilization.items()
+        }
+
+    @property
+    def pathwayCapabilityMaturity(self) -> dict[str, Any]:
+        utilization = self.stepLoopUtilization
+        stages = self.stepCapabilityStages
+        managed_count = len(stages)
+        if managed_count == 0:
+            return {
+                "managedSteps": 0,
+                "critical": 0,
+                "stretched": 0,
+                "stabilizing": 0,
+                "mature": 0,
+                "avgUtilization": None,
+                "maturity": None,
+            }
+        critical = 0
+        stretched = 0
+        stabilizing = 0
+        mature = 0
+        for stage in stages.values():
+            if stage == "critical":
+                critical += 1
+            elif stage == "stretched":
+                stretched += 1
+            elif stage == "stabilizing":
+                stabilizing += 1
+            else:
+                mature += 1
+        avg_utilization = sum(utilization.values()) / managed_count
+        return {
+            "managedSteps": managed_count,
+            "critical": critical,
+            "stretched": stretched,
+            "stabilizing": stabilizing,
+            "mature": mature,
+            "avgUtilization": avg_utilization,
+            "maturity": 1.0 - avg_utilization,
+        }
+
+    def _capability_path_ranks(self) -> dict[str, int]:
+        utilization = self.stepLoopUtilization
+        if not utilization:
+            return {}
+        stages = self.stepCapabilityStages
+        positions = {step_name: i for i, (step_name, *_) in enumerate(self._steps)}
+        stage_priority = {"critical": 0, "stretched": 1, "stabilizing": 2, "mature": 3}
+        ordered = sorted(
+            utilization,
+            key=lambda step_name: (
+                stage_priority.get(stages.get(step_name, "mature"), 3),
+                -utilization[step_name],
+                positions.get(step_name, 0),
+            ),
+        )
+        return {step_name: idx + 1 for idx, step_name in enumerate(ordered)}
+
+    @property
+    def capabilityPathway(self) -> list[str]:
+        ranks = self._capability_path_ranks()
+        return sorted(ranks, key=lambda step_name: ranks[step_name])
+
+    @property
+    def nextCapabilityTarget(self) -> Any:
+        stages = self.stepCapabilityStages
+        for step_name in self.capabilityPathway:
+            if stages.get(step_name) != "mature":
+                return step_name
+        return SPRY_UNDEFINED
+
+    @property
+    def capabilityFullyDeveloped(self) -> Any:
+        stages = self.stepCapabilityStages
+        if not stages:
+            return SPRY_UNDEFINED
+        return all(stage == "mature" for stage in stages.values())
+
+    @property
+    def capabilityRemainingTargets(self) -> list[str]:
+        stages = self.stepCapabilityStages
+        return [step_name for step_name in self.capabilityPathway if stages.get(step_name) != "mature"]
+
+    def resetHistory(self) -> None:
+        self._last_cycle_attempts = {}
+        self._cycle_history = []
+        self._total_cycles = 0
+
+    def _build_step_summary(
+        self,
+        step_name: str,
+        step_solved_fn: Any,
+        step_max_loops: Any,
+        pressure_ranks: dict[str, int] | None = None,
+        capability_stages: dict[str, str] | None = None,
+        capability_path_ranks: dict[str, int] | None = None,
+    ) -> dict:
+        totals = 0
+        peaks = 0
+        mins: int | None = None
+        cycle_count = 0
+        for cycle_attempts in self._cycle_history:
+            if step_name not in cycle_attempts:
+                continue
+            attempts = cycle_attempts[step_name]
+            totals += attempts
+            cycle_count += 1
+            if attempts > peaks:
+                peaks = attempts
+            if mins is None or attempts < mins:
+                mins = attempts
+        avg: float | None = totals / cycle_count if cycle_count > 0 else None
+        loop_utilization: float | None = None
+        loop_headroom: float | None = None
+        if step_solved_fn is not None and step_max_loops is not None and avg is not None:
+            loop_utilization = avg / float(step_max_loops)
+            loop_headroom = float(step_max_loops) - avg
+        return {
+            "name": step_name,
+            "managed": step_solved_fn is not None,
+            "maxLoops": step_max_loops,
+            "enabled": step_name not in self._disabled,
+            "totalAttempts": totals,
+            "peakAttempts": peaks,
+            "minAttempts": mins if mins is not None else 0,
+            "cycleCounts": cycle_count,
+            "avgAttempts": avg,
+            "loopUtilization": loop_utilization,
+            "loopHeadroom": loop_headroom,
+            "loopPressureRank": (pressure_ranks or {}).get(step_name),
+            "loopCapabilityStage": (capability_stages or {}).get(step_name),
+            "capabilityProgress": (None if loop_utilization is None else (1.0 - loop_utilization)),
+            "capabilityPathRank": (capability_path_ranks or {}).get(step_name),
+        }
+
+    def getStepSummary(self, name: Any) -> Any:
+        key = str(name)
+        pressure_ranks = self._loop_pressure_ranks()
+        capability_stages = self.stepCapabilityStages
+        capability_path_ranks = self._capability_path_ranks()
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            if step_name == key:
+                return self._build_step_summary(
+                    step_name,
+                    step_solved_fn,
+                    step_max_loops,
+                    pressure_ranks,
+                    capability_stages,
+                    capability_path_ranks,
+                )
+        return SPRY_UNDEFINED
+
+    @property
+    def summary(self) -> list:
+        pressure_ranks = self._loop_pressure_ranks()
+        capability_stages = self.stepCapabilityStages
+        capability_path_ranks = self._capability_path_ranks()
+        result = []
+        for step_name, _, step_solved_fn, step_max_loops in self._steps:
+            result.append(
+                self._build_step_summary(
+                    step_name,
+                    step_solved_fn,
+                    step_max_loops,
+                    pressure_ranks,
+                    capability_stages,
+                    capability_path_ranks,
+                )
+            )
+        return result
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        _methods: dict = {
+            "addStep": self.addStep,
+            "addManagedStep": self.addManagedStep,
+            "setManagedStep": self.setManagedStep,
+            "setUnmanagedStep": self.setUnmanagedStep,
+            "disableStep": self.disableStep,
+            "enableStep": self.enableStep,
+            "isStepEnabled": self.isStepEnabled,
+            "getStepConfig": self.getStepConfig,
+            "getStepIndex": self.getStepIndex,
+            "moveStepFirst": self.moveStepFirst,
+            "moveStepLast": self.moveStepLast,
+            "moveStepBefore": self.moveStepBefore,
+            "moveStepAfter": self.moveStepAfter,
+            "removeStep": self.removeStep,
+            "clearSteps": self.clearSteps,
+            "loadRegistry": self.loadRegistry,
+            "loadRegistryManaged": self.loadRegistryManaged,
+            "runCycle": self.runCycle,
+            "runUntilSolved": self.runUntilSolved,
+            "runManaged": self.runManaged,
+            "runCapabilityUntilDeveloped": self.runCapabilityUntilDeveloped,
+            "runTargetUntilMature": self.runTargetUntilMature,
+            "runNextCapabilityTarget": self.runNextCapabilityTarget,
+            "runCapabilityPathwayManaged": self.runCapabilityPathwayManaged,
+            "runCapabilityPathwayManagedReport": self.runCapabilityPathwayManagedReport,
+            "resetHistory": self.resetHistory,
+            "getStepSummary": self.getStepSummary,
+        }
+        if prop in _methods:
+            return _methods[prop]
+        if prop == "stepNames":
+            return self.stepNames
+        if prop == "stepCount":
+            return self.stepCount
+        if prop == "enabledStepNames":
+            return self.enabledStepNames
+        if prop == "enabledStepCount":
+            return self.enabledStepCount
+        if prop == "lastCycleAttempts":
+            return self.lastCycleAttempts
+        if prop == "cycleHistory":
+            return self.cycleHistory
+        if prop == "stepAttemptTotals":
+            return self.stepAttemptTotals
+        if prop == "stepAttemptPeaks":
+            return self.stepAttemptPeaks
+        if prop == "stepCycleCounts":
+            return self.stepCycleCounts
+        if prop == "stepAttemptAverages":
+            return self.stepAttemptAverages
+        if prop == "stepLoopUtilization":
+            return self.stepLoopUtilization
+        if prop == "stepLoopHeadroom":
+            return self.stepLoopHeadroom
+        if prop == "stepPressurePath":
+            return self.stepPressurePath
+        if prop == "primaryBottleneck":
+            return self.primaryBottleneck
+        if prop == "stepCapabilityStages":
+            return self.stepCapabilityStages
+        if prop == "pathwayCapabilityMaturity":
+            return self.pathwayCapabilityMaturity
+        if prop == "capabilityPathway":
+            return self.capabilityPathway
+        if prop == "nextCapabilityTarget":
+            return self.nextCapabilityTarget
+        if prop == "capabilityFullyDeveloped":
+            return self.capabilityFullyDeveloped
+        if prop == "capabilityRemainingTargets":
+            return self.capabilityRemainingTargets
+        if prop == "summary":
+            return self.summary
+        if prop == "totalCycles":
+            return self.totalCycles
+        raise SpryRuntimeError(f"Orchestrator has no property {prop!r}", None)
+
+    def _spry_set_prop(self, prop: str, value: Any) -> None:
+        raise SpryRuntimeError(f"Orchestrator.{prop} is not settable", None)
+
+    def __repr__(self) -> str:
+        return f"Orchestrator(steps={len(self._steps)})"
+
+
+class _OrchestratorNamespace:
+    def __init__(self, call_fn: Any, truthy_fn: Any) -> None:
+        self._call_fn = call_fn
+        self._truthy_fn = truthy_fn
+
+    def new(self) -> SpryOrchestrator:
+        return SpryOrchestrator(self._call_fn, self._truthy_fn)
+
+    def __call__(self) -> SpryOrchestrator:
+        return self.new()
+
+    def create(self) -> SpryOrchestrator:
+        return self.new()
+
+    def _spry_get_prop(self, prop: str) -> Any:
+        if prop in ("new", "create"):
+            return getattr(self, prop)
+        raise SpryRuntimeError(f"Orchestrator.{prop} not found", None)
+
+    def __repr__(self) -> str:
+        return "Orchestrator"

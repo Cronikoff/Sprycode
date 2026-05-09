@@ -166,6 +166,15 @@ class TestLoopStatement:
         """)
         assert val(i, "outer") == 1
 
+    def test_loop_until_alias_matches_repeat_until(self):
+        i = run("""
+            var count = 0
+            loop {
+                count = count + 1
+            } until count >= 3
+        """)
+        assert val(i, "count") == 3
+
 
 # ---------------------------------------------------------------------------
 # retry block
@@ -446,6 +455,13 @@ class TestQueue:
         """)
         assert val(i, "v") == 5
 
+    def test_queue_to_list_alias_and_create_ctor(self):
+        i = run("""
+            let q = Queue.create([1, 2])
+            let items = q.toList()
+        """)
+        assert val(i, "items") == [1, 2]
+
     def test_queue_size(self):
         i = run('''
 let q = Queue.new()
@@ -626,6 +642,16 @@ class TestChannel:
         """)
         assert val(i, "v") == 42
 
+    def test_channel_create_ctor_and_is_closed_alias(self):
+        i = run("""
+            let ch = Channel.create()
+            let c1 = ch.isClosed
+            ch.close()
+            let c2 = ch.isClosed
+        """)
+        assert val(i, "c1") is False
+        assert val(i, "c2") is True
+
     def test_channel_drain_with_loop(self):
         """Drain a channel into an array using loop."""
         from sprycode.interpreter import SPRY_UNDEFINED
@@ -798,6 +824,13 @@ class TestCircuitBreaker:
             let s = cb.state
         """)
         assert val(i, "s") == "closed"
+
+    def test_circuit_breaker_execute_alias_and_create_ctor(self):
+        i = run("""
+            let cb = CircuitBreaker.create(3, 1000)
+            let v = cb.execute(fn(x) => x + 1, 41)
+        """)
+        assert val(i, "v") == 42
 
     def test_circuit_breaker_passes_successful_calls(self):
         i = run('''
@@ -1050,6 +1083,92 @@ class TestDebounce:
 
 
 class TestMicroServiceIntegration:
+    def test_micromanage_loops_until_queue_is_empty(self):
+        i = run("""
+            let q = Queue.new([1, 2, 3, 4])
+            var total = 0
+            let result = micromanage(
+                fn(attempt) {
+                    if !q.isEmpty() {
+                        total = total + q.dequeue()
+                    }
+                    return total
+                },
+                fn(last) => q.isEmpty(),
+                10
+            )
+        """)
+        assert val(i, "total") == 10
+        assert val(i, "result") == 10
+
+    def test_micromanage_tracks_attempts_in_structural_path(self):
+        i = run("""
+            var attempts = []
+            let result = micromanage(
+                fn(attempt) {
+                    attempts.push(attempt)
+                    return attempt
+                },
+                fn(last, attempt) => attempt >= 3,
+                10
+            )
+        """)
+        assert val(i, "attempts") == [1, 2, 3]
+        assert val(i, "result") == 3
+
+    def test_micromanage_raises_if_not_solved(self):
+        with pytest.raises(SpryRuntimeError):
+            run("""
+                micromanage(
+                    fn(attempt) { return attempt },
+                    fn(last, attempt) => false,
+                    2
+                )
+            """)
+
+    def test_micromanage_invalid_max_loops_raises(self):
+        with pytest.raises(SpryRuntimeError):
+            run("""
+                micromanage(
+                    fn(attempt) { return attempt },
+                    fn(last, attempt) => true,
+                    "not-a-number"
+                )
+            """)
+
+    def test_micromanage_zero_max_loops_raises(self):
+        with pytest.raises(SpryRuntimeError):
+            run("""
+                micromanage(
+                    fn(attempt) { return attempt },
+                    fn(last, attempt) => true,
+                    0
+                )
+            """)
+
+    def test_micromanage_with_retry_and_circuit_breaker(self):
+        i = run("""
+            let cb = CircuitBreaker.new({ threshold: 5, timeout: 30000 })
+            var tries = 0
+            var done = false
+            let result = micromanage(
+                fn(attempt) {
+                    retry(3) {
+                        cb.call(fn() {
+                            tries = tries + 1
+                            if tries < 2 { throw "transient" }
+                        })
+                    }
+                    done = true
+                    return tries
+                },
+                fn(last) => done,
+                5
+            )
+        """)
+        assert val(i, "result") == 2
+        assert val(i, "tries") == 2
+
     def test_queue_retry_process(self):
         """Process queue items with retry on failure."""
         i = run("""

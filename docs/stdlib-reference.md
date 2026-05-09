@@ -152,10 +152,136 @@ ch.send({ id: 1 })
 let msg = ch.receive()
 
 let cb = CircuitBreaker(3, 1000)
-let result = retry((attempt) => cb.execute(() => callService(attempt)), 5)
+let result = retry(fn(attempt) => cb.execute(fn() => callService(attempt)), 5)
 
-let throttled = throttle(() => pollHealth(), 500)
-let debounced = debounce(() => refreshDashboard(), 200)
+let throttled = throttle(fn() => pollHealth(), 500)
+let debounced = debounce(fn() => refreshDashboard(), 200)
+
+let solved = micromanage(
+    fn(attempt) => runPipelineStep(attempt),
+    fn(lastResult) => lastResult.done,
+    100
+)
+
+// EventBus — pub/sub for decoupled microservice communication
+let bus = EventBus.new()
+bus.subscribe("order.created", fn(order) { processOrder(order) })
+bus.publish("order.created", { id: 42 })
+let n = bus.subscriberCount("order.created")   // 1
+bus.unsubscribe("order.created", handler)
+bus.clear()                                     // remove all subscribers
+
+// Supervisor — manages and restarts failing services
+let sv = Supervisor.new(3)                       // up to 3 restarts per service
+sv.watch("auth", fn() { authService() })
+sv.watch("data", fn() { dataService() })
+sv.start()
+let rc = sv.restartCount
+let statuses = sv.status                         // { auth: "stopped", data: "failed" }
+
+// WorkerPool — drain a task queue through a worker function
+let pool = WorkerPool.new(fn(item) => item * 2)
+pool.submit(1)
+pool.submit(2)
+pool.submit(3)
+pool.run()                                       // processes all pending items
+let results = pool.results                       // [2, 4, 6]
+let errors  = pool.errors                        // []
+let pending = pool.pending                       // 0
+pool.reset()                                     // clear results + errors + queue
+
+// ServiceRegistry — register and resolve named services
+let reg = ServiceRegistry.new()
+reg.register("ingest", fn(state, cycle) => state + 1)
+reg.register("shape", fn(state) => state * 2)
+let svcNames = reg.names
+let count = reg.size
+let out = reg.call("ingest", 41, 1)              // 42
+let converged = reg.runUntilSolved(
+    "ingest",
+    fn(state, attempt, name) => state >= 10,
+    0,
+    100
+)
+
+// Orchestrator — loop service steps by cycle until solved
+let orch = Orchestrator.new()
+orch.loadRegistry(reg)                           // adds all registered services as steps
+let final = orch.runUntilSolved(
+    fn(state, cycle) => state >= 10,
+    0,
+    100
+)
+let finalManaged = orch.runManaged(              // alias for managed structural pathway loops
+    fn(state, cycle) => state >= 20,
+    0,
+    100
+)
+orch.addManagedStep(                             // per-step microservice loop until solved
+    "stabilize",
+    fn(state, cycle, name, attempt) => state + 1,
+    fn(state, cycle, name, attempt) => state >= 3,
+    5
+)
+orch.setManagedStep(                             // promote/update one existing step as managed
+    "shape",
+    fn(state, cycle, name, attempt) => attempt >= 2,
+    5
+)
+orch.setUnmanagedStep("shape")                   // revert one step back to single-pass behavior
+orch.loadRegistryManaged(                        // load all registry services as managed steps
+    reg,
+    fn(state, cycle, name, attempt) => attempt >= 2,
+    5
+)
+orch.disableStep("shape")                        // skip a step without removing it
+orch.enableStep("shape")                         // re-enable a previously disabled step
+let isEnabled = orch.isStepEnabled("shape")      // true / false
+let cfg = orch.getStepConfig("shape")            // { name, managed, maxLoops, enabled }
+// Step priority / ordering
+let idx = orch.getStepIndex("shape")             // 0-based index, -1 if not found
+orch.moveStepFirst("shape")                      // move to position 0 (highest priority)
+orch.moveStepLast("shape")                       // move to last position (lowest priority)
+orch.moveStepBefore("shape", "emit")             // move shape immediately before emit
+orch.moveStepAfter("shape", "ingest")            // move shape immediately after ingest
+let stepNames = orch.stepNames
+let stepCount = orch.stepCount
+let enabledNames = orch.enabledStepNames         // names of only enabled steps
+let enabledCount = orch.enabledStepCount         // number of enabled steps
+// After runManaged or runCycle, inspect loop convergence history
+let attempts = orch.lastCycleAttempts           // { "ingest": 2, "shape": 1, ... }
+let history = orch.cycleHistory                 // [ { ...cycle1... }, { ...cycle2... }, ... ]
+let totals = orch.stepAttemptTotals             // { "ingest": 6, "shape": 3, ... }
+let peaks = orch.stepAttemptPeaks               // { "ingest": 3, "shape": 1, ... }
+let counts = orch.stepCycleCounts               // { "ingest": 3, "shape": 3, ... }
+let avgs = orch.stepAttemptAverages             // { "ingest": 2.0, "shape": 1.0, ... }
+let util = orch.stepLoopUtilization             // managed steps: avgAttempts/maxLoops
+let room = orch.stepLoopHeadroom                // managed steps: maxLoops-avgAttempts
+let path = orch.stepPressurePath                // managed steps ordered by loop pressure (high -> low)
+let lead = orch.primaryBottleneck               // first step in path, or undefined when no managed history
+let stages = orch.stepCapabilityStages          // managed steps mapped to capability stage: critical/stretched/stabilizing/mature
+let maturity = orch.pathwayCapabilityMaturity   // { managedSteps, critical, stretched, stabilizing, mature, avgUtilization, maturity }
+let capPath = orch.capabilityPathway            // managed steps ordered by capability pathway priority
+let nextCap = orch.nextCapabilityTarget         // first non-mature managed step on capability pathway, or undefined
+let remainCap = orch.capabilityRemainingTargets // non-mature managed steps in capability pathway order
+let fully = orch.capabilityFullyDeveloped       // true when all active managed steps are mature, else false/undefined
+let developed = orch.runCapabilityUntilDeveloped(initialState, 20) // run cycles until capability pathway is fully developed
+let targeted = orch.runTargetUntilMature("ingest", initialState, 10) // micro-manage one managed target until mature
+let nextDone = orch.runNextCapabilityTarget(initialState, 10) // micro-manage the next capability target until mature
+let pathDone = orch.runCapabilityPathwayManaged(initialState, 10) // iterate capability targets in pathway order until mature
+let pathReport = orch.runCapabilityPathwayManagedReport(initialState, 10) // detailed target-by-target pathway micromanagement report
+let svcLoops = pathReport["serviceLoops"]         // [ { name, attempts, cycles, avgAttempts, peakAttempts, stage, mature }, ... ] for active managed services
+let targetSvcLoops = pathReport["targets"][0]["serviceLoops"] // per-target service loop breakdown: [ { name, attempts, cycles, avgAttempts, peakAttempts }, ... ]
+let targetRemain = pathReport["targets"][0]["remainingTargetsAfter"] // pathway targets still not mature after this target run
+let targetFully = pathReport["targets"][0]["fullyDevelopedAfter"] // true when pathway is fully developed after this target run
+let targetStateBefore = pathReport["targets"][0]["stateBefore"] // system state just before this target's micromanagement loop began
+let targetStateAfter = pathReport["targets"][0]["stateAfter"]   // system state immediately after this target reached maturity
+let targetCycleStart = pathReport["targets"][0]["cycleStart"]   // global cycle index where this target's micromanagement loop started (1-based)
+let targetCycleEnd = pathReport["targets"][0]["cycleEnd"]       // global cycle index where this target reached maturity
+let cycles = orch.totalCycles                   // total completed cycles
+let full = orch.summary                         // [ { name, managed, maxLoops, enabled, totalAttempts, peakAttempts, minAttempts, cycleCounts, avgAttempts, loopUtilization, loopHeadroom, loopPressureRank, loopCapabilityStage, capabilityProgress, capabilityPathRank }, ... ]
+let stepSum = orch.getStepSummary("ingest")     // same shape as summary entry, or undefined if not found
+orch.resetHistory()                             // reset attempts + timeline + aggregates + cycle counter
 ```
 
 ---

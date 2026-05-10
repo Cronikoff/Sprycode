@@ -77,7 +77,7 @@ class TestPathwayReportStateGainAttributionResidual:
         expected = rep["reportStateGain"] - (rep["targetStateGainSum"] + rep["preTargetStateGain"])
         assert abs(rep["stateGainAttributionResidual"] - expected) < 1e-9
 
-    def test_no_managed_steps_has_zero_residual(self):
+    def test_no_managed_steps_returns_zero_residual(self):
         i = run("""
             let orch = Orchestrator.new()
             orch.addStep("plain", fn(state) => state + 1)

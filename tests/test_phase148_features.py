@@ -57,7 +57,7 @@ class TestPathwayReportStateGainAttributionResidualPerCycle:
         expected = rep["stateGainAttributionResidual"] / rep["cycles"]
         assert abs(rep["stateGainAttributionResidualPerCycle"] - expected) < 1e-9
 
-    def test_no_managed_steps_has_zero_residual_per_cycle(self):
+    def test_no_managed_steps_returns_none_residual_per_cycle(self):
         i = run("""
             let orch = Orchestrator.new()
             orch.addStep("plain", fn(state) => state + 1)

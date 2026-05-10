@@ -15840,7 +15840,7 @@ class SpryOrchestrator:
             )
             state_gain_attribution_residual_coverage = (
                 state_gain_attribution_residual / report_state_gain
-                if report_state_gain != 0
+                if isinstance(report_state_gain, (int, float)) and report_state_gain != 0
                 else None
             )
         else:

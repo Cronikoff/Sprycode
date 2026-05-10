@@ -15828,6 +15828,11 @@ class SpryOrchestrator:
             state_gain_attribution_residual = report_state_gain - (
                 target_state_gain_sum + pre_target_state_gain
             )
+            state_gain_attribution_residual_per_cycle = (
+                state_gain_attribution_residual / report_cycles
+                if report_cycles > 0
+                else None
+            )
         else:
             pre_target_state_gain = None
             report_state_gain_coverage = None
@@ -15837,6 +15842,7 @@ class SpryOrchestrator:
             target_state_gain_per_attempt = None
             pre_target_state_gain_per_attempt = None
             state_gain_attribution_residual = None
+            state_gain_attribution_residual_per_cycle = None
         return {
             "state": state,
             "targets": targets,
@@ -15861,6 +15867,7 @@ class SpryOrchestrator:
             "targetStateGainPerAttempt": target_state_gain_per_attempt,
             "preTargetStateGainPerAttempt": pre_target_state_gain_per_attempt,
             "stateGainAttributionResidual": state_gain_attribution_residual,
+            "stateGainAttributionResidualPerCycle": state_gain_attribution_residual_per_cycle,
         }
 
     @property

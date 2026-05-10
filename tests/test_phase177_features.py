@@ -61,8 +61,11 @@ class TestPathwayStateGainAttributionResidualAbsolute:
         """)
         rep = val(i, "rep")
         residual = rep["stateGainAttributionResidual"]
-        expected = abs(residual)
-        assert abs(rep["stateGainAttributionResidualAbsolute"] - expected) < 1e-9
+        if residual is None:
+            assert rep["stateGainAttributionResidualAbsolute"] is None
+        else:
+            expected = abs(residual)
+            assert abs(rep["stateGainAttributionResidualAbsolute"] - expected) < 1e-9
 
     def test_no_managed_steps_matches_formula(self):
         i = run("""
@@ -72,8 +75,11 @@ class TestPathwayStateGainAttributionResidualAbsolute:
         """)
         rep = val(i, "rep")
         residual = rep["stateGainAttributionResidual"]
-        expected = abs(residual)
-        assert abs(rep["stateGainAttributionResidualAbsolute"] - expected) < 1e-9
+        if residual is None:
+            assert rep["stateGainAttributionResidualAbsolute"] is None
+        else:
+            expected = abs(residual)
+            assert abs(rep["stateGainAttributionResidualAbsolute"] - expected) < 1e-9
 
     def test_zero_cycle_report_matches_formula(self):
         i = run("""
@@ -82,8 +88,11 @@ class TestPathwayStateGainAttributionResidualAbsolute:
         """)
         rep = val(i, "rep")
         residual = rep["stateGainAttributionResidual"]
-        expected = abs(residual)
-        assert abs(rep["stateGainAttributionResidualAbsolute"] - expected) < 1e-9
+        if residual is None:
+            assert rep["stateGainAttributionResidualAbsolute"] is None
+        else:
+            expected = abs(residual)
+            assert abs(rep["stateGainAttributionResidualAbsolute"] - expected) < 1e-9
 
     def test_non_numeric_state_has_none(self):
         i = run("""

@@ -15870,6 +15870,12 @@ class SpryOrchestrator:
                 and report_total_attempts > 0
                 else None
             )
+            state_gain_attribution_residual_coverage_per_target = (
+                state_gain_attribution_residual_coverage / target_count
+                if isinstance(state_gain_attribution_residual_coverage, (int, float))
+                and target_count > 0
+                else None
+            )
             state_gain_attribution_coverage_sum = (
                 report_state_gain_coverage
                 + pre_target_state_gain_coverage
@@ -15960,6 +15966,7 @@ class SpryOrchestrator:
             state_gain_attribution_residual_coverage = None
             state_gain_attribution_residual_coverage_per_cycle = None
             state_gain_attribution_residual_coverage_per_attempt = None
+            state_gain_attribution_residual_coverage_per_target = None
             state_gain_attribution_coverage_sum = None
             state_gain_attribution_coverage_residual = None
             state_gain_attribution_coverage_absolute_residual = None
@@ -16008,6 +16015,7 @@ class SpryOrchestrator:
             "stateGainAttributionResidualCoverage": state_gain_attribution_residual_coverage,
             "stateGainAttributionResidualCoveragePerCycle": state_gain_attribution_residual_coverage_per_cycle,
             "stateGainAttributionResidualCoveragePerAttempt": state_gain_attribution_residual_coverage_per_attempt,
+            "stateGainAttributionResidualCoveragePerTarget": state_gain_attribution_residual_coverage_per_target,
             "stateGainAttributionCoverageSum": state_gain_attribution_coverage_sum,
             "stateGainAttributionCoverageResidual": state_gain_attribution_coverage_residual,
             "stateGainAttributionCoverageAbsoluteResidual": state_gain_attribution_coverage_absolute_residual,

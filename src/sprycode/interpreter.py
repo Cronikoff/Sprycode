@@ -15825,6 +15825,9 @@ class SpryOrchestrator:
                 if report_total_attempts > 0
                 else None
             )
+            state_gain_attribution_residual = report_state_gain - (
+                target_state_gain_sum + pre_target_state_gain
+            )
         else:
             pre_target_state_gain = None
             report_state_gain_coverage = None
@@ -15833,6 +15836,7 @@ class SpryOrchestrator:
             pre_target_state_gain_per_cycle = None
             target_state_gain_per_attempt = None
             pre_target_state_gain_per_attempt = None
+            state_gain_attribution_residual = None
         return {
             "state": state,
             "targets": targets,
@@ -15852,11 +15856,12 @@ class SpryOrchestrator:
             "preTargetStateGain": pre_target_state_gain,
              "reportStateGainCoverage": report_state_gain_coverage,
              "preTargetStateGainCoverage": pre_target_state_gain_coverage,
-             "targetStateGainPerCycle": target_state_gain_per_cycle,
-             "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
-             "targetStateGainPerAttempt": target_state_gain_per_attempt,
-             "preTargetStateGainPerAttempt": pre_target_state_gain_per_attempt,
-         }
+            "targetStateGainPerCycle": target_state_gain_per_cycle,
+            "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
+            "targetStateGainPerAttempt": target_state_gain_per_attempt,
+            "preTargetStateGainPerAttempt": pre_target_state_gain_per_attempt,
+            "stateGainAttributionResidual": state_gain_attribution_residual,
+        }
 
     @property
     def enabledStepNames(self) -> list[str]:

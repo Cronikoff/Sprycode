@@ -15820,6 +15820,9 @@ class SpryOrchestrator:
                 if report_total_attempts > 0
                 else None
             )
+            target_state_gain_per_target = (
+                target_state_gain_sum / target_count if target_count > 0 else None
+            )
             pre_target_state_gain_per_attempt = (
                 pre_target_state_gain / report_total_attempts
                 if report_total_attempts > 0
@@ -15883,6 +15886,7 @@ class SpryOrchestrator:
             target_state_gain_per_cycle = None
             pre_target_state_gain_per_cycle = None
             target_state_gain_per_attempt = None
+            target_state_gain_per_target = None
             pre_target_state_gain_per_attempt = None
             state_gain_attribution_residual = None
             state_gain_attribution_residual_per_cycle = None
@@ -15918,6 +15922,7 @@ class SpryOrchestrator:
             "targetStateGainPerCycle": target_state_gain_per_cycle,
             "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
             "targetStateGainPerAttempt": target_state_gain_per_attempt,
+            "targetStateGainPerTarget": target_state_gain_per_target,
             "preTargetStateGainPerAttempt": pre_target_state_gain_per_attempt,
             "stateGainAttributionResidual": state_gain_attribution_residual,
             "stateGainAttributionResidualPerCycle": state_gain_attribution_residual_per_cycle,

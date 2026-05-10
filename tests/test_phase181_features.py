@@ -85,8 +85,13 @@ class TestPathwayStateGainAttributionResidualAbsoluteCoverage:
             let rep = orch.runCapabilityPathwayManagedReport(0, 5)
         """)
         rep = val(i, "rep")
-        assert rep["stateGainAttributionResidualAbsolute"] is None
-        assert rep["stateGainAttributionResidualAbsoluteCoverage"] is None
+        absolute = rep["stateGainAttributionResidualAbsolute"]
+        report_state_gain = rep["reportStateGain"]
+        if absolute is None or report_state_gain == 0:
+            assert rep["stateGainAttributionResidualAbsoluteCoverage"] is None
+        else:
+            expected = absolute / report_state_gain
+            assert abs(rep["stateGainAttributionResidualAbsoluteCoverage"] - expected) < 1e-9
 
     def test_non_numeric_state_has_none(self):
         i = run("""

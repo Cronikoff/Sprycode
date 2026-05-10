@@ -15900,6 +15900,7 @@ class SpryOrchestrator:
             "fullyDeveloped": self.capabilityFullyDeveloped,
             "remainingTargets": self.capabilityRemainingTargets,
             "cycles": report_cycles,
+            "totalAttempts": report_total_attempts,
             "spryAverageScore": spry_average_score,
             "spryPeakScore": spry_peak_score,
             "spryDistribution": spry_distribution,

@@ -15792,10 +15792,14 @@ class SpryOrchestrator:
             report_state_gain_per_attempt = (
                 report_state_gain / report_total_attempts if report_total_attempts > 0 else None
             )
+            report_state_gain_per_target = (
+                report_state_gain / target_count if target_count > 0 else None
+            )
         else:
             report_state_gain = None
             report_state_gain_per_cycle = None
             report_state_gain_per_attempt = None
+            report_state_gain_per_target = None
         target_state_gain_sum = sum(
             t.get("stateGain", 0)
             for t in targets
@@ -15815,12 +15819,186 @@ class SpryOrchestrator:
             pre_target_state_gain_per_cycle = (
                 pre_target_state_gain / report_cycles if report_cycles > 0 else None
             )
+            target_state_gain_per_attempt = (
+                target_state_gain_sum / report_total_attempts
+                if report_total_attempts > 0
+                else None
+            )
+            target_state_gain_per_target = (
+                target_state_gain_sum / target_count if target_count > 0 else None
+            )
+            pre_target_state_gain_per_attempt = (
+                pre_target_state_gain / report_total_attempts
+                if report_total_attempts > 0
+                else None
+            )
+            pre_target_state_gain_per_target = (
+                pre_target_state_gain / target_count if target_count > 0 else None
+            )
+            state_gain_attribution_residual = (
+                report_state_gain - (target_state_gain_sum + pre_target_state_gain)
+                if isinstance(report_state_gain, (int, float))
+                else None
+            )
+            state_gain_attribution_residual_per_cycle = (
+                state_gain_attribution_residual / report_cycles
+                if report_cycles > 0
+                else None
+            )
+            state_gain_attribution_residual_per_attempt = (
+                state_gain_attribution_residual / report_total_attempts
+                if report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_residual_per_target = (
+                state_gain_attribution_residual / target_count if target_count > 0 else None
+            )
+            state_gain_attribution_residual_coverage = (
+                state_gain_attribution_residual / report_state_gain
+                if isinstance(report_state_gain, (int, float)) and report_state_gain != 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_per_cycle = (
+                state_gain_attribution_residual_coverage / report_cycles
+                if isinstance(state_gain_attribution_residual_coverage, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_per_attempt = (
+                state_gain_attribution_residual_coverage / report_total_attempts
+                if isinstance(state_gain_attribution_residual_coverage, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_per_target = (
+                state_gain_attribution_residual_coverage / target_count
+                if isinstance(state_gain_attribution_residual_coverage, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_absolute = (
+                abs(state_gain_attribution_residual_coverage)
+                if isinstance(state_gain_attribution_residual_coverage, (int, float))
+                else None
+            )
+            state_gain_attribution_residual_coverage_absolute_per_cycle = (
+                state_gain_attribution_residual_coverage_absolute / report_cycles
+                if isinstance(state_gain_attribution_residual_coverage_absolute, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_absolute_per_attempt = (
+                state_gain_attribution_residual_coverage_absolute / report_total_attempts
+                if isinstance(state_gain_attribution_residual_coverage_absolute, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_sum = (
+                report_state_gain_coverage
+                + pre_target_state_gain_coverage
+                + state_gain_attribution_residual_coverage
+                if isinstance(report_state_gain_coverage, (int, float))
+                and isinstance(pre_target_state_gain_coverage, (int, float))
+                and isinstance(state_gain_attribution_residual_coverage, (int, float))
+                else None
+            )
+            state_gain_attribution_coverage_residual = (
+                1.0 - state_gain_attribution_coverage_sum
+                if isinstance(state_gain_attribution_coverage_sum, (int, float))
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual = (
+                abs(state_gain_attribution_coverage_residual)
+                if isinstance(state_gain_attribution_coverage_residual, (int, float))
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_per_cycle = (
+                state_gain_attribution_coverage_absolute_residual / report_cycles
+                if isinstance(state_gain_attribution_coverage_absolute_residual, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_per_attempt = (
+                state_gain_attribution_coverage_absolute_residual / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_absolute_residual, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_per_target = (
+                state_gain_attribution_coverage_absolute_residual / target_count
+                if isinstance(state_gain_attribution_coverage_absolute_residual, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_per_cycle = (
+                state_gain_attribution_coverage_residual / report_cycles
+                if isinstance(state_gain_attribution_coverage_residual, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_per_attempt = (
+                state_gain_attribution_coverage_residual / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_residual, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_per_target = (
+                state_gain_attribution_coverage_residual / target_count
+                if isinstance(state_gain_attribution_coverage_residual, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_sum_per_cycle = (
+                state_gain_attribution_coverage_sum / report_cycles
+                if isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_sum_per_attempt = (
+                state_gain_attribution_coverage_sum / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_sum_per_target = (
+                state_gain_attribution_coverage_sum / target_count
+                if isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and target_count > 0
+                else None
+            )
         else:
             pre_target_state_gain = None
             report_state_gain_coverage = None
             pre_target_state_gain_coverage = None
             target_state_gain_per_cycle = None
             pre_target_state_gain_per_cycle = None
+            target_state_gain_per_attempt = None
+            target_state_gain_per_target = None
+            pre_target_state_gain_per_attempt = None
+            pre_target_state_gain_per_target = None
+            state_gain_attribution_residual = None
+            state_gain_attribution_residual_per_cycle = None
+            state_gain_attribution_residual_per_attempt = None
+            state_gain_attribution_residual_per_target = None
+            state_gain_attribution_residual_coverage = None
+            state_gain_attribution_residual_coverage_per_cycle = None
+            state_gain_attribution_residual_coverage_per_attempt = None
+            state_gain_attribution_residual_coverage_per_target = None
+            state_gain_attribution_residual_coverage_absolute = None
+            state_gain_attribution_residual_coverage_absolute_per_cycle = None
+            state_gain_attribution_residual_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_sum = None
+            state_gain_attribution_coverage_residual = None
+            state_gain_attribution_coverage_absolute_residual = None
+            state_gain_attribution_coverage_absolute_residual_per_cycle = None
+            state_gain_attribution_coverage_absolute_residual_per_attempt = None
+            state_gain_attribution_coverage_absolute_residual_per_target = None
+            state_gain_attribution_coverage_residual_per_cycle = None
+            state_gain_attribution_coverage_residual_per_attempt = None
+            state_gain_attribution_coverage_residual_per_target = None
+            state_gain_attribution_coverage_sum_per_cycle = None
+            state_gain_attribution_coverage_sum_per_attempt = None
+            state_gain_attribution_coverage_sum_per_target = None
         return {
             "state": state,
             "targets": targets,
@@ -15828,6 +16006,9 @@ class SpryOrchestrator:
             "fullyDeveloped": self.capabilityFullyDeveloped,
             "remainingTargets": self.capabilityRemainingTargets,
             "cycles": report_cycles,
+            "totalAttempts": report_total_attempts,
+            "totalAttemptsPerCycle": report_total_attempts / report_cycles if report_cycles > 0 else None,
+            "totalAttemptsPerTarget": report_total_attempts / target_count if target_count > 0 else None,
             "spryAverageScore": spry_average_score,
             "spryPeakScore": spry_peak_score,
             "spryDistribution": spry_distribution,
@@ -15836,12 +16017,40 @@ class SpryOrchestrator:
             "reportStateGain": report_state_gain,
             "reportStateGainPerCycle": report_state_gain_per_cycle,
             "reportStateGainPerAttempt": report_state_gain_per_attempt,
+            "reportStateGainPerTarget": report_state_gain_per_target,
             "targetStateGainSum": target_state_gain_sum,
             "preTargetStateGain": pre_target_state_gain,
             "reportStateGainCoverage": report_state_gain_coverage,
             "preTargetStateGainCoverage": pre_target_state_gain_coverage,
             "targetStateGainPerCycle": target_state_gain_per_cycle,
             "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
+            "targetStateGainPerAttempt": target_state_gain_per_attempt,
+            "targetStateGainPerTarget": target_state_gain_per_target,
+            "preTargetStateGainPerAttempt": pre_target_state_gain_per_attempt,
+            "preTargetStateGainPerTarget": pre_target_state_gain_per_target,
+            "stateGainAttributionResidual": state_gain_attribution_residual,
+            "stateGainAttributionResidualPerCycle": state_gain_attribution_residual_per_cycle,
+            "stateGainAttributionResidualPerAttempt": state_gain_attribution_residual_per_attempt,
+            "stateGainAttributionResidualPerTarget": state_gain_attribution_residual_per_target,
+            "stateGainAttributionResidualCoverage": state_gain_attribution_residual_coverage,
+            "stateGainAttributionResidualCoveragePerCycle": state_gain_attribution_residual_coverage_per_cycle,
+            "stateGainAttributionResidualCoveragePerAttempt": state_gain_attribution_residual_coverage_per_attempt,
+            "stateGainAttributionResidualCoveragePerTarget": state_gain_attribution_residual_coverage_per_target,
+            "stateGainAttributionResidualCoverageAbsolute": state_gain_attribution_residual_coverage_absolute,
+            "stateGainAttributionResidualCoverageAbsolutePerCycle": state_gain_attribution_residual_coverage_absolute_per_cycle,
+            "stateGainAttributionResidualCoverageAbsolutePerAttempt": state_gain_attribution_residual_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageSum": state_gain_attribution_coverage_sum,
+            "stateGainAttributionCoverageResidual": state_gain_attribution_coverage_residual,
+            "stateGainAttributionCoverageAbsoluteResidual": state_gain_attribution_coverage_absolute_residual,
+            "stateGainAttributionCoverageAbsoluteResidualPerCycle": state_gain_attribution_coverage_absolute_residual_per_cycle,
+            "stateGainAttributionCoverageAbsoluteResidualPerAttempt": state_gain_attribution_coverage_absolute_residual_per_attempt,
+            "stateGainAttributionCoverageAbsoluteResidualPerTarget": state_gain_attribution_coverage_absolute_residual_per_target,
+            "stateGainAttributionCoverageResidualPerCycle": state_gain_attribution_coverage_residual_per_cycle,
+            "stateGainAttributionCoverageResidualPerAttempt": state_gain_attribution_coverage_residual_per_attempt,
+            "stateGainAttributionCoverageResidualPerTarget": state_gain_attribution_coverage_residual_per_target,
+            "stateGainAttributionCoverageSumPerCycle": state_gain_attribution_coverage_sum_per_cycle,
+            "stateGainAttributionCoverageSumPerAttempt": state_gain_attribution_coverage_sum_per_attempt,
+            "stateGainAttributionCoverageSumPerTarget": state_gain_attribution_coverage_sum_per_target,
         }
 
     @property

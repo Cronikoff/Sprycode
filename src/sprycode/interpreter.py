@@ -15622,6 +15622,17 @@ class SpryOrchestrator:
         initial_state: Any = SPRY_UNDEFINED,
         max_loops_per_target: Any = 1000,
     ) -> dict[str, Any]:
+        def spry_meaning_for(score: Any) -> Any:
+            if score is None:
+                return None
+            if score >= 5:
+                return "vigorous"
+            if score >= 3:
+                return "brisk"
+            if score >= 1:
+                return "active"
+            return "lively"
+
         state = initial_state
         total_cycles_before = self._total_cycles
         cycle_history_before = len(self._cycle_history)
@@ -15664,6 +15675,39 @@ class SpryOrchestrator:
                         "peakAttempts": t_peak,
                     }
                 )
+            target_cycles_count = self._total_cycles - start_cycles
+            target_total_attempts = 0
+            target_peak_cycle_attempts = 0
+            for cycle_attempts in target_history_delta:
+                cycle_total = sum(cycle_attempts.get(sn, 0) for sn in active_managed_names)
+                target_total_attempts += cycle_total
+                if cycle_total > target_peak_cycle_attempts:
+                    target_peak_cycle_attempts = cycle_total
+            target_avg_attempts_per_cycle = (
+                target_total_attempts / target_cycles_count
+                if target_cycles_count > 0
+                else None
+            )
+            state_gain = state_after - state_before if isinstance(state_after, (int, float)) and isinstance(state_before, (int, float)) else None
+            state_gain_per_cycle = (
+                state_gain / target_cycles_count
+                if state_gain is not None and target_cycles_count > 0
+                else None
+            )
+            state_gain_per_attempt = (
+                state_gain / target_total_attempts
+                if state_gain is not None and target_total_attempts > 0
+                else None
+            )
+            # Compute spry score as (state gain per cycle) × (state gain per
+            # attempt), rewarding targets that improve state quickly and
+            # efficiently.
+            spry_score = (
+                state_gain_per_cycle * state_gain_per_attempt
+                if state_gain_per_cycle is not None and state_gain_per_attempt is not None
+                else None
+            )
+            spry_meaning = spry_meaning_for(spry_score)
             targets.append(
                 {
                     "name": target,
@@ -15671,12 +15715,20 @@ class SpryOrchestrator:
                     "endStage": self.stepCapabilityStages.get(target),
                     "cycleStart": start_cycles + 1,
                     "cycleEnd": self._total_cycles,
-                    "cycles": self._total_cycles - start_cycles,
+                    "cycles": target_cycles_count,
                     "serviceLoops": target_service_loops,
                     "remainingTargetsAfter": self.capabilityRemainingTargets,
                     "fullyDevelopedAfter": self.capabilityFullyDeveloped,
                     "stateBefore": state_before,
                     "stateAfter": state_after,
+                    "totalAttempts": target_total_attempts,
+                    "peakCycleAttempts": target_peak_cycle_attempts,
+                    "avgAttemptsPerCycle": target_avg_attempts_per_cycle,
+                    "stateGain": state_gain,
+                    "stateGainPerCycle": state_gain_per_cycle,
+                    "stateGainPerAttempt": state_gain_per_attempt,
+                    "spryScore": spry_score,
+                    "spryMeaning": spry_meaning,
                 }
             )
         loop_history_delta = self._cycle_history[cycle_history_before:]
@@ -15707,13 +15759,89 @@ class SpryOrchestrator:
                     "mature": stage == "mature",
                 }
             )
+        spry_scores = [t["spryScore"] for t in targets if isinstance(t.get("spryScore"), (int, float))]
+        spry_average_score = (
+            sum(spry_scores) / len(spry_scores) if spry_scores else None
+        )
+        spry_peak_score = max(spry_scores) if spry_scores else None
+        spry_distribution = {"lively": 0, "active": 0, "brisk": 0, "vigorous": 0}
+        for t in targets:
+            meaning = t.get("spryMeaning")
+            if meaning in spry_distribution:
+                spry_distribution[meaning] += 1
+        target_count = len(targets)
+        if target_count > 0:
+            spry_distribution_ratios = {
+                band: count / target_count for band, count in spry_distribution.items()
+            }
+        else:
+            spry_distribution_ratios = {
+                "lively": 0.0,
+                "active": 0.0,
+                "brisk": 0.0,
+                "vigorous": 0.0,
+            }
+        spry_summary_meaning = spry_meaning_for(spry_average_score)
+        report_cycles = self._total_cycles - total_cycles_before
+        report_total_attempts = sum(t.get("totalAttempts", 0) for t in targets)
+        if isinstance(state, (int, float)) and isinstance(initial_state, (int, float)):
+            report_state_gain: Any = state - initial_state
+            report_state_gain_per_cycle = (
+                report_state_gain / report_cycles if report_cycles > 0 else None
+            )
+            report_state_gain_per_attempt = (
+                report_state_gain / report_total_attempts if report_total_attempts > 0 else None
+            )
+        else:
+            report_state_gain = None
+            report_state_gain_per_cycle = None
+            report_state_gain_per_attempt = None
+        target_state_gain_sum = sum(
+            t.get("stateGain", 0)
+            for t in targets
+            if isinstance(t.get("stateGain"), (int, float))
+        )
+        if isinstance(report_state_gain, (int, float)):
+            pre_target_state_gain = report_state_gain - target_state_gain_sum
+            report_state_gain_coverage = (
+                target_state_gain_sum / report_state_gain if report_state_gain != 0 else None
+            )
+            pre_target_state_gain_coverage = (
+                pre_target_state_gain / report_state_gain if report_state_gain != 0 else None
+            )
+            target_state_gain_per_cycle = (
+                target_state_gain_sum / report_cycles if report_cycles > 0 else None
+            )
+            pre_target_state_gain_per_cycle = (
+                pre_target_state_gain / report_cycles if report_cycles > 0 else None
+            )
+        else:
+            pre_target_state_gain = None
+            report_state_gain_coverage = None
+            pre_target_state_gain_coverage = None
+            target_state_gain_per_cycle = None
+            pre_target_state_gain_per_cycle = None
         return {
             "state": state,
             "targets": targets,
             "serviceLoops": service_loops,
             "fullyDeveloped": self.capabilityFullyDeveloped,
             "remainingTargets": self.capabilityRemainingTargets,
-            "cycles": self._total_cycles - total_cycles_before,
+            "cycles": report_cycles,
+            "spryAverageScore": spry_average_score,
+            "spryPeakScore": spry_peak_score,
+            "spryDistribution": spry_distribution,
+            "spryDistributionRatios": spry_distribution_ratios,
+            "sprySummaryMeaning": spry_summary_meaning,
+            "reportStateGain": report_state_gain,
+            "reportStateGainPerCycle": report_state_gain_per_cycle,
+            "reportStateGainPerAttempt": report_state_gain_per_attempt,
+            "targetStateGainSum": target_state_gain_sum,
+            "preTargetStateGain": pre_target_state_gain,
+            "reportStateGainCoverage": report_state_gain_coverage,
+            "preTargetStateGainCoverage": pre_target_state_gain_coverage,
+            "targetStateGainPerCycle": target_state_gain_per_cycle,
+            "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
         }
 
     @property

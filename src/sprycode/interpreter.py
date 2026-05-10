@@ -15825,8 +15825,10 @@ class SpryOrchestrator:
                 if report_total_attempts > 0
                 else None
             )
-            state_gain_attribution_residual = report_state_gain - (
-                target_state_gain_sum + pre_target_state_gain
+            state_gain_attribution_residual = (
+                report_state_gain - (target_state_gain_sum + pre_target_state_gain)
+                if isinstance(report_state_gain, (int, float))
+                else None
             )
             state_gain_attribution_residual_per_cycle = (
                 state_gain_attribution_residual / report_cycles

@@ -101,7 +101,7 @@ class TestPathwayReportStateGainAttributionResidual:
         assert rep["reportStateGain"] == 0
         assert rep["stateGainAttributionResidual"] == 0
 
-    def test_non_numeric_report_gain_has_none_residual(self):
+    def test_non_numeric_report_gain_returns_none_residual(self):
         i = run("""
             let orch = Orchestrator.new()
             orch.addManagedStep(

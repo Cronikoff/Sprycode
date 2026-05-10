@@ -15991,6 +15991,12 @@ class SpryOrchestrator:
                 and state_gain_attribution_coverage_sum != 0
                 else None
             )
+            state_gain_attribution_coverage_absolute_residual_coverage_per_cycle = (
+                state_gain_attribution_coverage_absolute_residual_coverage / report_cycles
+                if isinstance(state_gain_attribution_coverage_absolute_residual_coverage, (int, float))
+                and report_cycles > 0
+                else None
+            )
             state_gain_attribution_coverage_residual_per_cycle = (
                 state_gain_attribution_coverage_residual / report_cycles
                 if isinstance(state_gain_attribution_coverage_residual, (int, float))
@@ -16064,6 +16070,7 @@ class SpryOrchestrator:
             state_gain_attribution_coverage_absolute_residual_per_attempt = None
             state_gain_attribution_coverage_absolute_residual_per_target = None
             state_gain_attribution_coverage_absolute_residual_coverage = None
+            state_gain_attribution_coverage_absolute_residual_coverage_per_cycle = None
             state_gain_attribution_coverage_residual_per_cycle = None
             state_gain_attribution_coverage_residual_per_attempt = None
             state_gain_attribution_coverage_residual_per_target = None
@@ -16126,6 +16133,7 @@ class SpryOrchestrator:
             "stateGainAttributionCoverageAbsoluteResidualPerAttempt": state_gain_attribution_coverage_absolute_residual_per_attempt,
             "stateGainAttributionCoverageAbsoluteResidualPerTarget": state_gain_attribution_coverage_absolute_residual_per_target,
             "stateGainAttributionCoverageAbsoluteResidualCoverage": state_gain_attribution_coverage_absolute_residual_coverage,
+            "stateGainAttributionCoverageAbsoluteResidualCoveragePerCycle": state_gain_attribution_coverage_absolute_residual_coverage_per_cycle,
             "stateGainAttributionCoverageResidualPerCycle": state_gain_attribution_coverage_residual_per_cycle,
             "stateGainAttributionCoverageResidualPerAttempt": state_gain_attribution_coverage_residual_per_attempt,
             "stateGainAttributionCoverageResidualPerTarget": state_gain_attribution_coverage_residual_per_target,

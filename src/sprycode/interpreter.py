@@ -15902,6 +15902,7 @@ class SpryOrchestrator:
             "cycles": report_cycles,
             "totalAttempts": report_total_attempts,
             "totalAttemptsPerCycle": report_total_attempts / report_cycles if report_cycles > 0 else None,
+            "totalAttemptsPerTarget": report_total_attempts / target_count if target_count > 0 else None,
             "spryAverageScore": spry_average_score,
             "spryPeakScore": spry_peak_score,
             "spryDistribution": spry_distribution,

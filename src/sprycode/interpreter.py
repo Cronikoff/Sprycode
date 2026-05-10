@@ -15815,12 +15815,24 @@ class SpryOrchestrator:
             pre_target_state_gain_per_cycle = (
                 pre_target_state_gain / report_cycles if report_cycles > 0 else None
             )
+            target_state_gain_per_attempt = (
+                target_state_gain_sum / report_total_attempts
+                if report_total_attempts > 0
+                else None
+            )
+            pre_target_state_gain_per_attempt = (
+                pre_target_state_gain / report_total_attempts
+                if report_total_attempts > 0
+                else None
+            )
         else:
             pre_target_state_gain = None
             report_state_gain_coverage = None
             pre_target_state_gain_coverage = None
             target_state_gain_per_cycle = None
             pre_target_state_gain_per_cycle = None
+            target_state_gain_per_attempt = None
+            pre_target_state_gain_per_attempt = None
         return {
             "state": state,
             "targets": targets,
@@ -15838,11 +15850,13 @@ class SpryOrchestrator:
             "reportStateGainPerAttempt": report_state_gain_per_attempt,
             "targetStateGainSum": target_state_gain_sum,
             "preTargetStateGain": pre_target_state_gain,
-            "reportStateGainCoverage": report_state_gain_coverage,
-            "preTargetStateGainCoverage": pre_target_state_gain_coverage,
-            "targetStateGainPerCycle": target_state_gain_per_cycle,
-            "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
-        }
+             "reportStateGainCoverage": report_state_gain_coverage,
+             "preTargetStateGainCoverage": pre_target_state_gain_coverage,
+             "targetStateGainPerCycle": target_state_gain_per_cycle,
+             "preTargetStateGainPerCycle": pre_target_state_gain_per_cycle,
+             "targetStateGainPerAttempt": target_state_gain_per_attempt,
+             "preTargetStateGainPerAttempt": pre_target_state_gain_per_attempt,
+         }
 
     @property
     def enabledStepNames(self) -> list[str]:

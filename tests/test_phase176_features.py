@@ -63,8 +63,11 @@ class TestPathwayStateGainAttributionResidualCoverageAbsolutePerTarget:
         rep = val(i, "rep")
         absolute = rep["stateGainAttributionResidualCoverageAbsolute"]
         target_count = len(rep["targets"])
-        expected = absolute / target_count
-        assert abs(rep["stateGainAttributionResidualCoverageAbsolutePerTarget"] - expected) < 1e-9
+        if absolute is None or target_count == 0:
+            assert rep["stateGainAttributionResidualCoverageAbsolutePerTarget"] is None
+        else:
+            expected = absolute / target_count
+            assert abs(rep["stateGainAttributionResidualCoverageAbsolutePerTarget"] - expected) < 1e-9
 
     def test_zero_cycle_report_has_none(self):
         i = run("""

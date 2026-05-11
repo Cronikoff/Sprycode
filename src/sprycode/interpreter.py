@@ -15983,6 +15983,12 @@ class SpryOrchestrator:
                 and report_total_attempts > 0
                 else None
             )
+            state_gain_attribution_coverage_residual_absolute_per_target = (
+                state_gain_attribution_coverage_residual_absolute / target_count
+                if isinstance(state_gain_attribution_coverage_residual_absolute, (int, float))
+                and target_count > 0
+                else None
+            )
             state_gain_attribution_coverage_absolute_residual_per_cycle = (
                 state_gain_attribution_coverage_absolute_residual / report_cycles
                 if isinstance(state_gain_attribution_coverage_absolute_residual, (int, float))
@@ -16123,6 +16129,7 @@ class SpryOrchestrator:
             state_gain_attribution_coverage_residual_absolute = None
             state_gain_attribution_coverage_residual_absolute_per_cycle = None
             state_gain_attribution_coverage_residual_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_per_target = None
             state_gain_attribution_coverage_absolute_residual_per_cycle = None
             state_gain_attribution_coverage_absolute_residual_per_attempt = None
             state_gain_attribution_coverage_absolute_residual_per_target = None
@@ -16198,6 +16205,7 @@ class SpryOrchestrator:
             "stateGainAttributionCoverageResidualAbsolute": state_gain_attribution_coverage_residual_absolute,
             "stateGainAttributionCoverageResidualAbsolutePerCycle": state_gain_attribution_coverage_residual_absolute_per_cycle,
             "stateGainAttributionCoverageResidualAbsolutePerAttempt": state_gain_attribution_coverage_residual_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualAbsolutePerTarget": state_gain_attribution_coverage_residual_absolute_per_target,
             "stateGainAttributionCoverageAbsoluteResidual": state_gain_attribution_coverage_absolute_residual,
             "stateGainAttributionCoverageAbsoluteResidualPerCycle": state_gain_attribution_coverage_absolute_residual_per_cycle,
             "stateGainAttributionCoverageAbsoluteResidualPerAttempt": state_gain_attribution_coverage_absolute_residual_per_attempt,

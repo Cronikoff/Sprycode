@@ -37,7 +37,7 @@ class TestPathwayStateGainAttributionCoverageResidualAbsolutePerTarget:
         rep = val(i, "rep")
         absolute = rep["stateGainAttributionCoverageResidualAbsolute"]
         targets = rep["targets"]
-        count = targets.length
+        count = len(targets)
         if absolute is None or count == 0:
             assert rep["stateGainAttributionCoverageResidualAbsolutePerTarget"] is None
         else:
@@ -64,7 +64,7 @@ class TestPathwayStateGainAttributionCoverageResidualAbsolutePerTarget:
         rep = val(i, "rep")
         absolute = rep["stateGainAttributionCoverageResidualAbsolute"]
         targets = rep["targets"]
-        count = targets.length
+        count = len(targets)
         if absolute is None or count == 0:
             assert rep["stateGainAttributionCoverageResidualAbsolutePerTarget"] is None
         else:
@@ -77,5 +77,5 @@ class TestPathwayStateGainAttributionCoverageResidualAbsolutePerTarget:
             let rep = orch.runCapabilityPathwayManagedReport(0, 0)
         """)
         rep = val(i, "rep")
-        assert rep["targets"].length == 0
+        assert len(rep["targets"]) == 0
         assert rep["stateGainAttributionCoverageResidualAbsolutePerTarget"] is None

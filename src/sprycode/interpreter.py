@@ -1673,6 +1673,10 @@ class Interpreter:
         env.define("debounce", _make_debounce(self._call_value))
         env.define("pipeline", _make_pipeline(self._call_value))
 
+        # Phase 279: Os module — operating-system interface
+        _os_ns = _OsNamespace()
+        env.define("Os", _os_ns)
+
         return env
 
     def _eval_fstring(self, template: str, env: "Environment") -> str:
@@ -15901,6 +15905,29 @@ class SpryOrchestrator:
                 and target_count > 0
                 else None
             )
+            state_gain_attribution_residual_absolute_coverage_absolute = (
+                abs(state_gain_attribution_residual_absolute_coverage)
+                if isinstance(state_gain_attribution_residual_absolute_coverage, (int, float))
+                else None
+            )
+            state_gain_attribution_residual_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_residual_absolute_coverage_absolute / report_cycles
+                if isinstance(state_gain_attribution_residual_absolute_coverage_absolute, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_residual_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_residual_absolute_coverage_absolute / report_total_attempts
+                if isinstance(state_gain_attribution_residual_absolute_coverage_absolute, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_residual_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_residual_absolute_coverage_absolute / target_count
+                if isinstance(state_gain_attribution_residual_absolute_coverage_absolute, (int, float))
+                and target_count > 0
+                else None
+            )
             state_gain_attribution_residual_coverage = (
                 state_gain_attribution_residual / report_state_gain
                 if isinstance(report_state_gain, (int, float)) and report_state_gain != 0
@@ -15947,6 +15974,31 @@ class SpryOrchestrator:
                 and target_count > 0
                 else None
             )
+            state_gain_attribution_residual_coverage_absolute_coverage = (
+                state_gain_attribution_residual_coverage_absolute / report_state_gain
+                if isinstance(state_gain_attribution_residual_coverage_absolute, (int, float))
+                and isinstance(report_state_gain, (int, float))
+                and report_state_gain != 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_absolute_coverage_per_cycle = (
+                state_gain_attribution_residual_coverage_absolute_coverage / report_cycles
+                if isinstance(state_gain_attribution_residual_coverage_absolute_coverage, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_absolute_coverage_per_attempt = (
+                state_gain_attribution_residual_coverage_absolute_coverage / report_total_attempts
+                if isinstance(state_gain_attribution_residual_coverage_absolute_coverage, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_residual_coverage_absolute_coverage_per_target = (
+                state_gain_attribution_residual_coverage_absolute_coverage / target_count
+                if isinstance(state_gain_attribution_residual_coverage_absolute_coverage, (int, float))
+                and target_count > 0
+                else None
+            )
             state_gain_attribution_coverage_sum = (
                 report_state_gain_coverage
                 + pre_target_state_gain_coverage
@@ -15975,6 +16027,234 @@ class SpryOrchestrator:
                 state_gain_attribution_coverage_residual_absolute / report_cycles
                 if isinstance(state_gain_attribution_coverage_residual_absolute, (int, float))
                 and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_per_attempt = (
+                state_gain_attribution_coverage_residual_absolute / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_residual_absolute, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_per_target = (
+                state_gain_attribution_coverage_residual_absolute / target_count
+                if isinstance(state_gain_attribution_coverage_residual_absolute, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage = (
+                state_gain_attribution_coverage_residual_absolute / state_gain_attribution_coverage_sum
+                if isinstance(state_gain_attribution_coverage_residual_absolute, (int, float))
+                and isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and state_gain_attribution_coverage_sum != 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_per_cycle = (
+                state_gain_attribution_coverage_residual_absolute_coverage / report_cycles
+                if isinstance(state_gain_attribution_coverage_residual_absolute_coverage, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_per_attempt = (
+                state_gain_attribution_coverage_residual_absolute_coverage / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_residual_absolute_coverage, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_per_target = (
+                state_gain_attribution_coverage_residual_absolute_coverage / target_count
+                if isinstance(state_gain_attribution_coverage_residual_absolute_coverage, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute = (
+                abs(state_gain_attribution_coverage_residual_absolute_coverage)
+                if isinstance(state_gain_attribution_coverage_residual_absolute_coverage, (int, float))
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute
+                / state_gain_attribution_coverage_sum
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and state_gain_attribution_coverage_sum != 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_cycle = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_attempt = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_target = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute = (
+                abs(state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage)
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute
+                / state_gain_attribution_coverage_sum
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and state_gain_attribution_coverage_sum != 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_cycle = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_attempt = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_target = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute = (
+                abs(state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage)
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and target_count > 0
                 else None
             )
             state_gain_attribution_coverage_absolute_residual_per_cycle = (
@@ -16020,6 +16300,187 @@ class SpryOrchestrator:
                 and target_count > 0
                 else None
             )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute = (
+                abs(state_gain_attribution_coverage_absolute_residual_coverage)
+                if isinstance(state_gain_attribution_coverage_absolute_residual_coverage, (int, float))
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute / report_cycles
+                if isinstance(state_gain_attribution_coverage_absolute_residual_coverage_absolute, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_absolute_residual_coverage_absolute, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute / target_count
+                if isinstance(state_gain_attribution_coverage_absolute_residual_coverage_absolute, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute
+                / state_gain_attribution_coverage_sum
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute,
+                    (int, float),
+                )
+                and isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and state_gain_attribution_coverage_sum != 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_cycle = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_attempt = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_target = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute = (
+                abs(state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage)
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage,
+                    (int, float),
+                )
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute
+                / state_gain_attribution_coverage_sum
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and state_gain_attribution_coverage_sum != 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_cycle = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_attempt = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_target = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute = (
+                abs(state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage)
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
             state_gain_attribution_coverage_residual_coverage = (
                 state_gain_attribution_coverage_residual / state_gain_attribution_coverage_sum
                 if isinstance(state_gain_attribution_coverage_residual, (int, float))
@@ -16042,6 +16503,166 @@ class SpryOrchestrator:
             state_gain_attribution_coverage_residual_coverage_per_target = (
                 state_gain_attribution_coverage_residual_coverage / target_count
                 if isinstance(state_gain_attribution_coverage_residual_coverage, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute = (
+                abs(state_gain_attribution_coverage_residual_coverage)
+                if isinstance(state_gain_attribution_coverage_residual_coverage, (int, float))
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_residual_coverage_absolute / report_cycles
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_residual_coverage_absolute / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_residual_coverage_absolute / target_count
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage = (
+                state_gain_attribution_coverage_residual_coverage_absolute / state_gain_attribution_coverage_sum
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute, (int, float))
+                and isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and state_gain_attribution_coverage_sum != 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_cycle = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage / report_cycles
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute_coverage, (int, float))
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_attempt = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage / report_total_attempts
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute_coverage, (int, float))
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_target = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage / target_count
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute_coverage, (int, float))
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute = (
+                abs(state_gain_attribution_coverage_residual_coverage_absolute_coverage)
+                if isinstance(state_gain_attribution_coverage_residual_coverage_absolute_coverage, (int, float))
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute
+                / state_gain_attribution_coverage_sum
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and isinstance(state_gain_attribution_coverage_sum, (int, float))
+                and state_gain_attribution_coverage_sum != 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_cycle = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_attempt = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_target = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                and target_count > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute = (
+                abs(state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage)
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage,
+                    (int, float),
+                )
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute
+                / report_cycles
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_cycles > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute
+                / report_total_attempts
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
+                and report_total_attempts > 0
+                else None
+            )
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_target = (
+                state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute
+                / target_count
+                if isinstance(
+                    state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+                    (int, float),
+                )
                 and target_count > 0
                 else None
             )
@@ -16103,6 +16724,10 @@ class SpryOrchestrator:
             state_gain_attribution_residual_absolute_coverage_per_cycle = None
             state_gain_attribution_residual_absolute_coverage_per_attempt = None
             state_gain_attribution_residual_absolute_coverage_per_target = None
+            state_gain_attribution_residual_absolute_coverage_absolute = None
+            state_gain_attribution_residual_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_residual_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_residual_absolute_coverage_absolute_per_target = None
             state_gain_attribution_residual_coverage = None
             state_gain_attribution_residual_coverage_per_cycle = None
             state_gain_attribution_residual_coverage_per_attempt = None
@@ -16111,11 +16736,41 @@ class SpryOrchestrator:
             state_gain_attribution_residual_coverage_absolute_per_cycle = None
             state_gain_attribution_residual_coverage_absolute_per_attempt = None
             state_gain_attribution_residual_coverage_absolute_per_target = None
+            state_gain_attribution_residual_coverage_absolute_coverage = None
+            state_gain_attribution_residual_coverage_absolute_coverage_per_cycle = None
+            state_gain_attribution_residual_coverage_absolute_coverage_per_attempt = None
+            state_gain_attribution_residual_coverage_absolute_coverage_per_target = None
             state_gain_attribution_coverage_sum = None
             state_gain_attribution_coverage_residual = None
             state_gain_attribution_coverage_absolute_residual = None
             state_gain_attribution_coverage_residual_absolute = None
             state_gain_attribution_coverage_residual_absolute_per_cycle = None
+            state_gain_attribution_coverage_residual_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_per_target = None
+            state_gain_attribution_coverage_residual_absolute_coverage = None
+            state_gain_attribution_coverage_residual_absolute_coverage_per_cycle = None
+            state_gain_attribution_coverage_residual_absolute_coverage_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_coverage_per_target = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_target = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_cycle = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_target = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_target = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_cycle = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_target = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_target = None
             state_gain_attribution_coverage_absolute_residual_per_cycle = None
             state_gain_attribution_coverage_absolute_residual_per_attempt = None
             state_gain_attribution_coverage_absolute_residual_per_target = None
@@ -16123,10 +16778,50 @@ class SpryOrchestrator:
             state_gain_attribution_coverage_absolute_residual_coverage_per_cycle = None
             state_gain_attribution_coverage_absolute_residual_coverage_per_attempt = None
             state_gain_attribution_coverage_absolute_residual_coverage_per_target = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_target = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_cycle = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_attempt = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_target = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_target = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_cycle = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_attempt = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_target = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_target = None
             state_gain_attribution_coverage_residual_coverage = None
             state_gain_attribution_coverage_residual_coverage_per_cycle = None
             state_gain_attribution_coverage_residual_coverage_per_attempt = None
             state_gain_attribution_coverage_residual_coverage_per_target = None
+            state_gain_attribution_coverage_residual_coverage_absolute = None
+            state_gain_attribution_coverage_residual_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_residual_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_coverage_absolute_per_target = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_cycle = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_attempt = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_target = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_target = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_cycle = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_attempt = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_target = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt = None
+            state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_target = None
             state_gain_attribution_coverage_residual_per_cycle = None
             state_gain_attribution_coverage_residual_per_attempt = None
             state_gain_attribution_coverage_residual_per_target = None
@@ -16174,6 +16869,10 @@ class SpryOrchestrator:
             "stateGainAttributionResidualAbsoluteCoveragePerCycle": state_gain_attribution_residual_absolute_coverage_per_cycle,
             "stateGainAttributionResidualAbsoluteCoveragePerAttempt": state_gain_attribution_residual_absolute_coverage_per_attempt,
             "stateGainAttributionResidualAbsoluteCoveragePerTarget": state_gain_attribution_residual_absolute_coverage_per_target,
+            "stateGainAttributionResidualAbsoluteCoverageAbsolute": state_gain_attribution_residual_absolute_coverage_absolute,
+            "stateGainAttributionResidualAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_residual_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionResidualAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_residual_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionResidualAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_residual_absolute_coverage_absolute_per_target,
             "stateGainAttributionResidualCoverage": state_gain_attribution_residual_coverage,
             "stateGainAttributionResidualCoveragePerCycle": state_gain_attribution_residual_coverage_per_cycle,
             "stateGainAttributionResidualCoveragePerAttempt": state_gain_attribution_residual_coverage_per_attempt,
@@ -16182,14 +16881,64 @@ class SpryOrchestrator:
             "stateGainAttributionResidualCoverageAbsolutePerCycle": state_gain_attribution_residual_coverage_absolute_per_cycle,
             "stateGainAttributionResidualCoverageAbsolutePerAttempt": state_gain_attribution_residual_coverage_absolute_per_attempt,
             "stateGainAttributionResidualCoverageAbsolutePerTarget": state_gain_attribution_residual_coverage_absolute_per_target,
+            "stateGainAttributionResidualCoverageAbsoluteCoverage": state_gain_attribution_residual_coverage_absolute_coverage,
+            "stateGainAttributionResidualCoverageAbsoluteCoveragePerCycle": state_gain_attribution_residual_coverage_absolute_coverage_per_cycle,
+            "stateGainAttributionResidualCoverageAbsoluteCoveragePerAttempt": state_gain_attribution_residual_coverage_absolute_coverage_per_attempt,
+            "stateGainAttributionResidualCoverageAbsoluteCoveragePerTarget": state_gain_attribution_residual_coverage_absolute_coverage_per_target,
             "stateGainAttributionCoverageSum": state_gain_attribution_coverage_sum,
             "stateGainAttributionCoverageResidual": state_gain_attribution_coverage_residual,
             "stateGainAttributionCoverageResidualCoverage": state_gain_attribution_coverage_residual_coverage,
             "stateGainAttributionCoverageResidualCoveragePerCycle": state_gain_attribution_coverage_residual_coverage_per_cycle,
             "stateGainAttributionCoverageResidualCoveragePerAttempt": state_gain_attribution_coverage_residual_coverage_per_attempt,
             "stateGainAttributionCoverageResidualCoveragePerTarget": state_gain_attribution_coverage_residual_coverage_per_target,
+            "stateGainAttributionCoverageResidualCoverageAbsolute": state_gain_attribution_coverage_residual_coverage_absolute,
+            "stateGainAttributionCoverageResidualCoverageAbsolutePerCycle": state_gain_attribution_coverage_residual_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageResidualCoverageAbsolutePerAttempt": state_gain_attribution_coverage_residual_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualCoverageAbsolutePerTarget": state_gain_attribution_coverage_residual_coverage_absolute_per_target,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverage": state_gain_attribution_coverage_residual_coverage_absolute_coverage,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoveragePerCycle": state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_cycle,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoveragePerAttempt": state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_attempt,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoveragePerTarget": state_gain_attribution_coverage_residual_coverage_absolute_coverage_per_target,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsolute": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_per_target,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoverage": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoveragePerCycle": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_cycle,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoveragePerAttempt": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_attempt,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoveragePerTarget": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_per_target,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolute": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_coverage_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_target,
             "stateGainAttributionCoverageResidualAbsolute": state_gain_attribution_coverage_residual_absolute,
             "stateGainAttributionCoverageResidualAbsolutePerCycle": state_gain_attribution_coverage_residual_absolute_per_cycle,
+            "stateGainAttributionCoverageResidualAbsolutePerAttempt": state_gain_attribution_coverage_residual_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualAbsolutePerTarget": state_gain_attribution_coverage_residual_absolute_per_target,
+            "stateGainAttributionCoverageResidualAbsoluteCoverage": state_gain_attribution_coverage_residual_absolute_coverage,
+            "stateGainAttributionCoverageResidualAbsoluteCoveragePerCycle": state_gain_attribution_coverage_residual_absolute_coverage_per_cycle,
+            "stateGainAttributionCoverageResidualAbsoluteCoveragePerAttempt": state_gain_attribution_coverage_residual_absolute_coverage_per_attempt,
+            "stateGainAttributionCoverageResidualAbsoluteCoveragePerTarget": state_gain_attribution_coverage_residual_absolute_coverage_per_target,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsolute": state_gain_attribution_coverage_residual_absolute_coverage_absolute,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_coverage_residual_absolute_coverage_absolute_per_target,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverage": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoveragePerCycle": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_cycle,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoveragePerAttempt": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_attempt,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoveragePerTarget": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_per_target,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsolute": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_per_target,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoverage": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoveragePerCycle": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_cycle,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoveragePerAttempt": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_attempt,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoveragePerTarget": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_per_target,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoverageAbsolute": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageResidualAbsoluteCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_coverage_residual_absolute_coverage_absolute_coverage_absolute_coverage_absolute_per_target,
             "stateGainAttributionCoverageAbsoluteResidual": state_gain_attribution_coverage_absolute_residual,
             "stateGainAttributionCoverageAbsoluteResidualPerCycle": state_gain_attribution_coverage_absolute_residual_per_cycle,
             "stateGainAttributionCoverageAbsoluteResidualPerAttempt": state_gain_attribution_coverage_absolute_residual_per_attempt,
@@ -16198,6 +16947,26 @@ class SpryOrchestrator:
             "stateGainAttributionCoverageAbsoluteResidualCoveragePerCycle": state_gain_attribution_coverage_absolute_residual_coverage_per_cycle,
             "stateGainAttributionCoverageAbsoluteResidualCoveragePerAttempt": state_gain_attribution_coverage_absolute_residual_coverage_per_attempt,
             "stateGainAttributionCoverageAbsoluteResidualCoveragePerTarget": state_gain_attribution_coverage_absolute_residual_coverage_per_target,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsolute": state_gain_attribution_coverage_absolute_residual_coverage_absolute,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsolutePerCycle": state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsolutePerAttempt": state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsolutePerTarget": state_gain_attribution_coverage_absolute_residual_coverage_absolute_per_target,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverage": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoveragePerCycle": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_cycle,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoveragePerAttempt": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_attempt,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoveragePerTarget": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_per_target,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsolute": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_per_target,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoverage": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoveragePerCycle": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_cycle,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoveragePerAttempt": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_attempt,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoveragePerTarget": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_per_target,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolute": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerCycle": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_cycle,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerAttempt": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_attempt,
+            "stateGainAttributionCoverageAbsoluteResidualCoverageAbsoluteCoverageAbsoluteCoverageAbsolutePerTarget": state_gain_attribution_coverage_absolute_residual_coverage_absolute_coverage_absolute_coverage_absolute_per_target,
             "stateGainAttributionCoverageResidualPerCycle": state_gain_attribution_coverage_residual_per_cycle,
             "stateGainAttributionCoverageResidualPerAttempt": state_gain_attribution_coverage_residual_per_attempt,
             "stateGainAttributionCoverageResidualPerTarget": state_gain_attribution_coverage_residual_per_target,
@@ -16615,3 +17384,404 @@ class _OrchestratorNamespace:
 
     def __repr__(self) -> str:
         return "Orchestrator"
+
+
+# ---------------------------------------------------------------------------
+# Phase 279 — Os module (operating-system interface)
+# ---------------------------------------------------------------------------
+
+class _OsNamespace:
+    """Os global namespace — operating-system interface.
+
+    Exposes path manipulation, file I/O, directory operations, process
+    information, and environment access.
+
+    SpryCode usage examples::
+
+        let cwd = Os.cwd()
+        let files = Os.listdir(".")
+        Os.mkdir("/tmp/mydir")
+        let content = Os.readFile("notes.txt")
+        Os.writeFile("out.txt", "hello")
+        let joined = Os.join("/tmp", "foo", "bar.txt")
+        let base = Os.basename("/tmp/foo/bar.txt")  // "bar.txt"
+        let dir  = Os.dirname("/tmp/foo/bar.txt")   // "/tmp/foo"
+        let ext  = Os.extname("report.pdf")          // ".pdf"
+        let home = Os.homedir()
+        let tmp  = Os.tmpdir()
+        let pid  = Os.pid
+        let plat = Os.platform
+        Os.setenv("MY_VAR", "hello")
+        let v = Os.getenv("MY_VAR")
+        Os.exit(0)
+    """
+
+    import os as _os_mod
+    import os.path as _osp
+    import platform as _platform_mod
+    import shutil as _shutil_mod
+    import socket as _socket_mod
+    import tempfile as _tempfile_mod
+
+    # ── Constants / properties ───────────────────────────────────────────────
+
+    @property
+    def sep(self) -> str:
+        import os as _o
+        return _o.sep
+
+    @property
+    def pathsep(self) -> str:
+        import os as _o
+        return _o.pathsep
+
+    @property
+    def linesep(self) -> str:
+        import os as _o
+        return _o.linesep
+
+    @property
+    def devnull(self) -> str:
+        import os as _o
+        return _o.devnull
+
+    @property
+    def pid(self) -> int:
+        import os as _o
+        return _o.getpid()
+
+    @property
+    def ppid(self) -> int:
+        import os as _o
+        try:
+            return _o.getppid()
+        except AttributeError:
+            return 0
+
+    @property
+    def platform(self) -> str:
+        import platform as _p
+        return _p.system().lower()
+
+    @property
+    def arch(self) -> str:
+        import platform as _p
+        return _p.machine().lower()
+
+    @property
+    def release(self) -> str:
+        import platform as _p
+        return _p.release()
+
+    @property
+    def version(self) -> str:
+        import platform as _p
+        return _p.version()
+
+    @property
+    def hostname(self) -> str:
+        import socket as _s
+        return _s.gethostname()
+
+    @property
+    def environ(self) -> dict:
+        import os as _o
+        return dict(_o.environ)
+
+    # ── Working directory ────────────────────────────────────────────────────
+
+    def cwd(self) -> str:
+        import os as _o
+        return _o.getcwd()
+
+    def getcwd(self) -> str:
+        import os as _o
+        return _o.getcwd()
+
+    def chdir(self, path: Any) -> None:
+        import os as _o
+        _o.chdir(str(path))
+
+    # ── Environment variables ────────────────────────────────────────────────
+
+    def getenv(self, name: Any, default: Any = None) -> Any:
+        import os as _o
+        return _o.environ.get(str(name), default)
+
+    def setenv(self, name: Any, value: Any) -> None:
+        import os as _o
+        _o.environ[str(name)] = str(value)
+
+    def unsetenv(self, name: Any) -> None:
+        import os as _o
+        _o.environ.pop(str(name), None)
+
+    # ── Path helpers ─────────────────────────────────────────────────────────
+
+    def join(self, *parts: Any) -> str:
+        import os.path as _osp
+        return _osp.join(*[str(p) for p in parts])
+
+    def basename(self, path: Any) -> str:
+        import os.path as _osp
+        return _osp.basename(str(path))
+
+    def dirname(self, path: Any) -> str:
+        import os.path as _osp
+        return _osp.dirname(str(path))
+
+    def extname(self, path: Any) -> str:
+        import os.path as _osp
+        return _osp.splitext(str(path))[1]
+
+    def stem(self, path: Any) -> str:
+        """Filename without extension."""
+        import os.path as _osp
+        return _osp.splitext(_osp.basename(str(path)))[0]
+
+    def abspath(self, path: Any) -> str:
+        import os.path as _osp
+        return _osp.abspath(str(path))
+
+    def realpath(self, path: Any) -> str:
+        import os.path as _osp
+        return _osp.realpath(str(path))
+
+    def normalize(self, path: Any) -> str:
+        import os.path as _osp
+        return _osp.normpath(str(path))
+
+    def split(self, path: Any) -> list:
+        import os.path as _osp
+        head, tail = _osp.split(str(path))
+        return [head, tail]
+
+    def splitext(self, path: Any) -> list:
+        import os.path as _osp
+        root, ext = _osp.splitext(str(path))
+        return [root, ext]
+
+    def relative(self, path: Any, start: Any = None) -> str:
+        import os.path as _osp
+        if start is None:
+            return _osp.relpath(str(path))
+        return _osp.relpath(str(path), str(start))
+
+    def isAbsolute(self, path: Any) -> bool:
+        import os.path as _osp
+        return _osp.isabs(str(path))
+
+    # ── Existence / stat checks ──────────────────────────────────────────────
+
+    def exists(self, path: Any) -> bool:
+        import os.path as _osp
+        return _osp.exists(str(path))
+
+    def isFile(self, path: Any) -> bool:
+        import os.path as _osp
+        return _osp.isfile(str(path))
+
+    def isDir(self, path: Any) -> bool:
+        import os.path as _osp
+        return _osp.isdir(str(path))
+
+    def isLink(self, path: Any) -> bool:
+        import os.path as _osp
+        return _osp.islink(str(path))
+
+    def stat(self, path: Any) -> dict:
+        import os as _o
+        s = _o.stat(str(path))
+        return {
+            "size": s.st_size,
+            "mode": s.st_mode,
+            "mtime": s.st_mtime,
+            "atime": s.st_atime,
+            "ctime": s.st_ctime,
+            "uid": getattr(s, "st_uid", None),
+            "gid": getattr(s, "st_gid", None),
+            "isFile": not __import__("stat").S_ISDIR(s.st_mode),
+            "isDir": __import__("stat").S_ISDIR(s.st_mode),
+        }
+
+    def size(self, path: Any) -> int:
+        import os.path as _osp
+        return _osp.getsize(str(path))
+
+    # ── Directory operations ─────────────────────────────────────────────────
+
+    def listdir(self, path: Any = ".") -> list:
+        import os as _o
+        return sorted(_o.listdir(str(path)))
+
+    def readdir(self, path: Any = ".") -> list:
+        return self.listdir(path)
+
+    def mkdir(self, path: Any, recursive: Any = False) -> None:
+        import os as _o
+        p = str(path)
+        if self._truthy_val(recursive):
+            _o.makedirs(p, exist_ok=True)
+        else:
+            _o.mkdir(p)
+
+    def mkdirs(self, path: Any) -> None:
+        import os as _o
+        _o.makedirs(str(path), exist_ok=True)
+
+    def rmdir(self, path: Any) -> None:
+        import os as _o
+        _o.rmdir(str(path))
+
+    def rmdirs(self, path: Any) -> None:
+        import shutil as _sh
+        _sh.rmtree(str(path))
+
+    def walk(self, path: Any) -> list:
+        """Return list of {root, dirs, files} dicts for every subtree node."""
+        import os as _o
+        result = []
+        for root, dirs, files in _o.walk(str(path)):
+            result.append({"root": root, "dirs": sorted(dirs), "files": sorted(files)})
+        return result
+
+    # ── File operations ──────────────────────────────────────────────────────
+
+    def readFile(self, path: Any, encoding: Any = "utf-8") -> str:
+        with open(str(path), "r", encoding=str(encoding)) as f:
+            return f.read()
+
+    def readBytes(self, path: Any) -> list:
+        with open(str(path), "rb") as f:
+            return list(f.read())
+
+    def writeFile(self, path: Any, content: Any, encoding: Any = "utf-8") -> None:
+        with open(str(path), "w", encoding=str(encoding)) as f:
+            f.write(str(content))
+
+    def writeBytes(self, path: Any, data: Any) -> None:
+        with open(str(path), "wb") as f:
+            f.write(bytes(int(b) for b in data))
+
+    def appendFile(self, path: Any, content: Any, encoding: Any = "utf-8") -> None:
+        with open(str(path), "a", encoding=str(encoding)) as f:
+            f.write(str(content))
+
+    def copyFile(self, src: Any, dst: Any) -> None:
+        import shutil as _sh
+        _sh.copy2(str(src), str(dst))
+
+    def copyDir(self, src: Any, dst: Any) -> None:
+        import shutil as _sh
+        _sh.copytree(str(src), str(dst))
+
+    def rename(self, src: Any, dst: Any) -> None:
+        import os as _o
+        _o.rename(str(src), str(dst))
+
+    def move(self, src: Any, dst: Any) -> None:
+        import shutil as _sh
+        _sh.move(str(src), str(dst))
+
+    def remove(self, path: Any) -> None:
+        import os as _o
+        _o.remove(str(path))
+
+    def unlink(self, path: Any) -> None:
+        import os as _o
+        _o.unlink(str(path))
+
+    def link(self, src: Any, dst: Any) -> None:
+        import os as _o
+        _o.link(str(src), str(dst))
+
+    def symlink(self, src: Any, dst: Any) -> None:
+        import os as _o
+        _o.symlink(str(src), str(dst))
+
+    def readlink(self, path: Any) -> str:
+        import os as _o
+        return _o.readlink(str(path))
+
+    def chmod(self, path: Any, mode: Any) -> None:
+        import os as _o
+        _o.chmod(str(path), int(mode))
+
+    # ── Temp files / directories ─────────────────────────────────────────────
+
+    def tmpdir(self) -> str:
+        import tempfile as _tf
+        return _tf.gettempdir()
+
+    def mktempdir(self, prefix: Any = "spry_", dir: Any = None) -> str:
+        import tempfile as _tf
+        return _tf.mkdtemp(prefix=str(prefix), dir=str(dir) if dir else None)
+
+    def mktempfile(self, prefix: Any = "spry_", suffix: Any = "", dir: Any = None) -> str:
+        import tempfile as _tf
+        fd, path = _tf.mkstemp(prefix=str(prefix), suffix=str(suffix),
+                               dir=str(dir) if dir else None)
+        import os as _o
+        _o.close(fd)
+        return path
+
+    # ── User / system dirs ───────────────────────────────────────────────────
+
+    def homedir(self) -> str:
+        import os as _o
+        return _o.path.expanduser("~")
+
+    def expanduser(self, path: Any) -> str:
+        import os as _o
+        return _o.path.expanduser(str(path))
+
+    def expandvars(self, path: Any) -> str:
+        import os as _o
+        return _o.path.expandvars(str(path))
+
+    # ── Process / execution ──────────────────────────────────────────────────
+
+    def exit(self, code: Any = 0) -> None:
+        import sys as _sys
+        _sys.exit(int(code))
+
+    def exec(self, cmd: Any, capture: Any = True) -> dict:
+        import subprocess as _sp
+        result = _sp.run(
+            str(cmd),
+            shell=True,
+            capture_output=bool(capture),
+            text=True,
+        )
+        return {
+            "code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "ok": result.returncode == 0,
+        }
+
+    def spawn(self, cmd: Any, *args: Any) -> dict:
+        import subprocess as _sp
+        parts = [str(cmd)] + [str(a) for a in args]
+        result = _sp.run(parts, capture_output=True, text=True)
+        return {
+            "code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "ok": result.returncode == 0,
+        }
+
+    def cpuCount(self) -> int:
+        import os as _o
+        return _o.cpu_count() or 1
+
+    # ── Internal helpers ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _truthy_val(val: Any) -> bool:
+        if val is None or val is False:
+            return False
+        return bool(val)
+
+    def __repr__(self) -> str:
+        return "Os"

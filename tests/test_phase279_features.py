@@ -22,7 +22,7 @@ def run(src: str) -> Interpreter:
 
 
 def val(i: Interpreter, name: str):
-    return i.globals._vars.get(name)
+    return i.globals.get(name)
 
 
 class TestOsConstants:

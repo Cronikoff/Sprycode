@@ -160,7 +160,7 @@ class TestStrMatch:
         assert val(i) == "HELLO"
 
     def test_match_group(self):
-        i = run('let m = "2024-01".match(/(\d{4})-(\d{2})/)\nlet v = m !== null')
+        i = run('let m = "2024-01".match(/(\\d{4})-(\\d{2})/)\nlet v = m !== null')
         assert val(i) is True
 
     def test_match_digits(self):
